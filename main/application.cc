@@ -70,12 +70,22 @@ Application::~Application() {
 }
 
 void Application::CheckAssetsVersion() {
+    ESP_LOGI(TAG, "CheckAssetsVersion() called");
     auto& board = Board::GetInstance();
     auto display = board.GetDisplay();
     auto& assets = Assets::GetInstance();
 
     if (!assets.partition_valid()) {
         ESP_LOGW(TAG, "Assets partition is disabled for board %s", BOARD_NAME);
+        ESP_LOGI(TAG, "Will use built-in models from firmware");
+        // 使用内置模型
+        srmodel_list_t* models_list = esp_srmodel_init("model");
+        if (models_list != nullptr) {
+            ESP_LOGI(TAG, "Built-in models loaded, calling SetModelsList");
+            audio_service_.SetModelsList(models_list);
+        } else {
+            ESP_LOGE(TAG, "Failed to load built-in models!");
+        }
         return;
     }
     
@@ -115,6 +125,7 @@ void Application::CheckAssetsVersion() {
     }
 
     // Apply assets
+    ESP_LOGI(TAG, "Applying assets...");
     assets.Apply();
     display->SetChatMessage("system", "");
     display->SetEmotion("microchip_ai");
@@ -613,23 +624,30 @@ void Application::MainEventLoop() {
 }
 
 void Application::OnWakeWordDetected() {
+    ESP_LOGI(TAG, "OnWakeWordDetected() called, device_state=%d, protocol=%p", 
+             device_state_, protocol_.get());
+    
     if (!protocol_) {
+        ESP_LOGW(TAG, "Protocol not initialized, ignoring wake word");
         return;
     }
 
     if (device_state_ == kDeviceStateIdle) {
+        ESP_LOGI(TAG, "Device in IDLE state, processing wake word...");
         audio_service_.EncodeWakeWord();
 
         if (!protocol_->IsAudioChannelOpened()) {
+            ESP_LOGI(TAG, "Opening audio channel...");
             SetDeviceState(kDeviceStateConnecting);
             if (!protocol_->OpenAudioChannel()) {
+                ESP_LOGE(TAG, "Failed to open audio channel, re-enabling wake word detection");
                 audio_service_.EnableWakeWordDetection(true);
                 return;
             }
         }
 
         auto wake_word = audio_service_.GetLastWakeWord();
-        ESP_LOGI(TAG, "Wake word detected: %s", wake_word.c_str());
+        ESP_LOGI(TAG, "*** Wake word detected: %s ***", wake_word.c_str());
 #if CONFIG_SEND_WAKE_WORD_DATA
         // Encode and send the wake word data to the server
         while (auto packet = audio_service_.PopWakeWordPacket()) {
@@ -683,10 +701,12 @@ void Application::SetDeviceState(DeviceState state) {
     switch (state) {
         case kDeviceStateUnknown:
         case kDeviceStateIdle:
+            ESP_LOGI(TAG, "Entering IDLE state, enabling wake word detection...");
             display->SetStatus(Lang::Strings::STANDBY);
             display->SetEmotion("neutral");
             audio_service_.EnableVoiceProcessing(false);
             audio_service_.EnableWakeWordDetection(true);
+            ESP_LOGI(TAG, "IDLE state setup complete");
             break;
         case kDeviceStateConnecting:
             display->SetStatus(Lang::Strings::CONNECTING);

@@ -233,7 +233,11 @@ void AudioService::AudioInputTask() {
                 if (ReadAudioData(data, 16000, samples)) {
                     wake_word_->Feed(data);
                     continue;
+                } else {
+                    ESP_LOGW(TAG, "Failed to read audio data for wake word!");
                 }
+            } else {
+                ESP_LOGW(TAG, "Wake word feed size is 0!");
             }
         }
 
@@ -454,23 +458,29 @@ std::unique_ptr<AudioStreamPacket> AudioService::PopWakeWordPacket() {
 
 void AudioService::EnableWakeWordDetection(bool enable) {
     if (!wake_word_) {
+        ESP_LOGW(TAG, "Wake word object is NULL, cannot enable detection!");
         return;
     }
 
-    ESP_LOGD(TAG, "%s wake word detection", enable ? "Enabling" : "Disabling");
+    ESP_LOGI(TAG, "%s wake word detection", enable ? "Enabling" : "Disabling");
     if (enable) {
         if (!wake_word_initialized_) {
+            ESP_LOGI(TAG, "Initializing wake word with codec input_sample_rate=%d, models_list=%p", 
+                     codec_->input_sample_rate(), models_list_);
             if (!wake_word_->Initialize(codec_, models_list_)) {
-                ESP_LOGE(TAG, "Failed to initialize wake word");
+                ESP_LOGE(TAG, "Failed to initialize wake word!");
                 return;
             }
             wake_word_initialized_ = true;
+            ESP_LOGI(TAG, "Wake word initialized successfully, feed_size=%d", wake_word_->GetFeedSize());
         }
         wake_word_->Start();
         xEventGroupSetBits(event_group_, AS_EVENT_WAKE_WORD_RUNNING);
+        ESP_LOGI(TAG, "Wake word detection started, event bit set");
     } else {
         wake_word_->Stop();
         xEventGroupClearBits(event_group_, AS_EVENT_WAKE_WORD_RUNNING);
+        ESP_LOGI(TAG, "Wake word detection stopped");
     }
 }
 
@@ -652,23 +662,39 @@ void AudioService::CheckAndUpdateAudioPowerState() {
 void AudioService::SetModelsList(srmodel_list_t* models_list) {
     models_list_ = models_list;
 
+    ESP_LOGI(TAG, "SetModelsList called, models_list: %p", models_list);
+    if (models_list_ != nullptr) {
+        ESP_LOGI(TAG, "Models list count: %d", models_list_->num);
+        for (int i = 0; i < models_list_->num && i < 10; i++) {
+            ESP_LOGI(TAG, "  Model %d: %s", i, models_list_->model_name[i]);
+        }
+    } else {
+        ESP_LOGW(TAG, "Models list is NULL!");
+    }
+
 #if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4
     if (esp_srmodel_filter(models_list_, ESP_MN_PREFIX, NULL) != nullptr) {
+        ESP_LOGI(TAG, "Creating CustomWakeWord (MN prefix found)");
         wake_word_ = std::make_unique<CustomWakeWord>();
     } else if (esp_srmodel_filter(models_list_, ESP_WN_PREFIX, NULL) != nullptr) {
+        ESP_LOGI(TAG, "Creating AfeWakeWord (WN prefix found)");
         wake_word_ = std::make_unique<AfeWakeWord>();
     } else {
+        ESP_LOGW(TAG, "No wake word model found in models list!");
         wake_word_ = nullptr;
     }
 #else
     if (esp_srmodel_filter(models_list_, ESP_WN_PREFIX, NULL) != nullptr) {
+        ESP_LOGI(TAG, "Creating EspWakeWord (WN prefix found)");
         wake_word_ = std::make_unique<EspWakeWord>();
     } else {
+        ESP_LOGW(TAG, "No wake word model found in models list!");
         wake_word_ = nullptr;
     }
 #endif
 
     if (wake_word_) {
+        ESP_LOGI(TAG, "Wake word object created successfully");
         wake_word_->OnWakeWordDetected([this](const std::string& wake_word) {
             if (callbacks_.on_wake_word_detected) {
                 callbacks_.on_wake_word_detected(wake_word);
