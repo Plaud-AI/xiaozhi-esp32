@@ -104,14 +104,18 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
         commands_.push_back({"hi NgSgBcLD", "hi nicebuild", "wake"});
     } else {
         models_ = models_list;
-        // MultiNet Only 模式：始终使用代码中定义的默认唤醒词
-        // 不从 assets 读取，确保行为一致
-        ESP_LOGI(TAG, "Using built-in wake words (ignoring assets config)");
-        language_ = "en";
-        threshold_ = 0.5;
-        duration_ = 5000;
-        commands_.push_back({"hi PLeD", "hi plaud", "wake"});
-        commands_.push_back({"hi NgSgBcLD", "hi nicebuild", "wake"});
+        // 从 assets 读取配置（如果有）
+        ParseWakenetModelConfig();
+        
+        // 如果 assets 没有配置命令，使用默认的
+        if (commands_.empty()) {
+            ESP_LOGI(TAG, "No commands in assets, using default wake words");
+            language_ = "en";
+            threshold_ = 0.5;
+            duration_ = 5000;
+            commands_.push_back({"hi PLeD", "hi plaud", "wake"});
+            commands_.push_back({"hi NgSgBcLD", "hi nicebuild", "wake"});
+        }
     }
 
     if (models_ == nullptr || models_->num == -1) {
@@ -178,7 +182,7 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
                      err->phrases[i]->command_id, 
                      err->phrases[i]->string);
         }
-        // 错误结构会自动清理，不需要手动释放
+        esp_mn_commands_print_error(err);
         return false;
     }
 
@@ -205,22 +209,6 @@ void CustomWakeWord::Stop() {
 void CustomWakeWord::Feed(const std::vector<int16_t>& data) {
     if (multinet_model_data_ == nullptr || !running_) {
         return;
-    }
-
-    // 添加调试日志，证明 Feed 被调用
-    static int feed_count = 0;
-    if (++feed_count % 100 == 0) {
-        int64_t sum = 0;
-        int max_val = 0;
-        for (const auto& sample : data) {
-            sum += abs(sample);
-            if (abs(sample) > max_val) {
-                max_val = abs(sample);
-            }
-        }
-        int avg = data.empty() ? 0 : sum / data.size();
-        ESP_LOGI(TAG, "CustomWakeWord Feed (count %d): avg=%d, max=%d, samples=%d", 
-                 feed_count, avg, max_val, data.size());
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

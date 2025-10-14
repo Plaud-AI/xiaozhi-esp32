@@ -623,7 +623,7 @@ void Application::MainEventLoop() {
     }
 }
 
-void Application::OnWakeWordDetected() {
+void Application::OnWakeWordDetected() {  
     ESP_LOGI(TAG, "OnWakeWordDetected() called, device_state=%d, protocol=%p", 
              device_state_, protocol_.get());
     

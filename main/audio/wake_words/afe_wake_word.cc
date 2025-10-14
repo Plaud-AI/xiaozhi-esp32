@@ -86,7 +86,7 @@ bool AfeWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) {
     if (afe_config == nullptr) {
         ESP_LOGE(TAG, "Failed to init AFE config!");
         return false;
-    }
+    }     
     
     afe_config->aec_init = codec_->input_reference();
     afe_config->aec_mode = AEC_MODE_SR_HIGH_PERF;
