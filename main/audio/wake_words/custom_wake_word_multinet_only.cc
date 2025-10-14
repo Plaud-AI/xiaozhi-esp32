@@ -100,7 +100,12 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
         
         // 添加固定的唤醒词（英文音素格式，与 esp-sr-multinet 项目相同）
         ESP_LOGI(TAG, "Loading built-in wake words (English phoneme format)");
+         commands_.push_back({"hi PLAA1D", "hi plaud", "wake"});
+        commands_.push_back({"hi PLaD", "hi plaud", "wake"});
         commands_.push_back({"hi PLeD", "hi plaud", "wake"});
+        commands_.push_back({"P L AA1 D", "hi plaud", "wake"});
+
+        commands_.push_back({"HH AY1 N AY1 S B IH0 L D", "hi nicebuild", "wake"}); //
         commands_.push_back({"hi NgSgBcLD", "hi nicebuild", "wake"});
     } else {
         models_ = models_list;
@@ -113,8 +118,15 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
             language_ = "en";
             threshold_ = 0.5;
             duration_ = 5000;
-            commands_.push_back({"hi PLeD", "hi plaud", "wake"});
-            commands_.push_back({"hi NgSgBcLD", "hi nicebuild", "wake"});
+            
+        commands_.push_back({"hi PLAA1D", "hi plaud", "wake"});
+        commands_.push_back({"hi PLaD", "hi plaud", "wake"});
+        commands_.push_back({"hi PLeD", "hi plaud", "wake"});
+        commands_.push_back({"P L AA1 D", "hi plaud", "wake"});
+
+        commands_.push_back({"HH AY1 N AY1 S B IH0 L D", "hi nicebuild", "wake"}); //
+        commands_.push_back({"hi NgSgBcLD", "hi nicebuild", "wake"});
+
         }
     }
 

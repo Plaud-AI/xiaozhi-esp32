@@ -100,17 +100,29 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
         
         // 添加固定的唤醒词（英文音素格式，与 esp-sr-multinet 项目相同）
         ESP_LOGI(TAG, "Loading built-in wake words (English phoneme format)");
+
+        commands_.push_back({"hi PLAA1D", "hi plaud", "wake"});
+        commands_.push_back({"hi PLaD", "hi plaud", "wake"});
         commands_.push_back({"hi PLeD", "hi plaud", "wake"});
+        commands_.push_back({"P L AA1 D", "hi plaud", "wake"});
+
+        commands_.push_back({"HH AY1 N AY1 S B IH0 L D", "hi nicebuild", "wake"}); //
         commands_.push_back({"hi NgSgBcLD", "hi nicebuild", "wake"});
+
     } else {
         models_ = models_list;
         // MultiNet Only 模式：始终使用代码中定义的默认唤醒词
         // 不从 assets 读取，确保行为一致
         ESP_LOGI(TAG, "Using built-in wake words (ignoring assets config)");
         language_ = "en";
-        threshold_ = 0.5;
+        threshold_ = 0.3;  // 降低阈值以便测试（更敏感）
         duration_ = 5000;
+        commands_.push_back({"hi PLAA1D", "hi plaud", "wake"});
+        commands_.push_back({"hi PLaD", "hi plaud", "wake"});
         commands_.push_back({"hi PLeD", "hi plaud", "wake"});
+        commands_.push_back({"P L AA1 D", "hi plaud", "wake"});
+
+        commands_.push_back({"HH AY1 N AY1 S B IH0 L D", "hi nicebuild", "wake"}); //
         commands_.push_back({"hi NgSgBcLD", "hi nicebuild", "wake"});
     }
 
@@ -249,6 +261,13 @@ void CustomWakeWord::Feed(const std::vector<int16_t>& data) {
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // 处理检测结果
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    
+    // 调试：每 50 次 Feed 显示一次状态
+    static int state_count = 0;
+    if (++state_count % 50 == 0) {
+        ESP_LOGD(TAG, "MultiNet state: %d (0=detecting, 1=detected, 2=timeout)", mn_state);
+    }
+    
     if (mn_state == ESP_MN_STATE_DETECTING) {
         // 正在检测中，无需处理
         return;
@@ -260,6 +279,15 @@ void CustomWakeWord::Feed(const std::vector<int16_t>& data) {
         if (mn_result != NULL && mn_result->num > 0) {
             // 获取第一个检测到的命令 ID
             int command_id = mn_result->phrase_id[0];
+            
+            // 显示所有命令的概率（调试用）
+            ESP_LOGI(TAG, "✓ MultiNet detection result:");
+            for (int i = 0; i < commands_.size() && i < 10; i++) {
+                ESP_LOGI(TAG, "  Command %d (%s): prob=%.2f %s", 
+                         i, commands_[i].text.c_str(), 
+                         mn_result->prob[i],
+                         (i == command_id) ? "← BEST" : "");
+            }
             
             ESP_LOGI(TAG, "✓ Detected command ID: %d, prob: %.2f", 
                      command_id, mn_result->prob[command_id]);
