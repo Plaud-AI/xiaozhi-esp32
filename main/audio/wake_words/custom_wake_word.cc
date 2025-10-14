@@ -95,11 +95,11 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
     if (models_list == nullptr) {
         models_ = esp_srmodel_init("model");
         language_ = "en";  // 使用英文模型（与参考项目一致）
-        threshold_ = 0.5;  // 检测阈值（0.0-1.0，推荐 0.5）
+        threshold_ = 0.15;  // 进一步降低阈值，最大敏感度测试（推荐 0.5）
         duration_ = 5000;  // 超时时间 5 秒
         
         // 添加固定的唤醒词（英文音素格式，与 esp-sr-multinet 项目相同）
-        ESP_LOGI(TAG, "Loading built-in wake words (English phoneme format)");
+        ESP_LOGI(TAG, "Loading built-in wake words (English phoneme format), threshold=%.2f", threshold_);
 
         commands_.push_back({"hi PLAA1D", "hi plaud", "wake"});
         commands_.push_back({"hi PLaD", "hi plaud", "wake"});
@@ -115,7 +115,7 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
         // 不从 assets 读取，确保行为一致
         ESP_LOGI(TAG, "Using built-in wake words (ignoring assets config)");
         language_ = "en";
-        threshold_ = 0.3;  // 降低阈值以便测试（更敏感）
+        threshold_ = 0.15;  // 进一步降低阈值，最大敏感度测试
         duration_ = 5000;
         commands_.push_back({"hi PLAA1D", "hi plaud", "wake"});
         commands_.push_back({"hi PLaD", "hi plaud", "wake"});
