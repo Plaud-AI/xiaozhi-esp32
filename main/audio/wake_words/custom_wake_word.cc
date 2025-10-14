@@ -332,12 +332,38 @@ void CustomWakeWord::EncodeWakeWordData() {
     xTaskCreateStatic([](void* arg) {
         auto this_ = (CustomWakeWord*)arg;
         OpusEncoderWrapper encoder(16000, 1, 60);
+        
+        // Opus 编码器期望 960 samples (60ms @ 16kHz)
+        // CustomWakeWord 每个块是 512 samples (32ms @ 16kHz)
+        // 需要合并多个块来满足 Opus 的要求
+        const size_t opus_frame_size = 960; // 60ms @ 16kHz
+        std::vector<int16_t> buffer;
+        
         for (auto& pcm : this_->wake_word_pcm_) {
+            // 将数据添加到缓冲区
+            buffer.insert(buffer.end(), pcm.begin(), pcm.end());
+            
+            // 当缓冲区有足够数据时，编码一帧
+            while (buffer.size() >= opus_frame_size) {
+                std::vector<int16_t> frame(buffer.begin(), buffer.begin() + opus_frame_size);
+                buffer.erase(buffer.begin(), buffer.begin() + opus_frame_size);
+                
+                std::vector<uint8_t> opus;
+                if (encoder.Encode(std::move(frame), opus)) {
+                    this_->wake_word_opus_.push_back(std::move(opus));
+                }
+            }
+        }
+        
+        // 如果还有剩余数据（不足一帧），补零后编码
+        if (!buffer.empty()) {
+            buffer.resize(opus_frame_size, 0); // 补零到正确大小
             std::vector<uint8_t> opus;
-            if (encoder.Encode(std::move(pcm), opus)) {
+            if (encoder.Encode(std::move(buffer), opus)) {
                 this_->wake_word_opus_.push_back(std::move(opus));
             }
         }
+        
         vTaskDelete(NULL);
     }, "encode_wake_word", stack_size, this, 3, wake_word_encode_task_stack_, wake_word_encode_task_buffer_);
 }
