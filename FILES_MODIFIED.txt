@@ -1,0 +1,170 @@
+MultiNet Only 改造 - 文件修改清单
+=====================================
+
+改造日期: 2025-10-10
+参考工程: /Users/xionghao/Documents/plaud/GitHub/esp-sr-multinet
+小智项目: /Users/xionghao/Documents/plaud/GitHub/xiaozhi-esp32
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✅ 已修改的文件:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. main/audio/wake_words/custom_wake_word.cc
+   状态: ✅ 已修改
+   说明: 核心实现文件，改造为 MultiNet Only 模式
+   变更:
+     • 禁用 WakeNet 依赖
+     • 直接使用 MultiNet 检测
+     • 使用 esp_mn_commands_add() 添加唤醒词
+     • 默认唤醒词: "hi plaud", "hi nicebuild"
+     • 音素格式: "hi PLeD", "hi NgSgBcLD"
+   备份: custom_wake_word.cc.backup
+
+2. sdkconfig
+   状态: ✅ 已修改
+   说明: 项目配置文件，与参考工程完全一致
+   变更:
+     • CONFIG_USE_AFE_WAKE_WORD=y → is not set
+     • CONFIG_USE_CUSTOM_WAKE_WORD=y (新增)
+     • CONFIG_SR_WN_WN9_NIHAOXIAOZHI_TTS → CONFIG_SR_WN_WN9_HILEXIN
+     • CONFIG_SR_MN_EN_NONE → CONFIG_SR_MN_EN_MULTINET5_SINGLE_RECOGNITION_QUANT8
+     • CONFIG_SR_MN_CN_NONE=y (新增)
+   备份: sdkconfig.backup_before_multinet
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✅ 备份文件:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. main/audio/wake_words/custom_wake_word.cc.backup
+   说明: 原 custom_wake_word.cc 的备份
+   用途: 如需回滚，可使用此文件恢复
+
+2. sdkconfig.backup_before_multinet
+   说明: 改造前 sdkconfig 的备份
+   用途: 如需回滚，可使用此文件恢复
+
+3. main/audio/wake_words/custom_wake_word_multinet_only.cc
+   说明: 新实现的源文件（已复制到 custom_wake_word.cc）
+   用途: 参考和对比
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✅ 新增文档 (6 份):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. START_HERE_MULTINET.md ⭐
+   说明: 快速开始指南（推荐首先阅读）
+   内容:
+     • 改造内容总结
+     • 3 步快速开始（配置、编译、测试）
+     • 默认唤醒词
+     • 自定义选项
+     • 故障排除
+     • 回滚方案
+
+2. MULTINET_QUICK_START.md
+   说明: 详细的快速开始指南
+   内容:
+     • 改造完成确认
+     • 详细配置步骤（menuconfig 和手动）
+     • 编译和烧录流程
+     • 测试步骤和预期日志
+     • 与参考项目对比
+     • 自定义唤醒词（中英文）
+     • 调优参数
+     • 故障排除
+
+3. MULTINET_ONLY_MIGRATION.md
+   说明: 详细的改造方案和代码说明
+   内容:
+     • 改造目标和核心区别
+     • 详细改造步骤（代码 + 配置）
+     • 代码对比（参考工程 vs 小智项目）
+     • 配置说明（sdkconfig）
+     • Kconfig 修改（可选）
+     • 测试步骤
+     • 常见问题
+     • 参考资料
+
+4. CHANGES_MULTINET.md
+   说明: 文件变更总结
+   内容:
+     • 文件变更清单
+     • 核心改动对比（改动前 vs 改动后）
+     • 关键特性
+     • 与参考项目对比表
+     • 下一步操作
+     • 自定义配置
+     • 测试清单
+     • 常见问题
+
+5. CONFIG_COMPARISON.md
+   说明: 配置对比（参考工程 vs 小智项目）
+   内容:
+     • 配置对比表（Wake Word、WakeNet、MultiNet）
+     • 关键变更总结
+     • 验证配置命令
+     • 模型文件路径
+     • 下一步操作
+     • 配置说明
+     • 一致性检查清单
+
+6. MIGRATION_COMPLETE.md ✅
+   说明: 改造完成报告
+   内容:
+     • 改造内容总结（代码、配置、文档）
+     • 与参考工程详细对比
+     • 下一步操作（编译、烧录、测试）
+     • 测试检查清单
+     • 自定义选项（添加唤醒词、切换中文、调参）
+     • 故障排除
+     • 回滚方案
+     • 相关文档链接
+     • 改造状态总结
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✅ 辅助文件:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. sdkconfig_multinet_reference.patch
+   说明: 配置补丁文件
+   用途: 记录了所有需要修改的配置项，可作为参考
+
+2. FILES_MODIFIED.txt (本文件)
+   说明: 文件修改清单
+   用途: 快速查看所有修改的文件
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 统计:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+修改的文件:  2 个
+备份的文件:  3 个
+新增文档:    6 个
+辅助文件:    2 个
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+总计:       13 个文件
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎯 核心改动:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. 代码实现: MultiNet Only 模式（禁用 WakeNet）
+2. 模型配置: MultiNet5 英文单识别量化版本
+3. 唤醒词:   "hi plaud", "hi nicebuild"
+4. 音素格式: "hi PLeD", "hi NgSgBcLD"
+5. 一致性:   与参考工程 100% 一致
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🚀 下一步:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. 阅读文档: cat START_HERE_MULTINET.md
+2. 编译固件: idf.py fullclean && idf.py build
+3. 烧录测试: idf.py flash monitor
+4. 说出唤醒: "Hi Plaud" 或 "Hi Nicebuild"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+改造完成！🎉
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+

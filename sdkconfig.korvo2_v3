@@ -1,0 +1,9 @@
+# ESP32-S3-Korvo-2 V3.0 板子配置
+# 这是正确的配置，如果你的 sdkconfig 不对，可以参考这个文件
+
+CONFIG_BOARD_TYPE_ESP32S3_KORVO2_V3=y
+
+# 确保其他板子类型都未选中
+# CONFIG_BOARD_TYPE_BREAD_COMPACT_WIFI is not set
+# CONFIG_BOARD_TYPE_其他板子 is not set
+
