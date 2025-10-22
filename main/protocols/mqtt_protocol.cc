@@ -63,8 +63,11 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
     int keepalive_interval = settings.GetInt("keepalive", 240);
     publish_topic_ = settings.GetString("publish_topic");
 
+    ESP_LOGI(TAG, "MQTT configuration - Endpoint: %s, Client ID: %s, Topic: %s", 
+             endpoint.c_str(), client_id.c_str(), publish_topic_.c_str());
+
     if (endpoint.empty()) {
-        ESP_LOGW(TAG, "MQTT endpoint is not specified");
+        ESP_LOGW(TAG, "MQTT endpoint is not specified, device will use WebSocket protocol if configured by server");
         if (report_error) {
             SetError(Lang::Strings::SERVER_NOT_FOUND);
         }

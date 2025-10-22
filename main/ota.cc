@@ -41,11 +41,9 @@ Ota::~Ota() {
 }
 
 std::string Ota::GetCheckVersionUrl() {
-    Settings settings("wifi", false);
-    std::string url = settings.GetString("ota_url");
-    if (url.empty()) {
-        url = CONFIG_OTA_URL;
-    }
+    // 强制使用新的配置，忽略 NVS 中的旧配置
+    std::string url = CONFIG_OTA_URL;
+    ESP_LOGI(TAG, "Using OTA URL (forced): %s", url.c_str());
     return url;
 }
 
