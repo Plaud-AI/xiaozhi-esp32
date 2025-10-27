@@ -1,0 +1,25 @@
+# Build artifacts
+*/build/
+*/build_*/
+*/.ninja_deps
+*/.ninja_log
+
+# IDE files
+*/.vscode/
+*/.idea/
+*.swp
+*.swo
+
+# Python cache
+*/__pycache__/
+*/*.pyc
+
+# Test files (if any)
+*/test/
+*/tests/
+*/test_app/
+
+# Logs
+*/log/
+*.log
+

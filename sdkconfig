@@ -724,6 +724,14 @@ CONFIG_USE_AUDIO_PROCESSOR=y
 # end of Xiaozhi Assistant
 
 #
+# ESP-NN
+#
+# CONFIG_NN_ANSI_C is not set
+CONFIG_NN_OPTIMIZED=y
+CONFIG_NN_OPTIMIZATIONS=1
+# end of ESP-NN
+
+#
 # ESP Speech Recognition
 #
 CONFIG_MODEL_IN_FLASH=y

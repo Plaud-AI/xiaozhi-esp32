@@ -1,5 +1,7 @@
 tmp/
-components/
+# 注意：components/ 目录现在包含重要的本地组件（esp-tflite-micro, esp-nn）
+# 不再全局忽略，这些组件需要被 git 追踪
+# 如果将来有临时组件需要忽略，请在下面添加具体路径
 managed_components/
 build/
 .vscode/
@@ -17,3 +19,10 @@ main/mmap_generate_emoji.h
 *.bin
 mmap_generate_*.h
 .clangd
+
+# 忽略 components 子目录中的构建产物和临时文件
+components/**/build/
+components/**/.vscode/
+components/**/.git/
+components/**/test_app/
+components/**/tests/
