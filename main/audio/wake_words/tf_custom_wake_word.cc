@@ -1,21 +1,18 @@
 #include "tf_custom_wake_word.h"
 #include "audio_service.h"
 #include "system_info.h"
+#include "wake_word_model_data.h"
 
 #include <esp_log.h>
 #include <esp_timer.h>
 #include <esp_heap_caps.h>
+#include <opus_encoder.h>
 
 // TFLite Micro includes
 #include "tensorflow/lite/micro/micro_interpreter.h"
 #include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
 #include "tensorflow/lite/micro/micro_log.h"
 #include "tensorflow/lite/schema/schema_generated.h"
-
-// Wake word model data (需要提供实际的模型数据)
-// 这里使用一个占位符，实际使用时需要替换为真实的 TFLite 模型
-extern const unsigned char g_wake_word_model_data[];
-extern const unsigned int g_wake_word_model_data_len;
 
 #define TAG "TFCustomWakeWord"
 
@@ -303,6 +300,17 @@ void TFCustomWakeWord::StoreWakeWordData(const std::vector<int16_t>& data) {
 void TFCustomWakeWord::EncodeWakeWordData() {
     ESP_LOGI(TAG, "Wake word encode task started");
     
+    // 创建 Opus 编码器（16kHz, 单声道, 60ms 帧）
+    OpusEncoderWrapper encoder(16000, 1, 60);
+    encoder.SetComplexity(0);  // 最快速度
+    
+    // Opus 编码器期望 960 samples (60ms @ 16kHz)
+    // 我们的音频块是 160 samples (10ms @ 16kHz)
+    // 需要合并 6 个块来满足 Opus 的要求
+    const size_t opus_frame_size = 960;  // 60ms @ 16kHz
+    std::vector<int16_t> buffer;
+    buffer.reserve(opus_frame_size);
+    
     while (true) {
         std::unique_lock<std::mutex> lock(wake_word_mutex_);
         wake_word_cv_.wait(lock, [this] { 
@@ -321,15 +329,21 @@ void TFCustomWakeWord::EncodeWakeWordData() {
         wake_word_pcm_.pop_front();
         lock.unlock();
         
-        // 编码为 Opus
-        if (codec_ != nullptr) {
+        // 累积音频数据直到达到 Opus 帧大小
+        buffer.insert(buffer.end(), pcm.begin(), pcm.end());
+        
+        // 当缓冲区足够大时，编码为 Opus
+        while (buffer.size() >= opus_frame_size) {
+            std::vector<int16_t> frame(buffer.begin(), buffer.begin() + opus_frame_size);
+            buffer.erase(buffer.begin(), buffer.begin() + opus_frame_size);
+            
             std::vector<uint8_t> opus;
-            if (codec_->Encode(pcm, opus)) {
+            if (encoder.Encode(std::move(frame), opus)) {
                 lock.lock();
                 wake_word_opus_.push_back(std::move(opus));
                 
-                // 限制 Opus 缓冲区大小
-                while (wake_word_opus_.size() > 300) {
+                // 限制 Opus 缓冲区大小（保留最近 3 秒的数据）
+                while (wake_word_opus_.size() > 50) {  // 50 * 60ms = 3s
                     wake_word_opus_.pop_front();
                 }
                 lock.unlock();

@@ -34,5 +34,5 @@ alignas(8) const unsigned char g_wake_word_model_data[] = {
   0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
 
-unsigned int g_wake_word_model_data_len = sizeof(g_wake_word_model_data);
+const unsigned int g_wake_word_model_data_len = sizeof(g_wake_word_model_data);
 
