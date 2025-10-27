@@ -530,6 +530,12 @@ else()
     list(APPEND SOURCES "audio/wake_words/esp_wake_word.cc")
 endif()
 
+# Add TFLite-based feature extraction sources (optional, for future wake word detection)
+list(APPEND SOURCES "audio/wake_words/ringbuf.c")
+list(APPEND SOURCES "audio/wake_words/audio_provider.cc")
+list(APPEND SOURCES "audio/wake_words/micro_features_generator.cc")
+list(APPEND SOURCES "audio/wake_words/feature_provider.cc")
+
 # Select language directory according to Kconfig
 if(CONFIG_LANGUAGE_ZH_CN)
     set(LANG_DIR "zh-CN")
