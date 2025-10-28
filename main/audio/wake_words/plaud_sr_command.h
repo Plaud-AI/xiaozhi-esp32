@@ -23,6 +23,15 @@ class MicroMutableOpResolver;
 namespace xiaozhi {
 
 /**
+ * @brief Speech recognition state (similar to ESP-SR MultiNet)
+ */
+enum class SRState {
+    DETECTING = 0,   // Still detecting, accumulating audio
+    DETECTED = 1,    // Command detected with high confidence
+    TIMEOUT = 2      // Detection timeout, need to reset
+};
+
+/**
  * @brief Portable Speech Recognition Command Engine (platform-independent)
  * 
  * Features:
@@ -71,6 +80,8 @@ public:
         int frame_shift;                 // Frame shift in samples (default 160, 10ms @ 16kHz)
         int batch_size;                  // Number of frames per inference (default 80)
         float default_threshold;         // Default recognition threshold (default 0.7)
+        int detection_frames;            // Consecutive frames needed for detection (default 3)
+        int timeout_ms;                  // Detection timeout in milliseconds (default 5000)
         const uint8_t* model_data;       // TFLite model data pointer (required)
         size_t model_size;               // Model size in bytes
         size_t tensor_arena_size;        // Tensor arena size (default 100KB)
@@ -79,6 +90,7 @@ public:
             : num_bins(40), sample_rate(16000), 
               frame_length(400), frame_shift(160),
               batch_size(80), default_threshold(0.7f),
+              detection_frames(3), timeout_ms(5000),
               model_data(nullptr), model_size(0), 
               tensor_arena_size(100 * 1024) {}
     };
@@ -154,33 +166,34 @@ public:
     // ==================== Audio Processing (Core Interface) ====================
     
     /**
-     * @brief Process audio data and return recognition result
+     * @brief Process audio data and return recognition state
      * 
      * This is the core interface. It will:
      * 1. Accumulate audio into internal buffer
      * 2. Extract fbank features when enough samples are accumulated
      * 3. Perform TFLite inference when batch_size frames are ready
      * 4. Match commands and apply thresholds
-     * 5. Return true with result if command detected
+     * 5. Return state (DETECTING/DETECTED/TIMEOUT)
      * 
      * @param audio_data Audio data (int16_t, mono)
      * @param samples Number of samples
-     * @param[out] result Recognition result (if detected)
-     * @return true if command detected, false otherwise
+     * @param[out] result Recognition result (valid only if state == DETECTED)
+     * @return SRState (DETECTING/DETECTED/TIMEOUT)
      * 
      * @note This function is synchronous and may take 50-200ms when inference occurs
      * @note Call this repeatedly with audio chunks (e.g., 160 samples / 10ms)
+     * @note When DETECTED or TIMEOUT is returned, caller should call Reset() to start new session
      */
-    bool Process(const int16_t* audio_data, size_t samples, Result& result);
+    SRState Process(const int16_t* audio_data, size_t samples, Result& result);
     
     /**
      * @brief Process audio data (vector version)
      * 
      * @param audio_data Audio data vector
-     * @param[out] result Recognition result
-     * @return true if command detected, false otherwise
+     * @param[out] result Recognition result (valid only if state == DETECTED)
+     * @return SRState (DETECTING/DETECTED/TIMEOUT)
      */
-    bool Process(const std::vector<int16_t>& audio_data, Result& result);
+    SRState Process(const std::vector<int16_t>& audio_data, Result& result);
     
     /**
      * @brief Get recommended audio chunk size
@@ -253,15 +266,22 @@ private:
     bool RunInference(Result& result);
     
     /**
-     * @brief Match command from output probabilities
+     * @brief Match command from output probabilities with state tracking
      * 
      * @param probs Output probabilities [num_outputs, num_classes]
      * @param num_outputs Number of output frames
      * @param num_classes Number of classes
      * @param[out] result Recognition result
-     * @return true if command detected, false otherwise
+     * @return SRState (DETECTING/DETECTED/TIMEOUT)
      */
-    bool MatchCommand(const float* probs, int num_outputs, int num_classes, Result& result);
+    SRState MatchCommand(const float* probs, int num_outputs, int num_classes, Result& result);
+    
+    /**
+     * @brief Check if detection has timed out
+     * 
+     * @return true if timed out, false otherwise
+     */
+    bool CheckTimeout();
     
     /**
      * @brief Validate threshold
@@ -297,6 +317,11 @@ private:
     
     // Command management
     std::map<int, Command> commands_;          // Command ID -> Command
+    
+    // State tracking
+    int last_detected_command_id_;             // Last detected command ID
+    int detection_frame_count_;                // Consecutive high-confidence frames
+    int64_t detection_start_time_us_;          // Detection start time (microseconds)
 };
 
 }  // namespace xiaozhi

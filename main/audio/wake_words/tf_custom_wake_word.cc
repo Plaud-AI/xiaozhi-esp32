@@ -71,16 +71,39 @@ void TFCustomWakeWord::Feed(const std::vector<int16_t>& data) {
         return;
     }
     
-    // 将音频输入到推理引擎
-    xiaozhi::PlaudSRCommand::Result result;
-    
-    if (sr_engine_.Process(data, result)) {
-        // 检测到指令！
-        OnCommandDetected(result);
-    }
-    
     // 存储原始音频用于编码（如果需要上传唤醒词音频）
     StoreWakeWordData(data);
+    
+    // 将音频输入到推理引擎（使用状态机 API）
+    xiaozhi::PlaudSRCommand::Result result;
+    xiaozhi::SRState state = sr_engine_.Process(data, result);
+    
+    // 调试：每 50 次 Feed 显示一次状态
+    static int state_count = 0;
+    if (++state_count % 50 == 0) {
+        ESP_LOGD(TAG, "SR state: %d (0=detecting, 1=detected, 2=timeout)", static_cast<int>(state));
+    }
+    
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 处理检测状态（类似 MultiNet 的状态机）
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    
+    if (state == xiaozhi::SRState::DETECTING) {
+        // 正在检测中，无需处理
+        return;
+    } 
+    else if (state == xiaozhi::SRState::DETECTED) {
+        // ✓ 检测到命令！
+        OnCommandDetected(result);
+        
+        // 重置引擎状态以准备下一次检测
+        sr_engine_.Reset();
+    } 
+    else if (state == xiaozhi::SRState::TIMEOUT) {
+        // 超时，重置引擎状态
+        ESP_LOGD(TAG, "Detection timeout, resetting engine");
+        sr_engine_.Reset();
+    }
 }
 
 void TFCustomWakeWord::OnCommandDetected(const xiaozhi::PlaudSRCommand::Result& result) {
