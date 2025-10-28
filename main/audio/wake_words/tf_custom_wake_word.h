@@ -11,7 +11,7 @@
 #include <condition_variable>
 #include <atomic>
 
-#include "audio_codec.h"
+#include "audio_codec.h"  
 #include "wake_word.h"
 #include "plaud_sr_command.h"
 
