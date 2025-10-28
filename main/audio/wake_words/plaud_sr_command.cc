@@ -7,6 +7,7 @@
 #include <cstring>
 #include <esp_log.h>
 #include <esp_heap_caps.h>
+#include <esp_timer.h>
 
 // TFLite Micro includes
 #include "tensorflow/lite/micro/micro_interpreter.h"

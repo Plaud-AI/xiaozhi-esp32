@@ -65,9 +65,10 @@ public:
         int command_id;                  // Detected command ID (-1 = no detection)
         std::string text;                // Command text
         float confidence;                // Confidence [0.0, 1.0]
+        uint32_t timestamp_ms;           // Detection timestamp in milliseconds
         bool is_valid;                   // Valid result flag
         
-        Result() : command_id(-1), confidence(0.0f), is_valid(false) {}
+        Result() : command_id(-1), confidence(0.0f), timestamp_ms(0), is_valid(false) {}
     };
     
     /**
