@@ -33,14 +33,16 @@ bool TFCustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list
     
     ESP_LOGI(TAG, "Initializing TFCustomWakeWord (TFLite + PlaudSRCommand)");
     
-    // 1. 配置 PlaudSRCommand
+    // 1. 配置 PlaudSRCommand（生产阶段参数）
     plaud::PlaudSRCommand::Config config;
     config.num_bins = 40;           // 40-dim fbank features
     config.sample_rate = 16000;     // 16kHz sample rate
     config.frame_length = 400;      // 25ms frame length (400 samples @ 16kHz)
     config.frame_shift = 160;       // 10ms frame shift (160 samples @ 16kHz)
-    config.batch_size = 80;         // Process 80 frames (800ms) per inference
+    config.batch_size = 40;         // Process 40 frames (400ms) per inference [生产配置]
     config.default_threshold = 0.7f; // 70% confidence threshold
+    config.detection_frames = 2;    // 连续 2 帧确认 (总延迟 800ms) [生产配置]
+    config.timeout_ms = 5000;       // 5 秒检测超时
     config.model_data = g_wake_word_model_data;
     config.model_size = g_wake_word_model_data_len;
     config.tensor_arena_size = 100 * 1024;  // 100KB tensor arena
