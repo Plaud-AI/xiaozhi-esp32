@@ -11,7 +11,7 @@
 #define M_2PI 6.283185307179586476925286766559005
 #endif
 
-namespace xiaozhi {
+namespace plaud {
 
 // Fast Fourier Transform
 
@@ -21,7 +21,7 @@ void make_bitrev(int n, int* bitrev);
 
 int fft(const int* bitrev, const float* sintbl, float* x, float* y, int n);
 
-}  // namespace xiaozhi
+}  // namespace plaud
 
 #endif  // AUDIO_WAKE_WORDS_FFT_H_
 

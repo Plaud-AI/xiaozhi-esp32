@@ -12,7 +12,7 @@
 
 #include "fft.h"
 
-namespace xiaozhi {
+namespace plaud {
 
 // This code is based on kaldi Fbank implentation
 class Fbank {
@@ -195,7 +195,7 @@ class Fbank {
   std::vector<float> sintbl_;
 };
 
-}  // namespace xiaozhi
+}  // namespace plaud
 
 #endif  // AUDIO_WAKE_WORDS_FBANK_H_
 
