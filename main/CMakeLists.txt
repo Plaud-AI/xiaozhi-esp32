@@ -527,16 +527,13 @@ if(CONFIG_IDF_TARGET_ESP32S3 OR CONFIG_IDF_TARGET_ESP32P4)
     list(APPEND SOURCES "audio/wake_words/afe_wake_word.cc")
     list(APPEND SOURCES "audio/wake_words/custom_wake_word.cc")
     list(APPEND SOURCES "audio/wake_words/tf_custom_wake_word.cc")
+    # PlaudSRCommand core engine and dependencies
+    list(APPEND SOURCES "audio/wake_words/plaud_sr_command.cc")
+    list(APPEND SOURCES "audio/wake_words/fft.cc")
+    list(APPEND SOURCES "audio/wake_words/wake_word_model_data.cc")
 else()
     list(APPEND SOURCES "audio/wake_words/esp_wake_word.cc")
 endif()
-
-# Add TFLite-based feature extraction sources (optional, for future wake word detection)
-list(APPEND SOURCES "audio/wake_words/ringbuf.c")
-list(APPEND SOURCES "audio/wake_words/audio_provider.cc")
-list(APPEND SOURCES "audio/wake_words/micro_features_generator.cc")
-list(APPEND SOURCES "audio/wake_words/feature_provider.cc")
-list(APPEND SOURCES "audio/wake_words/wake_word_model_data.cc")
 
 # Select language directory according to Kconfig
 if(CONFIG_LANGUAGE_ZH_CN)

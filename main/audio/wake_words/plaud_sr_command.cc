@@ -1,0 +1,443 @@
+// Copyright (c) 2025 Xiaozhi ESP32 Project
+// PlaudSRCommand: Portable Speech Recognition Command Engine
+
+#include "plaud_sr_command.h"
+
+#include <algorithm>
+#include <cstring>
+#include <esp_log.h>
+#include <esp_heap_caps.h>
+
+// TFLite Micro includes
+#include "tensorflow/lite/micro/micro_interpreter.h"
+#include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
+#include "tensorflow/lite/micro/micro_log.h"
+#include "tensorflow/lite/schema/schema_generated.h"
+
+#define TAG "PlaudSRCommand"
+
+namespace xiaozhi {
+
+PlaudSRCommand::PlaudSRCommand()
+    : config_(),
+      initialized_(false),
+      model_(nullptr),
+      interpreter_(nullptr),
+      tensor_arena_(nullptr),
+      fbank_(nullptr),
+      feature_offset_(0),
+      cache_dim_(0),
+      cache_len_(0) {
+}
+
+PlaudSRCommand::~PlaudSRCommand() {
+    UnloadModel();
+    if (fbank_ != nullptr) {
+        delete fbank_;
+        fbank_ = nullptr;
+    }
+}
+
+bool PlaudSRCommand::Initialize(const Config& config) {
+    if (initialized_) {
+        ESP_LOGW(TAG, "Already initialized");
+        return true;
+    }
+    
+    if (config.model_data == nullptr || config.model_size == 0) {
+        ESP_LOGE(TAG, "Invalid model data");
+        return false;
+    }
+    
+    config_ = config;
+    
+    ESP_LOGI(TAG, "Initializing PlaudSRCommand:");
+    ESP_LOGI(TAG, "  num_bins=%d, sample_rate=%d", config_.num_bins, config_.sample_rate);
+    ESP_LOGI(TAG, "  frame_length=%d, frame_shift=%d", config_.frame_length, config_.frame_shift);
+    ESP_LOGI(TAG, "  batch_size=%d, default_threshold=%.2f", config_.batch_size, config_.default_threshold);
+    
+    // Create fbank extractor
+    fbank_ = new Fbank(config_.num_bins, config_.sample_rate, 
+                       config_.frame_length, config_.frame_shift);
+    if (fbank_ == nullptr) {
+        ESP_LOGE(TAG, "Failed to create Fbank");
+        return false;
+    }
+    
+    // Load TFLite model
+    if (!LoadModel()) {
+        ESP_LOGE(TAG, "Failed to load TFLite model");
+        delete fbank_;
+        fbank_ = nullptr;
+        return false;
+    }
+    
+    initialized_ = true;
+    ESP_LOGI(TAG, "PlaudSRCommand initialized successfully");
+    
+    return true;
+}
+
+void PlaudSRCommand::Reset() {
+    audio_buffer_.clear();
+    features_.clear();
+    feature_offset_ = 0;
+    
+    // Reset cache
+    if (!cache_.empty()) {
+        std::fill(cache_.begin(), cache_.end(), 0.0f);
+    }
+    
+    ESP_LOGI(TAG, "PlaudSRCommand reset");
+}
+
+bool PlaudSRCommand::AddCommand(const Command& command) {
+    if (commands_.find(command.id) != commands_.end()) {
+        ESP_LOGW(TAG, "Command ID %d already exists", command.id);
+        return false;
+    }
+    
+    if (command.threshold != 0.0f && !ValidateThreshold(command.threshold)) {
+        ESP_LOGE(TAG, "Invalid threshold %.2f for command %d", command.threshold, command.id);
+        return false;
+    }
+    
+    commands_[command.id] = command;
+    ESP_LOGI(TAG, "Added command: ID=%d, text='%s', threshold=%.2f", 
+             command.id, command.text.c_str(), command.threshold);
+    
+    return true;
+}
+
+bool PlaudSRCommand::RemoveCommand(int command_id) {
+    auto it = commands_.find(command_id);
+    if (it == commands_.end()) {
+        ESP_LOGW(TAG, "Command ID %d not found", command_id);
+        return false;
+    }
+    
+    commands_.erase(it);
+    ESP_LOGI(TAG, "Removed command ID=%d", command_id);
+    
+    return true;
+}
+
+void PlaudSRCommand::ClearCommands() {
+    commands_.clear();
+    ESP_LOGI(TAG, "Cleared all commands");
+}
+
+bool PlaudSRCommand::Process(const std::vector<int16_t>& audio_data, Result& result) {
+    return Process(audio_data.data(), audio_data.size(), result);
+}
+
+bool PlaudSRCommand::Process(const int16_t* audio_data, size_t samples, Result& result) {
+    if (!initialized_) {
+        ESP_LOGE(TAG, "Not initialized");
+        return false;
+    }
+    
+    // Convert int16 to float and accumulate
+    for (size_t i = 0; i < samples; ++i) {
+        audio_buffer_.push_back(static_cast<float>(audio_data[i]));
+    }
+    
+    // Extract features if we have enough samples
+    ExtractFeatures();
+    
+    // Run inference if we have enough frames
+    if (features_.size() >= config_.batch_size) {
+        if (RunInference(result)) {
+            // Command detected!
+            return true;
+        }
+    }
+    
+    return false;
+}
+
+bool PlaudSRCommand::SetDefaultThreshold(float threshold) {
+    if (!ValidateThreshold(threshold)) {
+        ESP_LOGE(TAG, "Invalid threshold %.2f", threshold);
+        return false;
+    }
+    
+    config_.default_threshold = threshold;
+    ESP_LOGI(TAG, "Set default threshold to %.2f", threshold);
+    
+    return true;
+}
+
+bool PlaudSRCommand::SetCommandThreshold(int command_id, float threshold) {
+    auto it = commands_.find(command_id);
+    if (it == commands_.end()) {
+        ESP_LOGW(TAG, "Command ID %d not found", command_id);
+        return false;
+    }
+    
+    if (threshold != 0.0f && !ValidateThreshold(threshold)) {
+        ESP_LOGE(TAG, "Invalid threshold %.2f", threshold);
+        return false;
+    }
+    
+    it->second.threshold = threshold;
+    ESP_LOGI(TAG, "Set threshold %.2f for command ID=%d", threshold, command_id);
+    
+    return true;
+}
+
+bool PlaudSRCommand::LoadModel() {
+    // Map the model
+    model_ = tflite::GetModel(config_.model_data);
+    if (model_->version() != TFLITE_SCHEMA_VERSION) {
+        ESP_LOGE(TAG, "Model schema version %d != supported version %d",
+                 model_->version(), TFLITE_SCHEMA_VERSION);
+        return false;
+    }
+    
+    ESP_LOGI(TAG, "Model schema version: %d", model_->version());
+    
+    // Allocate tensor arena
+    tensor_arena_ = (uint8_t*)heap_caps_malloc(config_.tensor_arena_size, 
+                                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (tensor_arena_ == nullptr) {
+        ESP_LOGE(TAG, "Failed to allocate tensor arena (%zu bytes)", config_.tensor_arena_size);
+        return false;
+    }
+    
+    ESP_LOGI(TAG, "Allocated tensor arena: %zu bytes", config_.tensor_arena_size);
+    
+    // Create op resolver - add common ops for keyword spotting
+    static tflite::MicroMutableOpResolver<10> resolver;
+    resolver.AddFullyConnected();
+    resolver.AddSoftmax();
+    resolver.AddRelu();
+    resolver.AddQuantize();
+    resolver.AddDequantize();
+    resolver.AddReshape();
+    resolver.AddConv2D();
+    resolver.AddDepthwiseConv2D();
+    resolver.AddAveragePool2D();
+    resolver.AddMaxPool2D();
+    
+    // Create interpreter
+    static tflite::MicroInterpreter static_interpreter(
+        model_, resolver, tensor_arena_, config_.tensor_arena_size);
+    interpreter_ = &static_interpreter;
+    
+    // Allocate tensors
+    TfLiteStatus allocate_status = interpreter_->AllocateTensors();
+    if (allocate_status != kTfLiteOk) {
+        ESP_LOGE(TAG, "AllocateTensors() failed");
+        return false;
+    }
+    
+    ESP_LOGI(TAG, "Tensors allocated successfully");
+    ESP_LOGI(TAG, "Arena used: %zu bytes", interpreter_->arena_used_bytes());
+    
+    // Get input tensor info
+    TfLiteTensor* input = interpreter_->input(0);
+    ESP_LOGI(TAG, "Input tensor: dims=%d, shape=[%d, %d, %d]",
+             input->dims->size,
+             input->dims->data[0],
+             input->dims->size > 1 ? input->dims->data[1] : 0,
+             input->dims->size > 2 ? input->dims->data[2] : 0);
+    
+    // Get output tensor info
+    TfLiteTensor* output = interpreter_->output(0);
+    ESP_LOGI(TAG, "Output tensor: dims=%d, shape=[%d, %d, %d]",
+             output->dims->size,
+             output->dims->data[0],
+             output->dims->size > 1 ? output->dims->data[1] : 0,
+             output->dims->size > 2 ? output->dims->data[2] : 0);
+    
+    // Initialize cache (check if model has cache input/output)
+    // For simplicity, we'll use fixed cache dimensions
+    // In a real streaming model, these would come from model metadata
+    cache_dim_ = 128;   // Default cache dimension
+    cache_len_ = 4;     // Default cache length
+    cache_.resize(cache_dim_ * cache_len_, 0.0f);
+    
+    ESP_LOGI(TAG, "Initialized cache: dim=%d, len=%d", cache_dim_, cache_len_);
+    
+    return true;
+}
+
+void PlaudSRCommand::UnloadModel() {
+    // Note: interpreter_ points to static memory, no delete needed
+    interpreter_ = nullptr;
+    model_ = nullptr;
+    
+    if (tensor_arena_ != nullptr) {
+        heap_caps_free(tensor_arena_);
+        tensor_arena_ = nullptr;
+    }
+}
+
+int PlaudSRCommand::ExtractFeatures() {
+    // Check if we have enough samples for at least one frame
+    int min_samples_needed = config_.frame_length;
+    if (audio_buffer_.size() < min_samples_needed) {
+        return 0;
+    }
+    
+    // Extract features
+    std::vector<std::vector<float>> new_feats;
+    int num_frames = fbank_->Compute(audio_buffer_, &new_feats);
+    
+    if (num_frames > 0) {
+        // Append new features
+        features_.insert(features_.end(), new_feats.begin(), new_feats.end());
+        
+        // Remove processed samples from buffer
+        int samples_processed = config_.frame_shift * num_frames;
+        if (samples_processed < audio_buffer_.size()) {
+            audio_buffer_.erase(audio_buffer_.begin(), 
+                               audio_buffer_.begin() + samples_processed);
+        } else {
+            audio_buffer_.clear();
+        }
+        
+        ESP_LOGD(TAG, "Extracted %d frames, total features: %zu", 
+                 num_frames, features_.size());
+    }
+    
+    return num_frames;
+}
+
+bool PlaudSRCommand::RunInference(Result& result) {
+    if (features_.size() < config_.batch_size) {
+        return false;
+    }
+    
+    // Get tensors
+    TfLiteTensor* input = interpreter_->input(0);
+    TfLiteTensor* output = interpreter_->output(0);
+    
+    if (input == nullptr || output == nullptr) {
+        ESP_LOGE(TAG, "Invalid input/output tensors");
+        return false;
+    }
+    
+    // Prepare input: [1, batch_size, num_bins]
+    int batch_size = std::min((int)features_.size(), config_.batch_size);
+    
+    // Copy features to input tensor
+    if (input->type == kTfLiteFloat32) {
+        float* input_data = input->data.f;
+        for (int i = 0; i < batch_size; ++i) {
+            for (int j = 0; j < config_.num_bins; ++j) {
+                input_data[i * config_.num_bins + j] = features_[i][j];
+            }
+        }
+    } else if (input->type == kTfLiteInt8) {
+        // Quantized input
+        int8_t* input_data = input->data.int8;
+        float scale = input->params.scale;
+        int zero_point = input->params.zero_point;
+        
+        for (int i = 0; i < batch_size; ++i) {
+            for (int j = 0; j < config_.num_bins; ++j) {
+                float value = features_[i][j];
+                int32_t quantized = static_cast<int32_t>(value / scale + zero_point);
+                quantized = std::max(static_cast<int32_t>(-128), std::min(static_cast<int32_t>(127), quantized));
+                input_data[i * config_.num_bins + j] = static_cast<int8_t>(quantized);
+            }
+        }
+    } else {
+        ESP_LOGE(TAG, "Unsupported input tensor type: %d", input->type);
+        return false;
+    }
+    
+    // Run inference
+    TfLiteStatus invoke_status = interpreter_->Invoke();
+    if (invoke_status != kTfLiteOk) {
+        ESP_LOGE(TAG, "Invoke() failed");
+        return false;
+    }
+    
+    // Get output probabilities
+    int num_outputs = output->dims->data[1];  // Number of output frames
+    int num_classes = output->dims->data[2];  // Number of classes
+    
+    const float* output_data = nullptr;
+    std::vector<float> dequantized_output;
+    
+    if (output->type == kTfLiteFloat32) {
+        output_data = output->data.f;
+    } else if (output->type == kTfLiteInt8) {
+        // Dequantize output
+        int8_t* quantized_output = output->data.int8;
+        float scale = output->params.scale;
+        int zero_point = output->params.zero_point;
+        
+        dequantized_output.resize(num_outputs * num_classes);
+        for (int i = 0; i < num_outputs * num_classes; ++i) {
+            dequantized_output[i] = (quantized_output[i] - zero_point) * scale;
+        }
+        output_data = dequantized_output.data();
+    } else {
+        ESP_LOGE(TAG, "Unsupported output tensor type: %d", output->type);
+        return false;
+    }
+    
+    // Match command
+    bool detected = MatchCommand(output_data, num_outputs, num_classes, result);
+    
+    // Remove processed features
+    if (batch_size > 0) {
+        features_.erase(features_.begin(), features_.begin() + batch_size);
+        feature_offset_ += batch_size;
+    }
+    
+    ESP_LOGD(TAG, "Inference complete, detected=%d, remaining features: %zu", 
+             detected, features_.size());
+    
+    return detected;
+}
+
+bool PlaudSRCommand::MatchCommand(const float* probs, int num_outputs, int num_classes, Result& result) {
+    // Find maximum probability across all frames and classes
+    float max_prob = 0.0f;
+    int max_class = -1;
+    
+    for (int t = 0; t < num_outputs; ++t) {
+        for (int c = 0; c < num_classes; ++c) {
+            float prob = probs[t * num_classes + c];
+            if (prob > max_prob) {
+                max_prob = prob;
+                max_class = c;
+            }
+        }
+    }
+    
+    ESP_LOGD(TAG, "Max prob=%.3f, class=%d", max_prob, max_class);
+    
+    // Check if any command matches
+    for (const auto& pair : commands_) {
+        const Command& cmd = pair.second;
+        
+        // Use command-specific threshold or default threshold
+        float threshold = (cmd.threshold > 0.0f) ? cmd.threshold : config_.default_threshold;
+        
+        // Simple matching: command.id == class index
+        if (max_class == cmd.id && max_prob >= threshold) {
+            result.command_id = cmd.id;
+            result.text = cmd.text;
+            result.confidence = max_prob;
+            result.is_valid = true;
+            
+            ESP_LOGI(TAG, "✓ Command detected: '%s' (ID=%d, confidence=%.2f, threshold=%.2f)",
+                     result.text.c_str(), result.command_id, result.confidence, threshold);
+            
+            return true;
+        }
+    }
+    
+    // No command detected above threshold
+    result.is_valid = false;
+    return false;
+}
+
+}  // namespace xiaozhi
+
