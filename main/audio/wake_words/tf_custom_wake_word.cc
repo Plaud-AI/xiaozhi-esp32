@@ -61,29 +61,6 @@ bool TFCustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list
     
     ESP_LOGI(TAG, "Registered %d commands", sr_engine_.GetCommandCount());
     
-    // 4. 创建 Opus 编码任务（ESP32 平台相关）
-    wake_word_encode_task_stack_ = (StackType_t*)heap_caps_malloc(
-        8192 * sizeof(StackType_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    wake_word_encode_task_buffer_ = (StaticTask_t*)heap_caps_malloc(
-        sizeof(StaticTask_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-
-    if (wake_word_encode_task_stack_ == nullptr || wake_word_encode_task_buffer_ == nullptr) {
-        ESP_LOGE(TAG, "Failed to allocate memory for wake word encode task");
-        return false;
-    }
-
-    wake_word_encode_task_ = xTaskCreateStatic(
-        [](void* arg) {
-            static_cast<TFCustomWakeWord*>(arg)->EncodeWakeWordData();
-        },
-        "wake_word_encode", 8192, this, 5, wake_word_encode_task_stack_,
-        wake_word_encode_task_buffer_);
-
-    if (wake_word_encode_task_ == nullptr) {
-        ESP_LOGE(TAG, "Failed to create wake word encode task");
-        return false;
-    }
-
     ESP_LOGI(TAG, "TFCustomWakeWord initialized successfully");
     
     return true;
@@ -148,77 +125,78 @@ size_t TFCustomWakeWord::GetFeedSize() {
 }
 
 void TFCustomWakeWord::StoreWakeWordData(const std::vector<int16_t>& data) {
-    std::lock_guard<std::mutex> lock(wake_word_mutex_);
+    // Store PCM data for wake word encoding
     wake_word_pcm_.push_back(data);
     
-    // 限制缓冲区大小（保留最近 3 秒的数据）
-    // 假设每帧 10ms，300 帧 = 3 秒
-    while (wake_word_pcm_.size() > 300) {
+    // Keep only the last 2 seconds (16000 Hz * 2 / 160 ≈ 200 frames)
+    while (wake_word_pcm_.size() > 200) {
         wake_word_pcm_.pop_front();
     }
-    
-    wake_word_cv_.notify_one();
 }
 
 void TFCustomWakeWord::EncodeWakeWordData() {
-    ESP_LOGI(TAG, "Wake word encode task started");
+    // 参考 custom_wake_word.cc 的实现：一次性编码任务
+    const size_t stack_size = 4096 * 7;
+    wake_word_opus_.clear();
     
-    // 创建 Opus 编码器（16kHz, 单声道, 60ms 帧）
-    OpusEncoderWrapper encoder(16000, 1, 60);
-    encoder.SetComplexity(0);  // 最快速度
-    
-    // Opus 编码器期望 960 samples (60ms @ 16kHz)
-    // 我们的音频块是 160 samples (10ms @ 16kHz)
-    // 需要合并 6 个块来满足 Opus 的要求
-    const size_t opus_frame_size = 960;  // 60ms @ 16kHz
-    std::vector<int16_t> buffer;
-    buffer.reserve(opus_frame_size);
-    
-    while (true) {
-        std::unique_lock<std::mutex> lock(wake_word_mutex_);
-        wake_word_cv_.wait(lock, [this] { 
-            return !wake_word_pcm_.empty() || wake_word_encode_task_ == nullptr; 
-        });
-        
-        if (wake_word_encode_task_ == nullptr) {
-            break;
+    if (wake_word_encode_task_stack_ == nullptr) {
+        wake_word_encode_task_stack_ = (StackType_t*)heap_caps_malloc(stack_size, MALLOC_CAP_SPIRAM);
+        if (wake_word_encode_task_stack_ == nullptr) {
+            ESP_LOGE(TAG, "Failed to allocate encode task stack");
+            return;
         }
-        
-        if (wake_word_pcm_.empty()) {
-            continue;
-        }
-        
-        auto pcm = std::move(wake_word_pcm_.front());
-        wake_word_pcm_.pop_front();
-        lock.unlock();
-        
-        // 累积音频数据直到达到 Opus 帧大小
-        buffer.insert(buffer.end(), pcm.begin(), pcm.end());
-        
-        // 当缓冲区足够大时，编码为 Opus
-        while (buffer.size() >= opus_frame_size) {
-            std::vector<int16_t> frame(buffer.begin(), buffer.begin() + opus_frame_size);
-            buffer.erase(buffer.begin(), buffer.begin() + opus_frame_size);
-            
-            std::vector<uint8_t> opus;
-            if (encoder.Encode(std::move(frame), opus)) {
-                lock.lock();
-                wake_word_opus_.push_back(std::move(opus));
-                
-                // 限制 Opus 缓冲区大小（保留最近 3 秒的数据）
-                while (wake_word_opus_.size() > 50) {  // 50 * 60ms = 3s
-                    wake_word_opus_.pop_front();
-                }
-                lock.unlock();
-            }
+    }
+    if (wake_word_encode_task_buffer_ == nullptr) {
+        wake_word_encode_task_buffer_ = (StaticTask_t*)heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL);
+        if (wake_word_encode_task_buffer_ == nullptr) {
+            ESP_LOGE(TAG, "Failed to allocate encode task buffer");
+            return;
         }
     }
     
-    ESP_LOGI(TAG, "Wake word encode task stopped");
+    xTaskCreateStatic([](void* arg) {
+        auto this_ = (TFCustomWakeWord*)arg;
+        OpusEncoderWrapper encoder(16000, 1, 60);
+        
+        // Opus 编码器期望 960 samples (60ms @ 16kHz)
+        // TFCustomWakeWord 每个块是 160 samples (10ms @ 16kHz)
+        // 需要合并多个块来满足 Opus 的要求
+        const size_t opus_frame_size = 960; // 60ms @ 16kHz
+        std::vector<int16_t> buffer;
+        
+        for (auto& pcm : this_->wake_word_pcm_) {
+            // 将数据添加到缓冲区
+            buffer.insert(buffer.end(), pcm.begin(), pcm.end());
+            
+            // 当缓冲区有足够数据时，编码一帧
+            while (buffer.size() >= opus_frame_size) {
+                std::vector<int16_t> frame(buffer.begin(), buffer.begin() + opus_frame_size);
+                buffer.erase(buffer.begin(), buffer.begin() + opus_frame_size);
+                
+                std::vector<uint8_t> opus;
+                if (encoder.Encode(std::move(frame), opus)) {
+                    this_->wake_word_opus_.push_back(std::move(opus));
+                }
+            }
+        }
+        
+        // 如果还有剩余数据（不足一帧），补零后编码
+        if (!buffer.empty()) {
+            buffer.resize(opus_frame_size, 0); // 补零到正确大小
+            std::vector<uint8_t> opus;
+            if (encoder.Encode(std::move(buffer), opus)) {
+                this_->wake_word_opus_.push_back(std::move(opus));
+            }
+        }
+        
+        ESP_LOGI(TAG, "Wake word encode task completed, encoded %d frames", 
+                 this_->wake_word_opus_.size());
+        
+        vTaskDelete(NULL);
+    }, "encode_wake_word", stack_size, this, 3, wake_word_encode_task_stack_, wake_word_encode_task_buffer_);
 }
 
 bool TFCustomWakeWord::GetWakeWordOpus(std::vector<uint8_t>& opus) {
-    std::lock_guard<std::mutex> lock(wake_word_mutex_);
     if (wake_word_opus_.empty()) {
         return false;
     }
