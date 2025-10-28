@@ -7,7 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-namespace xiaozhi {
+namespace plaud {
 
 void make_sintbl(int n, float* sintbl) {
   int i, n2, n4, n8;
@@ -119,5 +119,5 @@ int fft(const int* bitrev, const float* sintbl, float* x, float* y, int n) {
   return 0; /* finished successfully */
 }
 
-}  // namespace xiaozhi
+}  // namespace plaud
 
