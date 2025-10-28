@@ -20,7 +20,7 @@ template<unsigned int tOpCount>
 class MicroMutableOpResolver;
 }
 
-namespace xiaozhi {
+namespace plaud {
 
 /**
  * @brief Speech recognition state (similar to ESP-SR MultiNet)
@@ -325,7 +325,7 @@ private:
     int64_t detection_start_time_us_;          // Detection start time (microseconds)
 };
 
-}  // namespace xiaozhi
+}  // namespace plaud
 
 #endif  // AUDIO_WAKE_WORDS_PLAUD_SR_COMMAND_H_
 

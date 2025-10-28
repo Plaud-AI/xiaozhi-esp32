@@ -32,7 +32,7 @@ public:
 
 private:
     // PlaudSRCommand 推理引擎（平台无关）
-    xiaozhi::PlaudSRCommand sr_engine_;
+    plaud::PlaudSRCommand sr_engine_;
     
     // ESP32 平台相关
     std::function<void(const std::string& wake_word)> wake_word_detected_callback_;
@@ -47,7 +47,7 @@ private:
     std::deque<std::vector<uint8_t>> wake_word_opus_;
 
     void StoreWakeWordData(const std::vector<int16_t>& data);
-    void OnCommandDetected(const xiaozhi::PlaudSRCommand::Result& result);
+    void OnCommandDetected(const plaud::PlaudSRCommand::Result& result);
 };
 
 #endif  // TF_CUSTOM_WAKE_WORD_H

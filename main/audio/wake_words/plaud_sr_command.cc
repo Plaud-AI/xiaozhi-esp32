@@ -17,7 +17,7 @@
 
 #define TAG "PlaudSRCommand"
 
-namespace xiaozhi {
+namespace plaud {
 
 PlaudSRCommand::PlaudSRCommand()
     : config_(),
@@ -513,5 +513,5 @@ bool PlaudSRCommand::CheckTimeout() {
     return elapsed_us >= timeout_us;
 }
 
-}  // namespace xiaozhi
+}  // namespace plaud
 

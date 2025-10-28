@@ -34,7 +34,7 @@ bool TFCustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list
     ESP_LOGI(TAG, "Initializing TFCustomWakeWord (TFLite + PlaudSRCommand)");
     
     // 1. 配置 PlaudSRCommand
-    xiaozhi::PlaudSRCommand::Config config;
+    plaud::PlaudSRCommand::Config config;
     config.num_bins = 40;           // 40-dim fbank features
     config.sample_rate = 16000;     // 16kHz sample rate
     config.frame_length = 400;      // 25ms frame length (400 samples @ 16kHz)
@@ -54,10 +54,10 @@ bool TFCustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list
     // 3. 添加唤醒词指令
     // 注意：这里的 command.id 应该与模型输出的类别索引对应
     // 假设模型输出：[silence, unknown, wake_word_1, wake_word_2, ...]
-    sr_engine_.AddCommand(xiaozhi::PlaudSRCommand::Command(0, "silence", 0.0f));  // 忽略 silence
-    sr_engine_.AddCommand(xiaozhi::PlaudSRCommand::Command(1, "unknown", 0.0f));  // 忽略 unknown
-    sr_engine_.AddCommand(xiaozhi::PlaudSRCommand::Command(2, "hi plaud", 0.65f)); // 唤醒词 1
-    sr_engine_.AddCommand(xiaozhi::PlaudSRCommand::Command(3, "hi nicebuild", 0.70f)); // 唤醒词 2
+    sr_engine_.AddCommand(plaud::PlaudSRCommand::Command(0, "silence", 0.0f));  // 忽略 silence
+    sr_engine_.AddCommand(plaud::PlaudSRCommand::Command(1, "unknown", 0.0f));  // 忽略 unknown
+    sr_engine_.AddCommand(plaud::PlaudSRCommand::Command(2, "hi plaud", 0.65f)); // 唤醒词 1
+    sr_engine_.AddCommand(plaud::PlaudSRCommand::Command(3, "hi nicebuild", 0.70f)); // 唤醒词 2
     
     ESP_LOGI(TAG, "Registered %d commands", sr_engine_.GetCommandCount());
     
@@ -75,38 +75,34 @@ void TFCustomWakeWord::Feed(const std::vector<int16_t>& data) {
     StoreWakeWordData(data);
     
     // 将音频输入到推理引擎（使用状态机 API）
-    xiaozhi::PlaudSRCommand::Result result;
-    xiaozhi::SRState state = sr_engine_.Process(data, result);
+    plaud::PlaudSRCommand::Result result;
+    plaud::SRState state = sr_engine_.Process(data, result);
     
     // 调试：每 50 次 Feed 显示一次状态
     static int state_count = 0;
     if (++state_count % 50 == 0) {
         ESP_LOGD(TAG, "SR state: %d (0=detecting, 1=detected, 2=timeout)", static_cast<int>(state));
     }
-    
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 处理检测状态（类似 MultiNet 的状态机）
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    
-    if (state == xiaozhi::SRState::DETECTING) {
+ 
+    if (state == plaud::SRState::DETECTING) {
         // 正在检测中，无需处理
         return;
     } 
-    else if (state == xiaozhi::SRState::DETECTED) {
+    else if (state == plaud::SRState::DETECTED) {
         // ✓ 检测到命令！
         OnCommandDetected(result);
         
         // 重置引擎状态以准备下一次检测
         sr_engine_.Reset();
     } 
-    else if (state == xiaozhi::SRState::TIMEOUT) {
+    else if (state == plaud::SRState::TIMEOUT) {
         // 超时，重置引擎状态
         ESP_LOGD(TAG, "Detection timeout, resetting engine");
         sr_engine_.Reset();
     }
 }
 
-void TFCustomWakeWord::OnCommandDetected(const xiaozhi::PlaudSRCommand::Result& result) {
+void TFCustomWakeWord::OnCommandDetected(const plaud::PlaudSRCommand::Result& result) {
     // 忽略 silence 和 unknown
     if (result.command_id == 0 || result.command_id == 1) {
         ESP_LOGD(TAG, "Ignoring command ID=%d ('%s')", result.command_id, result.text.c_str());
