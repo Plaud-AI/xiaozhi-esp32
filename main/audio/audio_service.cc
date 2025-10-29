@@ -675,7 +675,6 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
 
 #if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4
     
-    // 编译开关：选择唤醒词实现
 #if CONFIG_USE_TFLITE_WAKE_WORD
     ESP_LOGI(TAG, "Creating TFCustomWakeWord (TFLite implementation)");
     wake_word_ = std::make_unique<TFCustomWakeWord>();
