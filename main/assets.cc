@@ -126,20 +126,37 @@ bool Assets::Apply() {
     cJSON* srmodels = cJSON_GetObjectItem(root, "srmodels");
     if (cJSON_IsString(srmodels)) {
         std::string srmodels_file = srmodels->valuestring;
+        ESP_LOGI(TAG, "Loading SR models from: %s", srmodels_file.c_str());
         if (GetAssetData(srmodels_file, ptr, size)) {
+            ESP_LOGI(TAG, "SR models data loaded, size=%zu bytes", size);
             if (models_list_ != nullptr) {
+                ESP_LOGI(TAG, "Deinitializing existing models list");
                 esp_srmodel_deinit(models_list_);
                 models_list_ = nullptr;
             }
             models_list_ = srmodel_load(static_cast<uint8_t*>(ptr));
             if (models_list_ != nullptr) {
+                ESP_LOGI(TAG, "SR models loaded successfully, calling SetModelsList");
                 auto& app = Application::GetInstance();
                 app.GetAudioService().SetModelsList(models_list_);
             } else {
-                ESP_LOGE(TAG, "Failed to load srmodels.bin");
+                ESP_LOGE(TAG, "Failed to load srmodels.bin - srmodel_load returned NULL");
             }
         } else {
-            ESP_LOGE(TAG, "The srmodels file %s is not found", srmodels_file.c_str());
+            ESP_LOGE(TAG, "The srmodels file %s is not found in assets", srmodels_file.c_str());
+        }
+    } else {
+        ESP_LOGI(TAG, "No 'srmodels' field in index.json, loading built-in models");
+        // 如果 assets 没有提供模型，使用内置模型
+        if (models_list_ == nullptr) {
+            models_list_ = esp_srmodel_init("model");
+            if (models_list_ != nullptr) {
+                ESP_LOGI(TAG, "Built-in models loaded, calling SetModelsList");
+                auto& app = Application::GetInstance();
+                app.GetAudioService().SetModelsList(models_list_);
+            } else {
+                ESP_LOGE(TAG, "Failed to load built-in models!");
+            }
         }
     }
 

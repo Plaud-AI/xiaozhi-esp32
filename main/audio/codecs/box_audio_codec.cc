@@ -14,7 +14,10 @@ BoxAudioCodec::BoxAudioCodec(void* i2c_master_handle, int input_sample_rate, int
     input_channels_ = input_reference_ ? 2 : 1; // 输入通道数
     input_sample_rate_ = input_sample_rate;
     output_sample_rate_ = output_sample_rate;
-    input_gain_ = 30;
+    input_gain_ = 42;  // 增加麦克风增益从 30 到 42（范围 0-47）
+    
+    ESP_LOGI(TAG, "BoxAudioCodec constructor: input_sample_rate=%d, output_sample_rate=%d, input_reference=%d, input_channels=%d, input_gain=%d",
+             input_sample_rate_, output_sample_rate_, input_reference_, input_channels_, input_gain_);
 
     CreateDuplexChannels(mclk, bclk, ws, dout, din);
 
@@ -200,8 +203,15 @@ void BoxAudioCodec::EnableInput(bool enable) {
         if (input_reference_) {
             fs.channel_mask |= ESP_CODEC_DEV_MAKE_CHANNEL_MASK(1);
         }
+        ESP_LOGI(TAG, "EnableInput: sample_rate=%d (output_sample_rate), channel=4, channel_mask=0x%x, input_gain=%d, input_reference=%d",
+                 fs.sample_rate, fs.channel_mask, input_gain_, input_reference_);
         ESP_ERROR_CHECK(esp_codec_dev_open(input_dev_, &fs));
-        ESP_ERROR_CHECK(esp_codec_dev_set_in_channel_gain(input_dev_, ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0), input_gain_));
+        // 设置所有通道的增益
+        for (int ch = 0; ch < 4; ch++) {
+            ESP_ERROR_CHECK(esp_codec_dev_set_in_channel_gain(input_dev_, ESP_CODEC_DEV_MAKE_CHANNEL_MASK(ch), input_gain_));
+            ESP_LOGI(TAG, "Set channel %d gain to %d dB", ch, input_gain_);
+        }
+        ESP_LOGI(TAG, "Input device opened, actual input_sample_rate_=%d", input_sample_rate_);
     } else {
         ESP_ERROR_CHECK(esp_codec_dev_close(input_dev_));
     }

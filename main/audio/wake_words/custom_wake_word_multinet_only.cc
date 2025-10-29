@@ -95,28 +95,30 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
     if (models_list == nullptr) {
         models_ = esp_srmodel_init("model");
         language_ = "en";  // 使用英文模型（与参考项目一致）
-        threshold_ = 0.15;  // 进一步降低阈值，最大敏感度测试（推荐 0.5）
+        threshold_ = 0.5;  // 检测阈值（0.0-1.0，推荐 0.5）
         duration_ = 5000;  // 超时时间 5 秒
         
         // 添加固定的唤醒词（英文音素格式，与 esp-sr-multinet 项目相同）
-        ESP_LOGI(TAG, "Loading built-in wake words (English phoneme format), threshold=%.2f", threshold_);
-
-        commands_.push_back({"hi PLAA1D", "hi plaud", "wake"});
+        ESP_LOGI(TAG, "Loading built-in wake words (English phoneme format)");
+         commands_.push_back({"hi PLAA1D", "hi plaud", "wake"});
         commands_.push_back({"hi PLaD", "hi plaud", "wake"});
         commands_.push_back({"hi PLeD", "hi plaud", "wake"});
         commands_.push_back({"P L AA1 D", "hi plaud", "wake"});
 
         commands_.push_back({"HH AY1 N AY1 S B IH0 L D", "hi nicebuild", "wake"}); //
         commands_.push_back({"hi NgSgBcLD", "hi nicebuild", "wake"});
-
     } else {
         models_ = models_list;
-        // MultiNet Only 模式：始终使用代码中定义的默认唤醒词
-        // 不从 assets 读取，确保行为一致
-        ESP_LOGI(TAG, "Using built-in wake words (ignoring assets config)");
-        language_ = "en";
-        threshold_ = 0.15;  // 进一步降低阈值，最大敏感度测试
-        duration_ = 5000;
+        // 从 assets 读取配置（如果有）
+        ParseWakenetModelConfig();
+        
+        // 如果 assets 没有配置命令，使用默认的
+        if (commands_.empty()) {
+            ESP_LOGI(TAG, "No commands in assets, using default wake words");
+            language_ = "en";
+            threshold_ = 0.5;
+            duration_ = 5000;
+            
         commands_.push_back({"hi PLAA1D", "hi plaud", "wake"});
         commands_.push_back({"hi PLaD", "hi plaud", "wake"});
         commands_.push_back({"hi PLeD", "hi plaud", "wake"});
@@ -124,6 +126,8 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
 
         commands_.push_back({"HH AY1 N AY1 S B IH0 L D", "hi nicebuild", "wake"}); //
         commands_.push_back({"hi NgSgBcLD", "hi nicebuild", "wake"});
+
+        }
     }
 
     if (models_ == nullptr || models_->num == -1) {
@@ -190,7 +194,7 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
                      err->phrases[i]->command_id, 
                      err->phrases[i]->string);
         }
-        // 错误结构会自动清理，不需要手动释放
+        esp_mn_commands_print_error(err);
         return false;
     }
 
@@ -219,22 +223,6 @@ void CustomWakeWord::Feed(const std::vector<int16_t>& data) {
         return;
     }
 
-    // 添加调试日志，证明 Feed 被调用
-    static int feed_count = 0;
-    if (++feed_count % 100 == 0) {
-        int64_t sum = 0;
-        int max_val = 0;
-        for (const auto& sample : data) {
-            sum += abs(sample);
-            if (abs(sample) > max_val) {
-                max_val = abs(sample);
-            }
-        }
-        int avg = data.empty() ? 0 : sum / data.size();
-        ESP_LOGI(TAG, "CustomWakeWord Feed (count %d): avg=%d, max=%d, samples=%d", 
-                 feed_count, avg, max_val, data.size());
-    }
-
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // MultiNet Only Mode: 直接使用 MultiNet 检测（不依赖 WakeNet）
     // 参考: esp-sr-multinet/main/blink_example_main.c: 114-143
@@ -261,13 +249,6 @@ void CustomWakeWord::Feed(const std::vector<int16_t>& data) {
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // 处理检测结果
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    
-    // 调试：每 50 次 Feed 显示一次状态
-    static int state_count = 0;
-    if (++state_count % 50 == 0) {
-        ESP_LOGD(TAG, "MultiNet state: %d (0=detecting, 1=detected, 2=timeout)", mn_state);
-    }
-    
     if (mn_state == ESP_MN_STATE_DETECTING) {
         // 正在检测中，无需处理
         return;
@@ -279,15 +260,6 @@ void CustomWakeWord::Feed(const std::vector<int16_t>& data) {
         if (mn_result != NULL && mn_result->num > 0) {
             // 获取第一个检测到的命令 ID
             int command_id = mn_result->phrase_id[0];
-            
-            // 显示所有命令的概率（调试用）
-            ESP_LOGI(TAG, "✓ MultiNet detection result:");
-            for (int i = 0; i < commands_.size() && i < 10; i++) {
-                ESP_LOGI(TAG, "  Command %d (%s): prob=%.2f %s", 
-                         i, commands_[i].text.c_str(), 
-                         mn_result->prob[i],
-                         (i == command_id) ? "← BEST" : "");
-            }
             
             ESP_LOGI(TAG, "✓ Detected command ID: %d, prob: %.2f", 
                      command_id, mn_result->prob[command_id]);
@@ -360,38 +332,12 @@ void CustomWakeWord::EncodeWakeWordData() {
     xTaskCreateStatic([](void* arg) {
         auto this_ = (CustomWakeWord*)arg;
         OpusEncoderWrapper encoder(16000, 1, 60);
-        
-        // Opus 编码器期望 960 samples (60ms @ 16kHz)
-        // CustomWakeWord 每个块是 512 samples (32ms @ 16kHz)
-        // 需要合并多个块来满足 Opus 的要求
-        const size_t opus_frame_size = 960; // 60ms @ 16kHz
-        std::vector<int16_t> buffer;
-        
         for (auto& pcm : this_->wake_word_pcm_) {
-            // 将数据添加到缓冲区
-            buffer.insert(buffer.end(), pcm.begin(), pcm.end());
-            
-            // 当缓冲区有足够数据时，编码一帧
-            while (buffer.size() >= opus_frame_size) {
-                std::vector<int16_t> frame(buffer.begin(), buffer.begin() + opus_frame_size);
-                buffer.erase(buffer.begin(), buffer.begin() + opus_frame_size);
-                
-                std::vector<uint8_t> opus;
-                if (encoder.Encode(std::move(frame), opus)) {
-                    this_->wake_word_opus_.push_back(std::move(opus));
-                }
-            }
-        }
-        
-        // 如果还有剩余数据（不足一帧），补零后编码
-        if (!buffer.empty()) {
-            buffer.resize(opus_frame_size, 0); // 补零到正确大小
             std::vector<uint8_t> opus;
-            if (encoder.Encode(std::move(buffer), opus)) {
+            if (encoder.Encode(std::move(pcm), opus)) {
                 this_->wake_word_opus_.push_back(std::move(opus));
             }
         }
-        
         vTaskDelete(NULL);
     }, "encode_wake_word", stack_size, this, 3, wake_word_encode_task_stack_, wake_word_encode_task_buffer_);
 }

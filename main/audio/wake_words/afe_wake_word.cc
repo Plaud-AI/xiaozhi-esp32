@@ -40,26 +40,34 @@ bool AfeWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) {
     codec_ = codec;
     int ref_num = codec_->input_reference() ? 1 : 0;
 
+    ESP_LOGI(TAG, "AfeWakeWord::Initialize called, codec=%p, models_list=%p, ref_num=%d", 
+             codec, models_list, ref_num);
+
     if (models_list == nullptr) {
+        ESP_LOGI(TAG, "models_list is NULL, calling esp_srmodel_init(\"model\")");
         models_ = esp_srmodel_init("model");
     } else {
         models_ = models_list;
     }
 
     if (models_ == nullptr || models_->num == -1) {
-        ESP_LOGE(TAG, "Failed to initialize wakenet model");
+        ESP_LOGE(TAG, "Failed to initialize wakenet model, models_=%p, num=%d", 
+                 models_, models_ ? models_->num : -999);
         return false;
     }
+    ESP_LOGI(TAG, "Found %d models in list", models_->num);
     for (int i = 0; i < models_->num; i++) {
-        ESP_LOGI(TAG, "Model %d: %s", i, models_->model_name[i]);
+        ESP_LOGI(TAG, "  Model %d: %s", i, models_->model_name[i]);
         if (strstr(models_->model_name[i], ESP_WN_PREFIX) != NULL) {
             wakenet_model_ = models_->model_name[i];
             auto words = esp_srmodel_get_wake_words(models_, wakenet_model_);
+            ESP_LOGI(TAG, "  -> Wake word model found! Words: %s", words);
             // split by ";" to get all wake words
             std::stringstream ss(words);
             std::string word;
             while (std::getline(ss, word, ';')) {
                 wake_words_.push_back(word);
+                ESP_LOGI(TAG, "     Added wake word: %s", word.c_str());
             }
         }
     }
@@ -71,15 +79,35 @@ bool AfeWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) {
     for (int i = 0; i < ref_num; i++) {
         input_format.push_back('R');
     }
+    ESP_LOGI(TAG, "Input format: %s, channels=%d, ref_num=%d", 
+             input_format.c_str(), codec_->input_channels(), ref_num);
+    
     afe_config_t* afe_config = afe_config_init(input_format.c_str(), models_, AFE_TYPE_SR, AFE_MODE_HIGH_PERF);
+    if (afe_config == nullptr) {
+        ESP_LOGE(TAG, "Failed to init AFE config!");
+        return false;
+    }     
+    
     afe_config->aec_init = codec_->input_reference();
     afe_config->aec_mode = AEC_MODE_SR_HIGH_PERF;
     afe_config->afe_perferred_core = 1;
     afe_config->afe_perferred_priority = 1;
     afe_config->memory_alloc_mode = AFE_MEMORY_ALLOC_MORE_PSRAM;
+    ESP_LOGI(TAG, "AFE config: aec_init=%d, aec_mode=%d", afe_config->aec_init, afe_config->aec_mode);
     
     afe_iface_ = esp_afe_handle_from_config(afe_config);
+    if (afe_iface_ == nullptr) {
+        ESP_LOGE(TAG, "Failed to get AFE interface handle!");
+        return false;
+    }
+    
     afe_data_ = afe_iface_->create_from_config(afe_config);
+    if (afe_data_ == nullptr) {
+        ESP_LOGE(TAG, "Failed to create AFE data from config!");
+        return false;
+    }
+    ESP_LOGI(TAG, "AFE interface created successfully, feed_size=%d", 
+             afe_iface_->get_feed_chunksize(afe_data_));
 
     xTaskCreate([](void* arg) {
         auto this_ = (AfeWakeWord*)arg;
@@ -87,6 +115,7 @@ bool AfeWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) {
         vTaskDelete(NULL);
     }, "audio_detection", 4096, this, 3, nullptr);
 
+    ESP_LOGI(TAG, "AfeWakeWord initialization completed successfully!");
     return true;
 }
 
@@ -109,6 +138,26 @@ void AfeWakeWord::Feed(const std::vector<int16_t>& data) {
     if (afe_data_ == nullptr) {
         return;
     }
+    
+    // 计算音频能量，用于检测麦克风是否工作
+    static int feed_count = 0;
+    if (++feed_count % 100 == 0) {
+        int64_t sum = 0;
+        int max_val = 0;
+        for (const auto& sample : data) {
+            sum += abs(sample);
+            if (abs(sample) > max_val) {
+                max_val = abs(sample);
+            }
+        }
+        int avg = data.empty() ? 0 : sum / data.size();
+        ESP_LOGI(TAG, "Audio level check (feed %d): avg=%d, max=%d, samples=%d", 
+                 feed_count, avg, max_val, data.size());
+        if (max_val < 100) {
+            ESP_LOGW(TAG, "  ⚠️ Audio level is very low! Microphone may not be working properly!");
+        }
+    }
+    
     afe_iface_->feed(afe_data_, data.data());
 }
 
@@ -125,23 +174,37 @@ void AfeWakeWord::AudioDetectionTask() {
     ESP_LOGI(TAG, "Audio detection task started, feed size: %d fetch size: %d",
         feed_size, fetch_size);
 
+    int loop_count = 0;
     while (true) {
         xEventGroupWaitBits(event_group_, DETECTION_RUNNING_EVENT, pdFALSE, pdTRUE, portMAX_DELAY);
 
         auto res = afe_iface_->fetch_with_delay(afe_data_, portMAX_DELAY);
         if (res == nullptr || res->ret_value == ESP_FAIL) {
+            ESP_LOGW(TAG, "AFE fetch failed, res=%p, ret_value=%d", 
+                     res, res ? res->ret_value : -1);
             continue;;
+        }
+
+        // 每处理 100 次打印一次日志，证明检测任务在运行
+        loop_count++;
+        if (loop_count % 100 == 0) {
+            ESP_LOGI(TAG, "Wake word detection running... (loop %d, wakeup_state=%d)", 
+                     loop_count, res->wakeup_state);
         }
 
         // Store the wake word data for voice recognition, like who is speaking
         StoreWakeWordData(res->data, res->data_size / sizeof(int16_t));
 
         if (res->wakeup_state == WAKENET_DETECTED) {
+            ESP_LOGI(TAG, "*** WAKE WORD DETECTED! *** model_index=%d", res->wakenet_model_index);
             Stop();
             last_detected_wake_word_ = wake_words_[res->wakenet_model_index - 1];
+            ESP_LOGI(TAG, "Wake word name: %s", last_detected_wake_word_.c_str());
 
             if (wake_word_detected_callback_) {
                 wake_word_detected_callback_(last_detected_wake_word_);
+            } else {
+                ESP_LOGW(TAG, "Wake word detected but callback is NULL!");
             }
         }
     }

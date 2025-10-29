@@ -88,6 +88,14 @@ bool WebsocketProtocol::OpenAudioChannel() {
         version_ = version;
     }
 
+    // 如果 NVS 中没有 WebSocket URL，使用默认值
+    if (url.empty()) {
+        url = "ws://10.1.164.12:8000/xiaozhi/v1/";
+        ESP_LOGW(TAG, "WebSocket URL not configured in NVS, using default: %s", url.c_str());
+    }
+
+    ESP_LOGI(TAG, "WebSocket configuration - URL: %s, Version: %d", url.c_str(), version_);
+    
     error_occurred_ = false;
 
     auto network = Board::GetInstance().GetNetwork();
