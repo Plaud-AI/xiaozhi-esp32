@@ -83,6 +83,11 @@ bool PlaudSRCommand::Initialize(const Config& config) {
 }
 
 void PlaudSRCommand::Reset() {
+    ESP_LOGI(TAG, "🔄 ═══════════════════════════════════════");
+    ESP_LOGI(TAG, "🔄 RESETTING PlaudSRCommand");
+    ESP_LOGD(TAG, "🔄   Buffer: %zu samples, Features: %zu frames", 
+             audio_buffer_.size(), features_.size());
+    
     audio_buffer_.clear();
     features_.clear();
     feature_offset_ = 0;
@@ -90,6 +95,7 @@ void PlaudSRCommand::Reset() {
     // Reset cache
     if (!cache_.empty()) {
         std::fill(cache_.begin(), cache_.end(), 0.0f);
+        ESP_LOGD(TAG, "🔄   Cache cleared: %zu elements", cache_.size());
     }
     
     // Reset state tracking
@@ -97,7 +103,8 @@ void PlaudSRCommand::Reset() {
     detection_frame_count_ = 0;
     detection_start_time_us_ = 0;
     
-    ESP_LOGI(TAG, "PlaudSRCommand reset");
+    ESP_LOGI(TAG, "🔄   Reset complete, ready for next detection");
+    ESP_LOGI(TAG, "🔄 ═══════════════════════════════════════");
 }
 
 bool PlaudSRCommand::AddCommand(const Command& command) {
@@ -149,24 +156,39 @@ SRState PlaudSRCommand::Process(const int16_t* audio_data, size_t samples, Resul
     // Record start time on first call
     if (detection_start_time_us_ == 0) {
         detection_start_time_us_ = esp_timer_get_time();
+        ESP_LOGI(TAG, "🎬 Detection session started");
     }
     
     // Check for timeout
     if (CheckTimeout()) {
-        ESP_LOGD(TAG, "Detection timeout");
+        ESP_LOGI(TAG, "⏱️  Detection timeout (%d ms)", config_.timeout_ms);
         return SRState::TIMEOUT;
     }
     
     // Convert int16 to float and accumulate
+    size_t buffer_size_before = audio_buffer_.size();
     for (size_t i = 0; i < samples; ++i) {
         audio_buffer_.push_back(static_cast<float>(audio_data[i]));
     }
     
+    static int process_count = 0;
+    process_count++;
+    if (process_count % 100 == 0) {
+        ESP_LOGD(TAG, "🔊 [Process #%d] samples=%zu, buffer=%zu→%zu", 
+                 process_count, samples, buffer_size_before, audio_buffer_.size());
+    }
+    
     // Extract features if we have enough samples
-    ExtractFeatures();
+    int extracted = ExtractFeatures();
+    if (extracted > 0) {
+        ESP_LOGD(TAG, "🎵 Extracted %d feature frames, total features: %zu/%d", 
+                 extracted, features_.size(), config_.batch_size);
+    }
     
     // Run inference if we have enough frames
     if (features_.size() >= config_.batch_size) {
+        ESP_LOGI(TAG, "🧠 Ready for inference: %zu frames (batch_size=%d)", 
+                 features_.size(), config_.batch_size);
         if (RunInference(result)) {
             // Inference completed, check result state
             return result.is_valid ? SRState::DETECTED : SRState::DETECTING;
@@ -301,12 +323,16 @@ int PlaudSRCommand::ExtractFeatures() {
         return 0;
     }
     
+    ESP_LOGD(TAG, "🎵 [ExtractFeatures] buffer_size=%zu, frame_length=%d, frame_shift=%d",
+             audio_buffer_.size(), config_.frame_length, config_.frame_shift);
+    
     // Extract features
     std::vector<std::vector<float>> new_feats;
     int num_frames = fbank_->Compute(audio_buffer_, &new_feats);
     
     if (num_frames > 0) {
         // Append new features
+        size_t features_before = features_.size();
         features_.insert(features_.end(), new_feats.begin(), new_feats.end());
         
         // Remove processed samples from buffer
@@ -318,8 +344,8 @@ int PlaudSRCommand::ExtractFeatures() {
             audio_buffer_.clear();
         }
         
-        ESP_LOGD(TAG, "Extracted %d frames, total features: %zu", 
-                 num_frames, features_.size());
+        ESP_LOGD(TAG, "🎵 Extracted %d frames (%zu→%zu), processed %d samples, buffer remaining: %zu", 
+                 num_frames, features_before, features_.size(), samples_processed, audio_buffer_.size());
     }
     
     return num_frames;
@@ -330,6 +356,10 @@ bool PlaudSRCommand::RunInference(Result& result) {
         return false;
     }
     
+    ESP_LOGI(TAG, "🧠 ═══════════════════════════════════════");
+    ESP_LOGI(TAG, "🧠 RUNNING INFERENCE");
+    ESP_LOGI(TAG, "🧠   Features: %zu frames", features_.size());
+    
     // Get tensors
     TfLiteTensor* input = interpreter_->input(0);
     TfLiteTensor* output = interpreter_->output(0);
@@ -338,6 +368,10 @@ bool PlaudSRCommand::RunInference(Result& result) {
         ESP_LOGE(TAG, "Invalid input/output tensors");
         return false;
     }
+    
+    ESP_LOGD(TAG, "🧠   Input tensor: type=%d, shape=[%d,%d,%d]",
+             input->type, input->dims->data[0], input->dims->data[1], input->dims->data[2]);
+    ESP_LOGD(TAG, "🧠   Output tensor: type=%d", output->type);
     
     // Prepare input: [1, batch_size, num_bins]
     int batch_size = std::min((int)features_.size(), config_.batch_size);
@@ -370,15 +404,23 @@ bool PlaudSRCommand::RunInference(Result& result) {
     }
     
     // Run inference
+    ESP_LOGI(TAG, "🧠   Invoking TFLite interpreter...");
+    int64_t start_time = esp_timer_get_time();
     TfLiteStatus invoke_status = interpreter_->Invoke();
+    int64_t inference_time_us = esp_timer_get_time() - start_time;
+    
     if (invoke_status != kTfLiteOk) {
         ESP_LOGE(TAG, "Invoke() failed");
         return false;
     }
     
+    ESP_LOGI(TAG, "🧠   Inference completed in %.2f ms", inference_time_us / 1000.0f);
+    
     // Get output probabilities
     int num_outputs = output->dims->data[1];  // Number of output frames
     int num_classes = output->dims->data[2];  // Number of classes
+    
+    ESP_LOGD(TAG, "🧠   Output: %d frames × %d classes", num_outputs, num_classes);
     
     const float* output_data = nullptr;
     std::vector<float> dequantized_output;
@@ -420,13 +462,21 @@ bool PlaudSRCommand::RunInference(Result& result) {
 }
 
 SRState PlaudSRCommand::MatchCommand(const float* probs, int num_outputs, int num_classes, Result& result) {
+    ESP_LOGI(TAG, "🔍 ═══════════════════════════════════════");
+    ESP_LOGI(TAG, "🔍 MATCHING COMMAND");
+    ESP_LOGI(TAG, "🔍   Frames: %d, Classes: %d", num_outputs, num_classes);
+    
     // Find maximum probability across all output frames
     float max_prob = 0.0f;
     int max_class = -1;
     
+    // Also collect average probabilities per class for debugging
+    std::vector<float> avg_probs(num_classes, 0.0f);
+    
     for (int t = 0; t < num_outputs; ++t) {
         for (int c = 0; c < num_classes; ++c) {
             float prob = probs[t * num_classes + c];
+            avg_probs[c] += prob;
             if (prob > max_prob) {
                 max_prob = prob;
                 max_class = c;
@@ -434,7 +484,17 @@ SRState PlaudSRCommand::MatchCommand(const float* probs, int num_outputs, int nu
         }
     }
     
-    ESP_LOGD(TAG, "Max prob=%.3f, class=%d", max_prob, max_class);
+    // Calculate and display average probabilities
+    for (int c = 0; c < num_classes; ++c) {
+        avg_probs[c] /= num_outputs;
+    }
+    
+    ESP_LOGI(TAG, "🔍   Max: class=%d, prob=%.3f (%.1f%%)", max_class, max_prob, max_prob * 100.0f);
+    
+    // Display probabilities for each class
+    for (int c = 0; c < num_classes; ++c) {
+        ESP_LOGD(TAG, "🔍     Class[%d]: avg=%.3f (%.1f%%)", c, avg_probs[c], avg_probs[c] * 100.0f);
+    }
     
     // Find the matching command with highest confidence
     int matched_command_id = -1;
@@ -460,11 +520,17 @@ SRState PlaudSRCommand::MatchCommand(const float* probs, int num_outputs, int nu
     // State tracking: require consecutive high-confidence frames
     if (matched_command_id >= 0) {
         // High confidence detected
+        ESP_LOGI(TAG, "🔍   Matched: '%s' (ID=%d, confidence=%.2f, threshold=%.2f)", 
+                 matched_text.c_str(), matched_command_id, matched_confidence,
+                 (commands_[matched_command_id].threshold > 0.0f) 
+                    ? commands_[matched_command_id].threshold 
+                    : config_.default_threshold);
+        
         if (matched_command_id == last_detected_command_id_) {
             // Same command as before, increment counter
             detection_frame_count_++;
             
-            ESP_LOGD(TAG, "Detecting '%s' (%d/%d frames)", 
+            ESP_LOGI(TAG, "🔍   Progress: '%s' (%d/%d frames) ✓", 
                      matched_text.c_str(), detection_frame_count_, config_.detection_frames);
             
             if (detection_frame_count_ >= config_.detection_frames) {
@@ -475,26 +541,35 @@ SRState PlaudSRCommand::MatchCommand(const float* probs, int num_outputs, int nu
                 result.timestamp_ms = static_cast<uint32_t>((esp_timer_get_time() - detection_start_time_us_) / 1000);
                 result.is_valid = true;
                 
-                ESP_LOGI(TAG, "✓ Command CONFIRMED: '%s' (ID=%d, confidence=%.2f, frames=%d)",
-                         result.text.c_str(), result.command_id, result.confidence, detection_frame_count_);
+                ESP_LOGI(TAG, "🔍 ═══════════════════════════════════════");
+                ESP_LOGI(TAG, "✅ COMMAND CONFIRMED!");
+                ESP_LOGI(TAG, "✅   '%s' (ID=%d)", result.text.c_str(), result.command_id);
+                ESP_LOGI(TAG, "✅   Confidence: %.1f%%", result.confidence * 100.0f);
+                ESP_LOGI(TAG, "✅   Frames: %d/%d", detection_frame_count_, config_.detection_frames);
+                ESP_LOGI(TAG, "🔍 ═══════════════════════════════════════");
                 
                 return SRState::DETECTED;
             }
         } else {
             // Different command, reset counter
+            if (last_detected_command_id_ >= 0) {
+                ESP_LOGI(TAG, "🔍   Switching candidate: (previous ID=%d) → '%s' (ID=%d)", 
+                         last_detected_command_id_, matched_text.c_str(), matched_command_id);
+            }
             last_detected_command_id_ = matched_command_id;
             detection_frame_count_ = 1;
             
-            ESP_LOGD(TAG, "New command candidate: '%s' (1/%d frames)", 
+            ESP_LOGI(TAG, "🔍   New candidate: '%s' (1/%d frames)", 
                      matched_text.c_str(), config_.detection_frames);
         }
     } else {
         // No high confidence, reset tracking
         if (last_detected_command_id_ >= 0) {
-            ESP_LOGD(TAG, "Lost detection, resetting");
+            ESP_LOGI(TAG, "🔍   Lost detection (ID=%d), resetting", last_detected_command_id_);
         }
         last_detected_command_id_ = -1;
         detection_frame_count_ = 0;
+        ESP_LOGD(TAG, "🔍   No command matched threshold");
     }
     
     // Still detecting
