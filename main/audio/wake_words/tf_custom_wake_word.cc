@@ -55,11 +55,12 @@ bool TFCustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list
     
     // 3. 添加唤醒词指令
     // 注意：这里的 command.id 应该与模型输出的类别索引对应
-    // 假设模型输出：[silence, unknown, wake_word_1, wake_word_2, ...]
+    // 模型输出：[silence, unknown, xiao_ai_tong_xue, ni_hao_dong_dong, ni_hao_pu_luo_de]
     sr_engine_.AddCommand(plaud::PlaudSRCommand::Command(0, "silence", 0.0f));  // 忽略 silence
     sr_engine_.AddCommand(plaud::PlaudSRCommand::Command(1, "unknown", 0.0f));  // 忽略 unknown
-    sr_engine_.AddCommand(plaud::PlaudSRCommand::Command(2, "hi plaud", 0.65f)); // 唤醒词 1
-    sr_engine_.AddCommand(plaud::PlaudSRCommand::Command(3, "hi nicebuild", 0.70f)); // 唤醒词 2
+    sr_engine_.AddCommand(plaud::PlaudSRCommand::Command(2, "xiao ai tong xue", 0.65f)); // 小爱同学
+    sr_engine_.AddCommand(plaud::PlaudSRCommand::Command(3, "ni hao dong dong", 0.65f)); // 你好东东
+    sr_engine_.AddCommand(plaud::PlaudSRCommand::Command(4, "ni hao pu luo de", 0.65f)); // 你好普罗德
     
     ESP_LOGI(TAG, "Registered %d commands", sr_engine_.GetCommandCount());
     
