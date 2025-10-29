@@ -73,6 +73,14 @@ void TFCustomWakeWord::Feed(const std::vector<int16_t>& data) {
         return;
     }
     
+    // 调试：每 100 次 Feed 显示一次音频输入信息
+    static int feed_count = 0;
+    feed_count++;
+    if (feed_count % 100 == 0) {
+        ESP_LOGI(TAG, "📥 [Feed #%d] samples=%zu, running=%d", 
+                 feed_count, data.size(), running_.load());
+    }
+    
     // 存储原始音频用于编码（如果需要上传唤醒词音频）
     StoreWakeWordData(data);
     
@@ -80,10 +88,12 @@ void TFCustomWakeWord::Feed(const std::vector<int16_t>& data) {
     plaud::PlaudSRCommand::Result result;
     plaud::SRState state = sr_engine_.Process(data, result);
     
-    // 调试：每 50 次 Feed 显示一次状态
-    static int state_count = 0;
-    if (++state_count % 50 == 0) {
-        ESP_LOGD(TAG, "SR state: %d (0=detecting, 1=detected, 2=timeout)", static_cast<int>(state));
+    // 调试：显示状态变化
+    static plaud::SRState last_state = plaud::SRState::DETECTING;
+    if (state != last_state || state == plaud::SRState::DETECTED) {
+        const char* state_names[] = {"DETECTING", "DETECTED", "TIMEOUT"};
+        ESP_LOGI(TAG, "🔄 [Feed #%d] State: %s", feed_count, state_names[static_cast<int>(state)]);
+        last_state = state;
     }
  
     if (state == plaud::SRState::DETECTING) {
@@ -107,23 +117,32 @@ void TFCustomWakeWord::Feed(const std::vector<int16_t>& data) {
 void TFCustomWakeWord::OnCommandDetected(const plaud::PlaudSRCommand::Result& result) {
     // 忽略 silence 和 unknown
     if (result.command_id == 0 || result.command_id == 1) {
-        ESP_LOGD(TAG, "Ignoring command ID=%d ('%s')", result.command_id, result.text.c_str());
+        ESP_LOGD(TAG, "🔇 Ignoring command ID=%d ('%s')", result.command_id, result.text.c_str());
         return;
     }
     
-    ESP_LOGI(TAG, "✓ Command detected: '%s' (ID=%d, confidence=%.2f)",
-             result.text.c_str(), result.command_id, result.confidence);
+    ESP_LOGI(TAG, "✅ ═══════════════════════════════════════");
+    ESP_LOGI(TAG, "✅ WAKE WORD DETECTED!");
+    ESP_LOGI(TAG, "✅   Text: '%s'", result.text.c_str());
+    ESP_LOGI(TAG, "✅   Command ID: %d", result.command_id);
+    ESP_LOGI(TAG, "✅   Confidence: %.2f%%", result.confidence * 100.0f);
+    ESP_LOGI(TAG, "✅   Timestamp: %u ms", result.timestamp_ms);
+    ESP_LOGI(TAG, "✅ ═══════════════════════════════════════");
     
     // 设置最后检测到的唤醒词
     last_detected_wake_word_ = result.text;
     
     // 触发上层回调
     if (wake_word_detected_callback_) {
+        ESP_LOGI(TAG, "🔔 Triggering wake word callback...");
         wake_word_detected_callback_(result.text);
+    } else {
+        ESP_LOGW(TAG, "⚠️  No wake word callback registered!");
     }
     
     // 停止当前检测（等待上层重新启动）
     running_ = false;
+    ESP_LOGI(TAG, "⏸️  Detection stopped, waiting for restart");
 }
 
 void TFCustomWakeWord::OnWakeWordDetected(std::function<void(const std::string& wake_word)> callback) {
@@ -131,14 +150,20 @@ void TFCustomWakeWord::OnWakeWordDetected(std::function<void(const std::string& 
 }
 
 void TFCustomWakeWord::Start() {
+    ESP_LOGI(TAG, "▶️  ═══════════════════════════════════════");
+    ESP_LOGI(TAG, "▶️  STARTING TFCustomWakeWord");
     running_ = true;
     sr_engine_.Reset();  // 重置引擎状态
-    ESP_LOGI(TAG, "TFCustomWakeWord started");
+    ESP_LOGI(TAG, "▶️  Detection engine ready, listening for wake words...");
+    ESP_LOGI(TAG, "▶️  ═══════════════════════════════════════");
 }
 
 void TFCustomWakeWord::Stop() {
+    ESP_LOGI(TAG, "⏸️  ═══════════════════════════════════════");
+    ESP_LOGI(TAG, "⏸️  STOPPING TFCustomWakeWord");
     running_ = false;
-    ESP_LOGI(TAG, "TFCustomWakeWord stopped");
+    ESP_LOGI(TAG, "⏸️  Detection stopped");
+    ESP_LOGI(TAG, "⏸️  ═══════════════════════════════════════");
 }
 
 size_t TFCustomWakeWord::GetFeedSize() {
