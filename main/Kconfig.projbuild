@@ -551,6 +551,12 @@ choice WAKE_WORD_TYPE
         help
             Requires ESP32 S3 and PSRAM
 
+    config USE_TFLITE_WAKE_WORD
+        bool "TFLite model (TF Custom Wake Word)"
+        depends on (IDF_TARGET_ESP32S3 || IDF_TARGET_ESP32P4) && SPIRAM
+        help
+            TensorFlow Lite based wake word detection, requires ESP32 S3 and PSRAM
+
 endchoice
 
 config CUSTOM_WAKE_WORD
@@ -578,7 +584,7 @@ config CUSTOM_WAKE_WORD_THRESHOLD
 config SEND_WAKE_WORD_DATA
     bool "Send Wake Word Data"
     default y
-    depends on USE_AFE_WAKE_WORD || USE_CUSTOM_WAKE_WORD
+    depends on USE_AFE_WAKE_WORD || USE_CUSTOM_WAKE_WORD || USE_TFLITE_WAKE_WORD
     help
         Send wake word data to the server as the first message of the conversation and wait for response
 
