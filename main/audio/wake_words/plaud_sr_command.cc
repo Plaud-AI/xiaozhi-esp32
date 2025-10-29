@@ -285,6 +285,12 @@ bool PlaudSRCommand::LoadModel() {
              input->dims->size > 1 ? input->dims->data[1] : 0,
              input->dims->size > 2 ? input->dims->data[2] : 0);
     
+    // Validate input tensor dimensions
+    if (input->dims->size < 3) {
+        ESP_LOGW(TAG, "⚠️  Input tensor has only %d dimensions (expected 3: [batch, frames, features])", input->dims->size);
+        ESP_LOGW(TAG, "⚠️  This is a PLACEHOLDER MODEL and will NOT work for wake word detection!");
+    }
+    
     // Get output tensor info
     TfLiteTensor* output = interpreter_->output(0);
     ESP_LOGI(TAG, "Output tensor: dims=%d, shape=[%d, %d, %d]",
@@ -292,6 +298,13 @@ bool PlaudSRCommand::LoadModel() {
              output->dims->data[0],
              output->dims->size > 1 ? output->dims->data[1] : 0,
              output->dims->size > 2 ? output->dims->data[2] : 0);
+    
+    // Validate output tensor dimensions
+    if (output->dims->size < 3) {
+        ESP_LOGW(TAG, "⚠️  Output tensor has only %d dimensions (expected 3: [batch, frames, classes])", output->dims->size);
+        ESP_LOGW(TAG, "⚠️  This is a PLACEHOLDER MODEL and will NOT work for wake word detection!");
+        ESP_LOGW(TAG, "⚠️  Please replace wake_word_model_data.cc with a real trained TFLite model");
+    }
     
     // Initialize cache (check if model has cache input/output)
     // For simplicity, we'll use fixed cache dimensions
@@ -417,10 +430,26 @@ bool PlaudSRCommand::RunInference(Result& result) {
     ESP_LOGI(TAG, "🧠   Inference completed in %.2f ms", inference_time_us / 1000.0f);
     
     // Get output probabilities
+    // Validate output tensor dimensions
+    if (output->dims->size < 3) {
+        ESP_LOGE(TAG, "❌ Invalid output tensor dimensions: size=%d (expected >= 3)", output->dims->size);
+        ESP_LOGE(TAG, "❌ This is likely a placeholder model issue!");
+        ESP_LOGE(TAG, "❌ Please replace wake_word_model_data.cc with a real trained model");
+        return false;
+    }
+    
     int num_outputs = output->dims->data[1];  // Number of output frames
     int num_classes = output->dims->data[2];  // Number of classes
     
-    ESP_LOGD(TAG, "🧠   Output: %d frames × %d classes", num_outputs, num_classes);
+    ESP_LOGI(TAG, "🧠   Output: %d frames × %d classes", num_outputs, num_classes);
+    
+    // Validate dimensions are reasonable
+    if (num_outputs <= 0 || num_outputs > 1000 || num_classes <= 0 || num_classes > 100) {
+        ESP_LOGE(TAG, "❌ Invalid output dimensions: num_outputs=%d, num_classes=%d", num_outputs, num_classes);
+        ESP_LOGE(TAG, "❌ This is likely a placeholder model issue!");
+        ESP_LOGE(TAG, "❌ Please replace wake_word_model_data.cc with a real trained model");
+        return false;
+    }
     
     const float* output_data = nullptr;
     std::vector<float> dequantized_output;
@@ -433,7 +462,9 @@ bool PlaudSRCommand::RunInference(Result& result) {
         float scale = output->params.scale;
         int zero_point = output->params.zero_point;
         
-        dequantized_output.resize(num_outputs * num_classes);
+        size_t output_size = static_cast<size_t>(num_outputs) * static_cast<size_t>(num_classes);
+        ESP_LOGD(TAG, "🧠   Dequantizing %zu elements...", output_size);
+        dequantized_output.resize(output_size);
         for (int i = 0; i < num_outputs * num_classes; ++i) {
             dequantized_output[i] = (quantized_output[i] - zero_point) * scale;
         }

@@ -141,9 +141,21 @@ bool Assets::Apply() {
                 app.GetAudioService().SetModelsList(models_list_);
             } else {
                 ESP_LOGE(TAG, "Failed to load srmodels.bin - srmodel_load returned NULL");
+#if CONFIG_USE_TFLITE_WAKE_WORD
+                // TFLite 模式下，即使加载失败也要调用 SetModelsList
+                ESP_LOGI(TAG, "TFLite wake word enabled, calling SetModelsList with NULL");
+                auto& app = Application::GetInstance();
+                app.GetAudioService().SetModelsList(nullptr);
+#endif
             }
         } else {
             ESP_LOGE(TAG, "The srmodels file %s is not found in assets", srmodels_file.c_str());
+#if CONFIG_USE_TFLITE_WAKE_WORD
+            // TFLite 模式下，即使文件不存在也要调用 SetModelsList
+            ESP_LOGI(TAG, "TFLite wake word enabled, calling SetModelsList with NULL");
+            auto& app = Application::GetInstance();
+            app.GetAudioService().SetModelsList(nullptr);
+#endif
         }
     } else {
         ESP_LOGI(TAG, "No 'srmodels' field in index.json, loading built-in models");
@@ -156,6 +168,12 @@ bool Assets::Apply() {
                 app.GetAudioService().SetModelsList(models_list_);
             } else {
                 ESP_LOGE(TAG, "Failed to load built-in models!");
+#if CONFIG_USE_TFLITE_WAKE_WORD
+                // TFLite 模式下，即使没有 ESP-SR 模型也要调用 SetModelsList
+                ESP_LOGI(TAG, "TFLite wake word enabled, calling SetModelsList with NULL");
+                auto& app = Application::GetInstance();
+                app.GetAudioService().SetModelsList(nullptr);
+#endif
             }
         }
     }

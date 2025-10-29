@@ -678,7 +678,8 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
 #if CONFIG_USE_TFLITE_WAKE_WORD
     ESP_LOGI(TAG, "Creating TFCustomWakeWord (TFLite implementation)");
     wake_word_ = std::make_unique<TFCustomWakeWord>();
-#elif 
+#elif CONFIG_USE_CUSTOM_WAKE_WORD
+    // MultiNet 唤醒词（CustomWakeWord）
     if (esp_srmodel_filter(models_list_, ESP_MN_PREFIX, NULL) != nullptr) {
         ESP_LOGI(TAG, "Creating CustomWakeWord (MN prefix found)");
         wake_word_ = std::make_unique<CustomWakeWord>();
