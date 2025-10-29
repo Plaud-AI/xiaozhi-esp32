@@ -187,8 +187,13 @@ SRState PlaudSRCommand::Process(const int16_t* audio_data, size_t samples, Resul
     
     // Run inference if we have enough frames
     if (features_.size() >= config_.batch_size) {
-        ESP_LOGI(TAG, "🧠 Ready for inference: %zu frames (batch_size=%d)", 
-                 features_.size(), config_.batch_size);
+        // Only log periodically to reduce spam (especially with placeholder model)
+        static int inference_count = 0;
+        inference_count++;
+        if (inference_count <= 5 || inference_count % 20 == 0) {
+            ESP_LOGI(TAG, "🧠 Ready for inference: %zu frames (batch_size=%d) [inference #%d]", 
+                     features_.size(), config_.batch_size, inference_count);
+        }
         if (RunInference(result)) {
             // Inference completed, check result state
             return result.is_valid ? SRState::DETECTED : SRState::DETECTING;
@@ -369,9 +374,16 @@ bool PlaudSRCommand::RunInference(Result& result) {
         return false;
     }
     
-    ESP_LOGI(TAG, "🧠 ═══════════════════════════════════════");
-    ESP_LOGI(TAG, "🧠 RUNNING INFERENCE");
-    ESP_LOGI(TAG, "🧠   Features: %zu frames", features_.size());
+    // Reduce log frequency for placeholder model scenario
+    static int run_inference_count = 0;
+    run_inference_count++;
+    bool should_log = (run_inference_count <= 5 || run_inference_count % 20 == 0);
+    
+    if (should_log) {
+        ESP_LOGI(TAG, "🧠 ═══════════════════════════════════════");
+        ESP_LOGI(TAG, "🧠 RUNNING INFERENCE [#%d]", run_inference_count);
+        ESP_LOGI(TAG, "🧠   Features: %zu frames", features_.size());
+    }
     
     // Get tensors
     TfLiteTensor* input = interpreter_->input(0);
@@ -417,7 +429,9 @@ bool PlaudSRCommand::RunInference(Result& result) {
     }
     
     // Run inference
-    ESP_LOGI(TAG, "🧠   Invoking TFLite interpreter...");
+    if (should_log) {
+        ESP_LOGI(TAG, "🧠   Invoking TFLite interpreter...");
+    }
     int64_t start_time = esp_timer_get_time();
     TfLiteStatus invoke_status = interpreter_->Invoke();
     int64_t inference_time_us = esp_timer_get_time() - start_time;
@@ -427,27 +441,57 @@ bool PlaudSRCommand::RunInference(Result& result) {
         return false;
     }
     
-    ESP_LOGI(TAG, "🧠   Inference completed in %.2f ms", inference_time_us / 1000.0f);
+    if (should_log) {
+        ESP_LOGI(TAG, "🧠   Inference completed in %.2f ms", inference_time_us / 1000.0f);
+    }
     
     // Get output probabilities
     // Validate output tensor dimensions
     if (output->dims->size < 3) {
-        ESP_LOGE(TAG, "❌ Invalid output tensor dimensions: size=%d (expected >= 3)", output->dims->size);
-        ESP_LOGE(TAG, "❌ This is likely a placeholder model issue!");
-        ESP_LOGE(TAG, "❌ Please replace wake_word_model_data.cc with a real trained model");
+        // Only log error periodically to avoid spam
+        static int error_count = 0;
+        error_count++;
+        if (error_count <= 3 || error_count % 50 == 0) {
+            ESP_LOGE(TAG, "❌ Invalid output tensor dimensions: size=%d (expected >= 3) [error #%d]", 
+                     output->dims->size, error_count);
+            if (error_count <= 3) {
+                ESP_LOGE(TAG, "❌ This is likely a placeholder model issue!");
+                ESP_LOGE(TAG, "❌ Please replace wake_word_model_data.cc with a real trained model");
+            }
+        }
+        
+        // Clear accumulated features to prevent infinite accumulation
+        features_.clear();
+        feature_offset_ = 0;
+        
         return false;
     }
     
     int num_outputs = output->dims->data[1];  // Number of output frames
     int num_classes = output->dims->data[2];  // Number of classes
     
-    ESP_LOGI(TAG, "🧠   Output: %d frames × %d classes", num_outputs, num_classes);
+    if (should_log) {
+        ESP_LOGI(TAG, "🧠   Output: %d frames × %d classes", num_outputs, num_classes);
+    }
     
     // Validate dimensions are reasonable
     if (num_outputs <= 0 || num_outputs > 1000 || num_classes <= 0 || num_classes > 100) {
-        ESP_LOGE(TAG, "❌ Invalid output dimensions: num_outputs=%d, num_classes=%d", num_outputs, num_classes);
-        ESP_LOGE(TAG, "❌ This is likely a placeholder model issue!");
-        ESP_LOGE(TAG, "❌ Please replace wake_word_model_data.cc with a real trained model");
+        // Only log error periodically to avoid spam
+        static int dim_error_count = 0;
+        dim_error_count++;
+        if (dim_error_count <= 3 || dim_error_count % 50 == 0) {
+            ESP_LOGE(TAG, "❌ Invalid output dimensions: num_outputs=%d, num_classes=%d [error #%d]", 
+                     num_outputs, num_classes, dim_error_count);
+            if (dim_error_count <= 3) {
+                ESP_LOGE(TAG, "❌ This is likely a placeholder model issue!");
+                ESP_LOGE(TAG, "❌ Please replace wake_word_model_data.cc with a real trained model");
+            }
+        }
+        
+        // Clear accumulated features to prevent infinite accumulation
+        features_.clear();
+        feature_offset_ = 0;
+        
         return false;
     }
     
@@ -463,7 +507,9 @@ bool PlaudSRCommand::RunInference(Result& result) {
         int zero_point = output->params.zero_point;
         
         size_t output_size = static_cast<size_t>(num_outputs) * static_cast<size_t>(num_classes);
-        ESP_LOGD(TAG, "🧠   Dequantizing %zu elements...", output_size);
+        if (should_log) {
+            ESP_LOGD(TAG, "🧠   Dequantizing %zu elements...", output_size);
+        }
         dequantized_output.resize(output_size);
         for (int i = 0; i < num_outputs * num_classes; ++i) {
             dequantized_output[i] = (quantized_output[i] - zero_point) * scale;
