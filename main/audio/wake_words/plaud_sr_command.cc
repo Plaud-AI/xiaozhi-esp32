@@ -256,7 +256,7 @@ bool PlaudSRCommand::LoadModel() {
     
     // Create op resolver - add common ops for streaming keyword spotting
     // Note: Increase the size if model requires more ops
-    static tflite::MicroMutableOpResolver<30> resolver;
+    static tflite::MicroMutableOpResolver<36> resolver;
     
     // Basic neural network ops
     resolver.AddFullyConnected();
@@ -278,6 +278,14 @@ bool PlaudSRCommand::LoadModel() {
     resolver.AddSub();
     resolver.AddMinimum();
     resolver.AddMaximum();
+    
+    // Comparison ops (for conditional logic)
+    resolver.AddLess();
+    resolver.AddLessEqual();
+    resolver.AddGreater();
+    resolver.AddGreaterEqual();
+    resolver.AddEqual();
+    resolver.AddNotEqual();
     
     // Activation functions (for RNN/LSTM)
     resolver.AddTanh();
