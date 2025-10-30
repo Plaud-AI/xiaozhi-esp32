@@ -1,24 +1,16 @@
-/* Copyright 2023 The TensorFlow Authors. All Rights Reserved.
- * 
- * 唤醒词识别模型数据（占位符）
- * 
- * 这是一个最小的占位符 TFLite 模型，用于编译测试。
- * 它不会产生有意义的识别结果。
- * 
- * 要使用真实的唤醒词识别功能，请替换为实际训练的模型。
- */
+/*
 
 #include "wake_word_model_data.h"
 
 #include <stdint.h>
+
 
 // 最小的 TFLite 模型（占位符）
 // 这个模型的结构：
 // - 输入：[1, 49, 40, 1] int8
 // - 输出：[1, 4] int8
 // - 单层 FullyConnected（权重全为 0）
-// 
-// 注意：这只是为了编译通过，不会产生有意义的识别结果
+
 alignas(8) const unsigned char g_wake_word_model_data[] = {
     0x1c, 0x00, 0x00, 0x00, 0x54, 0x46, 0x4c, 0x33, 0x14, 0x00, 0x20, 0x00,
     0x1c, 0x00, 0x18, 0x00, 0x14, 0x00, 0x10, 0x00, 0x0c, 0x00, 0x00, 0x00,
@@ -231,3 +223,4 @@ alignas(8) const unsigned char g_wake_word_model_data[] = {
 
 const unsigned int g_wake_word_model_data_len = sizeof(g_wake_word_model_data);
 
+*/
