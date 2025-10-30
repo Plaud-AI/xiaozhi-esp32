@@ -530,7 +530,7 @@ if(CONFIG_IDF_TARGET_ESP32S3 OR CONFIG_IDF_TARGET_ESP32P4)
     # PlaudSRCommand core engine and dependencies
     list(APPEND SOURCES "audio/wake_words/plaud_sr_command.cc")
     list(APPEND SOURCES "audio/wake_words/fft.cc")
-    list(APPEND SOURCES "audio/wake_words/wake_word_model_data.cc")
+    list(APPEND SOURCES "audio/wake_words/model_data.cc")
 else()
     list(APPEND SOURCES "audio/wake_words/esp_wake_word.cc")
 endif()
