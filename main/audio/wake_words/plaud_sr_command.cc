@@ -293,7 +293,7 @@ bool PlaudSRCommand::LoadModel() {
     
     // Control flow (for streaming models)
     resolver.AddWhile();
-    resolver.AddSelect();  // Conditional selection (ternary operator)
+    resolver.AddSelectV2();  // Conditional selection (ternary operator)
     
     // Tensor manipulation
     resolver.AddConcatenation();
