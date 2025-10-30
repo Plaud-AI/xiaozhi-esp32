@@ -254,56 +254,98 @@ bool PlaudSRCommand::LoadModel() {
     
     ESP_LOGI(TAG, "Allocated tensor arena: %zu bytes", config_.tensor_arena_size);
     
-    // Create op resolver - add common ops for streaming keyword spotting
-    // Note: Increase the size if model requires more ops
-    static tflite::MicroMutableOpResolver<37> resolver;
+    // Use a large MicroMutableOpResolver to include most TFLite Micro operations
+    // This model is complex and requires many operations
+    static tflite::MicroMutableOpResolver<80> resolver;
     
-    // Basic neural network ops
-    resolver.AddFullyConnected();
-    resolver.AddSoftmax();
-    resolver.AddRelu();
-    resolver.AddQuantize();
-    resolver.AddDequantize();
-    resolver.AddReshape();
-    
-    // Convolutional ops
-    resolver.AddConv2D();
-    resolver.AddDepthwiseConv2D();
-    resolver.AddAveragePool2D();
-    resolver.AddMaxPool2D();
-    
-    // Arithmetic ops (for RNN/LSTM)
+    // Add all commonly used operations for speech recognition models
+    resolver.AddAbs();
     resolver.AddAdd();
-    resolver.AddMul();
-    resolver.AddSub();
-    resolver.AddMinimum();
-    resolver.AddMaximum();
-    
-    // Comparison ops (for conditional logic)
-    resolver.AddLess();
-    resolver.AddLessEqual();
+    resolver.AddAddN();
+    resolver.AddArgMax();
+    resolver.AddArgMin();
+    resolver.AddAssignVariable();
+    resolver.AddBatchMatMul();
+    resolver.AddBatchToSpaceNd();
+    resolver.AddBroadcastArgs();
+    resolver.AddBroadcastTo();
+    resolver.AddCast();
+    resolver.AddCeil();
+    resolver.AddConcatenation();
+    resolver.AddCos();
+    resolver.AddCumSum();
+    resolver.AddDepthToSpace();
+    resolver.AddDequantize();
+    resolver.AddDiv();
+    resolver.AddElu();
+    resolver.AddEqual();
+    resolver.AddExp();
+    resolver.AddExpandDims();
+    resolver.AddFill();
+    resolver.AddFloor();
+    resolver.AddFloorDiv();
+    resolver.AddFloorMod();
+    resolver.AddFullyConnected();
+    resolver.AddGather();
+    resolver.AddGatherNd();
     resolver.AddGreater();
     resolver.AddGreaterEqual();
-    resolver.AddEqual();
-    resolver.AddNotEqual();
-    
-    // Activation functions (for RNN/LSTM)
-    resolver.AddTanh();
+    resolver.AddHardSwish();
+    resolver.AddIf();
+    resolver.AddLeakyRelu();
+    resolver.AddLess();
+    resolver.AddLessEqual();
+    resolver.AddLog();
+    resolver.AddLogicalAnd();
+    resolver.AddLogicalNot();
+    resolver.AddLogicalOr();
     resolver.AddLogistic();  // Sigmoid
-    
-    // Control flow (for streaming models)
-    resolver.AddWhile();
-    resolver.AddSelectV2();  // Conditional selection (ternary operator)
-    
-    // Tensor manipulation
-    resolver.AddConcatenation();
+    resolver.AddLogSoftmax();
+    resolver.AddMaximum();
+    resolver.AddMean();
+    resolver.AddMinimum();
+    resolver.AddMirrorPad();
+    resolver.AddMul();
+    resolver.AddNeg();
+    resolver.AddNotEqual();
+    resolver.AddPack();
+    resolver.AddPad();
+    resolver.AddPrelu();
+    resolver.AddQuantize();
+    resolver.AddReadVariable();
+    resolver.AddReduceMax();
+    resolver.AddReduceMin();
+    resolver.AddRelu();
+    resolver.AddReshape();
+    resolver.AddResizeBilinear();
+    resolver.AddResizeNearestNeighbor();
+    resolver.AddRound();
+    resolver.AddRsqrt();
+    resolver.AddSelectV2();  // SELECT_V2
+    resolver.AddShape();
+    resolver.AddSin();
+    resolver.AddSlice();
+    resolver.AddSoftmax();
+    resolver.AddSpaceToBatchNd();
+    resolver.AddSpaceToDepth();
     resolver.AddSplit();
-    resolver.AddTranspose();     // Required for attention/conformer models
-    resolver.AddPack();          // May be needed for sequence models
-    resolver.AddUnpack();        // May be needed for sequence models
-    resolver.AddStridedSlice();  // Required for tensor slicing operations
-    resolver.AddShape();         // Required for dynamic shape operations
-    resolver.AddGatherNd();      // Required for indexed tensor access
+    resolver.AddSplitV();
+    resolver.AddSqueeze();
+    resolver.AddSqrt();
+    resolver.AddSquare();
+    resolver.AddSquaredDifference();
+    resolver.AddStridedSlice();
+    resolver.AddSub();
+    resolver.AddSum();
+    resolver.AddSvdf();
+    resolver.AddTanh();
+    resolver.AddTranspose();
+    resolver.AddTransposeConv();
+    resolver.AddUnpack();
+    resolver.AddUnidirectionalSequenceLSTM();
+    resolver.AddVarHandle();
+    resolver.AddWhile();
+    resolver.AddZerosLike();
     
     // Create interpreter
     static tflite::MicroInterpreter static_interpreter(
