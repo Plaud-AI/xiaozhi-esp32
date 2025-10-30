@@ -254,19 +254,39 @@ bool PlaudSRCommand::LoadModel() {
     
     ESP_LOGI(TAG, "Allocated tensor arena: %zu bytes", config_.tensor_arena_size);
     
-    // Create op resolver - add common ops for keyword spotting
-    static tflite::MicroMutableOpResolver<11> resolver;
+    // Create op resolver - add common ops for streaming keyword spotting
+    // Note: Increase the size if model requires more ops
+    static tflite::MicroMutableOpResolver<20> resolver;
+    
+    // Basic neural network ops
     resolver.AddFullyConnected();
     resolver.AddSoftmax();
     resolver.AddRelu();
     resolver.AddQuantize();
     resolver.AddDequantize();
     resolver.AddReshape();
+    
+    // Convolutional ops
     resolver.AddConv2D();
     resolver.AddDepthwiseConv2D();
     resolver.AddAveragePool2D();
     resolver.AddMaxPool2D();
-    resolver.AddSub();  // Required by the model
+    
+    // Arithmetic ops (for RNN/LSTM)
+    resolver.AddAdd();
+    resolver.AddMul();
+    resolver.AddSub();
+    
+    // Activation functions (for RNN/LSTM)
+    resolver.AddTanh();
+    resolver.AddLogistic();  // Sigmoid
+    
+    // Control flow (for streaming models)
+    resolver.AddWhile();
+    
+    // Tensor manipulation
+    resolver.AddConcatenation();
+    resolver.AddSplit();
     
     // Create interpreter
     static tflite::MicroInterpreter static_interpreter(
