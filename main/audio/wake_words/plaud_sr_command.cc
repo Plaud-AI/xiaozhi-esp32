@@ -255,7 +255,7 @@ bool PlaudSRCommand::LoadModel() {
     ESP_LOGI(TAG, "Allocated tensor arena: %zu bytes", config_.tensor_arena_size);
     
     // Create op resolver - add common ops for keyword spotting
-    static tflite::MicroMutableOpResolver<10> resolver;
+    static tflite::MicroMutableOpResolver<11> resolver;
     resolver.AddFullyConnected();
     resolver.AddSoftmax();
     resolver.AddRelu();
@@ -266,6 +266,7 @@ bool PlaudSRCommand::LoadModel() {
     resolver.AddDepthwiseConv2D();
     resolver.AddAveragePool2D();
     resolver.AddMaxPool2D();
+    resolver.AddSub();  // Required by the model
     
     // Create interpreter
     static tflite::MicroInterpreter static_interpreter(
