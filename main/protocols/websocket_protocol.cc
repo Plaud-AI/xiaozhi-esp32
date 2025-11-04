@@ -90,7 +90,7 @@ bool WebsocketProtocol::OpenAudioChannel() {
 
     // 如果 NVS 中没有 WebSocket URL，使用默认值
     if (url.empty()) {
-        url = "ws://10.1.164.12:8000/xiaozhi/v1/";
+        url = "ws://34.221.190.98:8000/xiaozhi/v1/";
         ESP_LOGW(TAG, "WebSocket URL not configured in NVS, using default: %s", url.c_str());
     }
 
@@ -118,6 +118,7 @@ bool WebsocketProtocol::OpenAudioChannel() {
 
     websocket_->OnData([this](const char* data, size_t len, bool binary) {
         if (binary) {
+            ESP_LOGI(TAG, "Received binary data: %u bytes", (unsigned int)len);
             if (on_incoming_audio_ != nullptr) {
                 if (version_ == 2) {
                     BinaryProtocol2* bp2 = (BinaryProtocol2*)data;
@@ -154,6 +155,7 @@ bool WebsocketProtocol::OpenAudioChannel() {
             }
         } else {
             // Parse JSON data
+            ESP_LOGI(TAG, "Received JSON: %.*s", (int)(len > 200 ? 200 : len), data);
             auto root = cJSON_Parse(data);
             auto type = cJSON_GetObjectItem(root, "type");
             if (cJSON_IsString(type)) {

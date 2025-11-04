@@ -77,6 +77,10 @@ void AudioService::Start() {
     service_stopped_ = false;
     xEventGroupClearBits(event_group_, AS_EVENT_AUDIO_TESTING_RUNNING | AS_EVENT_WAKE_WORD_RUNNING | AS_EVENT_AUDIO_PROCESSOR_RUNNING);
 
+    // Initialize audio activity timestamps to prevent immediate power-down
+    last_input_time_ = std::chrono::steady_clock::now();
+    last_output_time_ = std::chrono::steady_clock::now();
+
     esp_timer_start_periodic(audio_power_timer_, 1000000);
 
 #if CONFIG_USE_AUDIO_PROCESSOR
@@ -315,12 +319,14 @@ void AudioService::OpusCodecTask() {
             audio_queue_cv_.notify_all();
             lock.unlock();
 
+            ESP_LOGI(TAG, "Decoding audio packet: payload_size=%u", (unsigned int)packet->payload.size());
             auto task = std::make_unique<AudioTask>();
             task->type = kAudioTaskTypeDecodeToPlaybackQueue;
             task->timestamp = packet->timestamp;
 
             SetDecodeSampleRate(packet->sample_rate, packet->frame_duration);
             if (opus_decoder_->Decode(std::move(packet->payload), task->pcm)) {
+                ESP_LOGI(TAG, "Decoded audio successfully: pcm_size=%u", (unsigned int)task->pcm.size());
                 // Resample if the sample rate is different
                 if (opus_decoder_->sample_rate() != codec_->output_sample_rate()) {
                     int target_size = output_resampler_.GetOutputSamples(task->pcm.size());
@@ -415,10 +421,13 @@ void AudioService::PushTaskToEncodeQueue(AudioTaskType type, std::vector<int16_t
 
 bool AudioService::PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> packet, bool wait) {
     std::unique_lock<std::mutex> lock(audio_queue_mutex_);
+    ESP_LOGI(TAG, "Pushing audio packet to decode queue: size=%u, queue_size=%u", 
+             (unsigned int)packet->payload.size(), (unsigned int)audio_decode_queue_.size());
     if (audio_decode_queue_.size() >= MAX_DECODE_PACKETS_IN_QUEUE) {
         if (wait) {
             audio_queue_cv_.wait(lock, [this]() { return audio_decode_queue_.size() < MAX_DECODE_PACKETS_IN_QUEUE; });
         } else {
+            ESP_LOGW(TAG, "Decode queue full, dropping packet");
             return false;
         }
     }
@@ -642,6 +651,8 @@ void AudioService::ResetDecoder() {
     audio_playback_queue_.clear();
     audio_testing_queue_.clear();
     audio_queue_cv_.notify_all();
+    // Update output timestamp to prevent power-down while waiting for audio data
+    last_output_time_ = std::chrono::steady_clock::now();
 }
 
 void AudioService::CheckAndUpdateAudioPowerState() {
