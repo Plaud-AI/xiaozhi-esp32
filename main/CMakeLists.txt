@@ -28,6 +28,7 @@ set(SOURCES "audio/audio_codec.cc"
             "protocols/protocol.cc"
             "protocols/mqtt_protocol.cc"
             "protocols/websocket_protocol.cc"
+            "bluetooth_service.cc"
             "mcp_server.cc"
             "system_info.cc"
             "application.cc"
@@ -596,6 +597,7 @@ idf_component_register(SRCS ${SOURCES}
                     EMBED_FILES ${LANG_SOUNDS} ${COMMON_SOUNDS}
                     INCLUDE_DIRS ${INCLUDE_DIRS}
                     REQUIRES spi_flash esp_psram esp_app_format app_update efuse bootloader_support
+                    PRIV_REQUIRES bt
                     WHOLE_ARCHIVE
                     )
 
