@@ -164,11 +164,14 @@ static void ble_on_sync(void) {
     ESP_LOGI(TAG, "BLE堆栈已同步");
     
     // 确保使用随机地址
-    int rc = ble_hs_id_infer_auto(0, NULL);
+    uint8_t own_addr_type;
+    int rc = ble_hs_id_infer_auto(0, &own_addr_type);
     if (rc != 0) {
         ESP_LOGE(TAG, "设置地址类型失败: %d", rc);
         return;
     }
+    
+    ESP_LOGI(TAG, "地址类型: %d", own_addr_type);
 
     // 开始广播
     if (g_instance) {
