@@ -2697,12 +2697,6 @@ CONFIG_WIFI_PROV_STA_ALL_CHANNEL_SCAN=y
 # end of ESP Emote Graphics Framework
 
 #
-# Animation Player Configuration
-#
-CONFIG_ANIM_PLAYER_DEFAULT_FPS=30
-# end of Animation Player Configuration
-
-#
 # ADC Battery Estimation
 #
 CONFIG_OCV_SOC_MODEL_1=y
