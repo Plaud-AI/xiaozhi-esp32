@@ -45,6 +45,11 @@ inline void InitializeBluetoothService() {
         ESP_LOGI(BT_EXAMPLE_TAG, "📍 MAC地址: %s", bt.GetMacAddress().c_str());
         ESP_LOGI(BT_EXAMPLE_TAG, "========================================");
         ESP_LOGI(BT_EXAMPLE_TAG, "");
+        
+        // 等待一下让 NimBLE 完全初始化
+        ESP_LOGI(BT_EXAMPLE_TAG, "⏳ 等待蓝牙堆栈同步...");
+        vTaskDelay(pdMS_TO_TICKS(2000));  // 等待2秒
+        
         ESP_LOGI(BT_EXAMPLE_TAG, "📲 如何连接:");
         ESP_LOGI(BT_EXAMPLE_TAG, "1. 打开手机蓝牙");
         ESP_LOGI(BT_EXAMPLE_TAG, "2. 使用蓝牙调试App (推荐: nRF Connect 或 LightBlue)");

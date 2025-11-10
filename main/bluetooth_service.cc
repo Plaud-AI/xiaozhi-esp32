@@ -228,10 +228,12 @@ bool BluetoothService::Initialize(const std::string& device_name) {
     ble_hs_cfg.sync_cb = ble_on_sync;
     ble_hs_cfg.reset_cb = ble_on_reset;
 
+    // 在启动BLE任务之前设置初始化标志，因为BLE任务可能很快同步并调用StartAdvertising()
+    initialized_ = true;
+    
     // 启动BLE主机任务
     nimble_port_freertos_init(ble_host_task);
 
-    initialized_ = true;
     ESP_LOGI(TAG, "蓝牙服务初始化成功");
     ESP_LOGI(TAG, "设备MAC地址: %s", GetMacAddress().c_str());
 
