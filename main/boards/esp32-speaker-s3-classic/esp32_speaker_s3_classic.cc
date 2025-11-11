@@ -231,7 +231,7 @@ public:
 
     // ========== 获取背光控制 ==========
     virtual Backlight* GetBacklight() override {
-        static GpioBacklight backlight(DISPLAY_BACKLIGHT_PIN, DISPLAY_BACKLIGHT_OUTPUT_INVERT);
+        static PwmBacklight backlight(DISPLAY_BACKLIGHT_PIN, DISPLAY_BACKLIGHT_OUTPUT_INVERT);
         return &backlight;
     }
 };

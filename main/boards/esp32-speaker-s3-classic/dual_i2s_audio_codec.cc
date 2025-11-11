@@ -241,10 +241,9 @@ int DualI2sAudioCodec::Read(int16_t* dest, int samples) {
     }
     
     std::lock_guard<std::mutex> lock(data_if_mutex_);
-    size_t bytes_read = 0;
-    esp_err_t ret = esp_codec_dev_read(input_dev_, dest, samples * sizeof(int16_t), &bytes_read, 1000);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "读取音频数据失败: %d", ret);
+    int bytes_read = esp_codec_dev_read(input_dev_, dest, samples * sizeof(int16_t));
+    if (bytes_read < 0) {
+        ESP_LOGE(TAG, "读取音频数据失败: %d", bytes_read);
         return 0;
     }
     return bytes_read / sizeof(int16_t);
@@ -256,10 +255,9 @@ int DualI2sAudioCodec::Write(const int16_t* data, int samples) {
     }
     
     std::lock_guard<std::mutex> lock(data_if_mutex_);
-    size_t bytes_written = 0;
-    esp_err_t ret = esp_codec_dev_write(output_dev_, (void*)data, samples * sizeof(int16_t), &bytes_written, 1000);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "写入音频数据失败: %d", ret);
+    int bytes_written = esp_codec_dev_write(output_dev_, (void*)data, samples * sizeof(int16_t));
+    if (bytes_written < 0) {
+        ESP_LOGE(TAG, "写入音频数据失败: %d", bytes_written);
         return 0;
     }
     return bytes_written / sizeof(int16_t);
