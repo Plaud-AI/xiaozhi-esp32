@@ -19,7 +19,7 @@
  * 使用方法：
  * 1. 在main.cc或application.cc中调用这个函数
  * 2. 使用手机的蓝牙扫描功能查找设备
- * 3. 设备名称：PLAUD-AI-ESP32
+ * 3. 设备名称：ESP32-PLAUD
  * 
  * @example
  * ```cpp
@@ -37,7 +37,7 @@ inline void InitializeBluetoothService() {
     });
     
     // 初始化蓝牙服务
-    std::string device_name = "PLAUD-AI-ESP32";
+    std::string device_name = "ESP32-PLAUD";
     if (bt.Initialize(device_name)) {
         ESP_LOGI(BT_EXAMPLE_TAG, "========================================");
         ESP_LOGI(BT_EXAMPLE_TAG, "🎉 蓝牙服务已启动");
