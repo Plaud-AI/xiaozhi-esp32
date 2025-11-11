@@ -600,7 +600,7 @@ endif()
 idf_component_register(SRCS ${SOURCES}
                     EMBED_FILES ${LANG_SOUNDS} ${COMMON_SOUNDS}
                     INCLUDE_DIRS ${INCLUDE_DIRS}
-                    REQUIRES spi_flash esp_psram esp_app_format app_update efuse bootloader_support
+                    REQUIRES spi_flash esp_psram esp_app_format app_update efuse bootloader_support esp-opus-encoder
                     PRIV_REQUIRES bt
                     WHOLE_ARCHIVE
                     )
