@@ -1,0 +1,93 @@
+#ifndef BLUETOOTH_SERVICE_H
+#define BLUETOOTH_SERVICE_H
+
+#include <string>
+#include <functional>
+#include <memory>
+#include "freertos/FreeRTOS.h"
+#include "freertos/event_groups.h"
+
+/**
+ * @brief 蓝牙服务类
+ * 
+ * 实现BLE广播、连接和数据传输功能
+ * 手机可以扫描到设备并连接
+ */
+class BluetoothService {
+public:
+    /**
+     * @brief 获取单例实例
+     */
+    static BluetoothService& GetInstance() {
+        static BluetoothService instance;
+        return instance;
+    }
+
+    // 删除拷贝构造和赋值
+    BluetoothService(const BluetoothService&) = delete;
+    BluetoothService& operator=(const BluetoothService&) = delete;
+
+    /**
+     * @brief 初始化蓝牙服务
+     * @param device_name 设备名称（会显示在手机扫描列表中）
+     * @return true 初始化成功，false 初始化失败
+     */
+    bool Initialize(const std::string& device_name);
+
+    /**
+     * @brief 启动BLE广播
+     * @return true 启动成功，false 启动失败
+     */
+    bool StartAdvertising();
+
+    /**
+     * @brief 停止BLE广播
+     */
+    void StopAdvertising();
+
+    /**
+     * @brief 发送数据到已连接的客户端
+     * @param data 要发送的数据
+     * @return true 发送成功，false 发送失败
+     */
+    bool SendData(const std::string& data);
+
+    /**
+     * @brief 设置数据接收回调
+     * @param callback 接收到数据时的回调函数
+     */
+    void SetDataReceivedCallback(std::function<void(const std::string&)> callback);
+
+    /**
+     * @brief 获取设备名称
+     */
+    std::string GetDeviceName() const { return device_name_; }
+
+    /**
+     * @brief 获取设备MAC地址
+     */
+    std::string GetMacAddress() const;
+
+    /**
+     * @brief 是否已连接
+     */
+    bool IsConnected() const { return connected_; }
+
+    // NimBLE回调函数(需要是public的，因为要在C结构体中使用)
+    static int gap_event_handler(struct ble_gap_event *event, void *arg);
+    static int gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_handle,
+                                   struct ble_gatt_access_ctxt *ctxt, void *arg);
+
+private:
+    BluetoothService();
+    ~BluetoothService();
+
+    std::string device_name_;
+    bool initialized_;
+    bool connected_;
+    uint16_t conn_handle_;
+    std::function<void(const std::string&)> data_received_callback_;
+};
+
+#endif // BLUETOOTH_SERVICE_H
+

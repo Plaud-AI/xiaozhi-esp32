@@ -90,7 +90,7 @@ bool WebsocketProtocol::OpenAudioChannel() {
 
     // 如果 NVS 中没有 WebSocket URL，使用默认值
     if (url.empty()) {
-        url = "ws://10.1.164.12:8000/xiaozhi/v1/";
+        url = "ws://34.221.190.98:8000/xiaozhi/v1/";
         ESP_LOGW(TAG, "WebSocket URL not configured in NVS, using default: %s", url.c_str());
     }
 

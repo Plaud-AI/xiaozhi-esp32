@@ -2,7 +2,7 @@ menu "Xiaozhi Assistant"
 
 config OTA_URL
     string "Default OTA URL"
-    default "http://10.1.164.12:8002/xiaozhi/ota/"
+    default "http://34.221.190.98:8002/xiaozhi/ota/"
     help
         The application will access this URL to check for new firmwares and server address.
 
@@ -114,6 +114,9 @@ choice BOARD_TYPE
         depends on IDF_TARGET_ESP32C3
     config BOARD_TYPE_ESP32S3_KORVO2_V3
         bool "ESP32S3 KORVO2 V3"
+        depends on IDF_TARGET_ESP32S3
+    config BOARD_TYPE_ESP32_SPEAKER_S3_CLASSIC
+        bool "ESP32 Speaker S3 Classic"
         depends on IDF_TARGET_ESP32S3
     config BOARD_TYPE_ESP_SPARKBOT
         bool "ESP-SparkBot"

@@ -28,6 +28,7 @@ set(SOURCES "audio/audio_codec.cc"
             "protocols/protocol.cc"
             "protocols/mqtt_protocol.cc"
             "protocols/websocket_protocol.cc"
+            "bluetooth_service.cc"
             "mcp_server.cc"
             "system_info.cc"
             "application.cc"
@@ -198,6 +199,10 @@ elseif(CONFIG_BOARD_TYPE_ESP32S3_KORVO2_V3)
     set(BUILTIN_TEXT_FONT font_puhui_basic_20_4)
     set(BUILTIN_ICON_FONT font_awesome_20_4)
     set(DEFAULT_EMOJI_COLLECTION twemoji_64)
+elseif(CONFIG_BOARD_TYPE_ESP32_SPEAKER_S3_CLASSIC)
+    set(BOARD_TYPE "esp32-speaker-s3-classic")
+    set(BUILTIN_TEXT_FONT font_puhui_basic_14_1)
+    set(BUILTIN_ICON_FONT font_awesome_14_1)
 elseif(CONFIG_BOARD_TYPE_ESP_SPARKBOT)
     set(BOARD_TYPE "esp-sparkbot")
     set(BUILTIN_TEXT_FONT font_puhui_basic_20_4)
@@ -600,6 +605,8 @@ endif()
 idf_component_register(SRCS ${SOURCES}
                     EMBED_FILES ${LANG_SOUNDS} ${COMMON_SOUNDS}
                     INCLUDE_DIRS ${INCLUDE_DIRS}
+                    REQUIRES spi_flash esp_psram esp_app_format app_update efuse bootloader_support esp-opus-encoder
+                    PRIV_REQUIRES bt
                     WHOLE_ARCHIVE
                     )
 

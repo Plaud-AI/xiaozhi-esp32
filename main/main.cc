@@ -9,6 +9,7 @@
 
 #include "application.h"
 #include "system_info.h"
+#include "bluetooth_example.h"
 
 #define TAG "main"
 
@@ -25,6 +26,9 @@ extern "C" void app_main(void)
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
+
+    // 初始化蓝牙服务
+    InitializeBluetoothService();
 
     // Launch the application
     auto& app = Application::GetInstance();
