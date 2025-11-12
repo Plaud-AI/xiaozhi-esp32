@@ -39,7 +39,7 @@ set(SOURCES "audio/audio_codec.cc"
             "main.cc"
             )
 
-set(INCLUDE_DIRS "." "display" "display/lvgl_display" "display/lvgl_display/jpg" "audio" "protocols")
+set(INCLUDE_DIRS "." "display" "display/lvgl_display" "display/lvgl_display/jpg" "audio" "audio/wake_words" "protocols")
 
 # Add board common files
 file(GLOB BOARD_COMMON_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/boards/common/*.cc)
@@ -531,6 +531,11 @@ endif()
 if(CONFIG_IDF_TARGET_ESP32S3 OR CONFIG_IDF_TARGET_ESP32P4)
     list(APPEND SOURCES "audio/wake_words/afe_wake_word.cc")
     list(APPEND SOURCES "audio/wake_words/custom_wake_word.cc")
+    list(APPEND SOURCES "audio/wake_words/tf_custom_wake_word.cc")
+    # PlaudSRCommand core engine and dependencies
+    list(APPEND SOURCES "audio/wake_words/plaud_sr_command.cc")
+    list(APPEND SOURCES "audio/wake_words/fft.cc")
+    list(APPEND SOURCES "audio/wake_words/model_data.cc")
 else()
     list(APPEND SOURCES "audio/wake_words/esp_wake_word.cc")
 endif()

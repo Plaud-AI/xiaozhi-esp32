@@ -11,6 +11,7 @@
 #if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4
 #include "wake_words/afe_wake_word.h"
 #include "wake_words/custom_wake_word.h"
+#include "wake_words/tf_custom_wake_word.h"
 #else
 #include "wake_words/esp_wake_word.h"
 #endif
@@ -673,17 +674,42 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
     }
 
 #if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4
+    
+#if CONFIG_USE_TFLITE_WAKE_WORD
+    ESP_LOGI(TAG, "Creating TFCustomWakeWord (TFLite implementation)");
+    wake_word_ = std::make_unique<TFCustomWakeWord>();
+#elif CONFIG_USE_CUSTOM_WAKE_WORD
+    // MultiNet 唤醒词（CustomWakeWord）
     if (esp_srmodel_filter(models_list_, ESP_MN_PREFIX, NULL) != nullptr) {
         ESP_LOGI(TAG, "Creating CustomWakeWord (MN prefix found)");
         wake_word_ = std::make_unique<CustomWakeWord>();
-    } else if (esp_srmodel_filter(models_list_, ESP_WN_PREFIX, NULL) != nullptr) {
+    } else {
+        ESP_LOGW(TAG, "MultiNet model not found in models list!");
+        wake_word_ = nullptr;
+    }
+#elif CONFIG_USE_AFE_WAKE_WORD
+    if (esp_srmodel_filter(models_list_, ESP_WN_PREFIX, NULL) != nullptr) {
         ESP_LOGI(TAG, "Creating AfeWakeWord (WN prefix found)");
+        wake_word_ = std::make_unique<AfeWakeWord>();
+    } else {
+        ESP_LOGW(TAG, "WakeNet model not found in models list!");
+        wake_word_ = nullptr;
+    }
+#else
+    // 自动检测模式（向后兼容）
+    if (esp_srmodel_filter(models_list_, ESP_MN_PREFIX, NULL) != nullptr) {
+        ESP_LOGI(TAG, "Creating CustomWakeWord (MN prefix found, auto-detected)");
+        wake_word_ = std::make_unique<CustomWakeWord>();
+    } else if (esp_srmodel_filter(models_list_, ESP_WN_PREFIX, NULL) != nullptr) {
+        ESP_LOGI(TAG, "Creating AfeWakeWord (WN prefix found, auto-detected)");
         wake_word_ = std::make_unique<AfeWakeWord>();
     } else {
         ESP_LOGW(TAG, "No wake word model found in models list!");
         wake_word_ = nullptr;
     }
-#else
+#endif
+
+#else  // ESP32, ESP32C3, ESP32C6
     if (esp_srmodel_filter(models_list_, ESP_WN_PREFIX, NULL) != nullptr) {
         ESP_LOGI(TAG, "Creating EspWakeWord (WN prefix found)");
         wake_word_ = std::make_unique<EspWakeWord>();
