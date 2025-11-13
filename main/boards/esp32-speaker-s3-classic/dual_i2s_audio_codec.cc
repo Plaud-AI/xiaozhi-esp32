@@ -89,22 +89,49 @@ DualI2sAudioCodec::DualI2sAudioCodec(
 
     i2c_cfg.addr = es7210_addr;
     in_ctrl_if_ = audio_codec_new_i2c_ctrl(&i2c_cfg);
-    assert(in_ctrl_if_ != nullptr);
+    
+    // ⚠️ ES7210 可能未焊接，允许初始化失败
+    if (in_ctrl_if_ == nullptr) {
+        ESP_LOGW(TAG, "⚠️ ES7210 I2C 控制接口创建失败（设备可能未焊接）");
+        ESP_LOGW(TAG, "⚠️ 音频输入功能将不可用，但输出功能正常");
+        input_dev_ = nullptr;
+        ESP_LOGI(TAG, "DualI2sAudioCodec 初始化完成（仅输出模式）");
+        return;
+    }
 
     es7210_codec_cfg_t es7210_cfg = {};
     es7210_cfg.ctrl_if = in_ctrl_if_;
     es7210_cfg.mic_selected = ES7210_SEL_MIC1;  // 使用单麦克风
     in_codec_if_ = es7210_codec_new(&es7210_cfg);
-    assert(in_codec_if_ != nullptr);
+    
+    if (in_codec_if_ == nullptr) {
+        ESP_LOGW(TAG, "⚠️ ES7210 编解码器创建失败（设备可能未焊接）");
+        ESP_LOGW(TAG, "⚠️ 音频输入功能将不可用，但输出功能正常");
+        audio_codec_delete_ctrl_if(in_ctrl_if_);
+        in_ctrl_if_ = nullptr;
+        input_dev_ = nullptr;
+        ESP_LOGI(TAG, "DualI2sAudioCodec 初始化完成（仅输出模式）");
+        return;
+    }
 
     dev_cfg.dev_type = ESP_CODEC_DEV_TYPE_IN;
     dev_cfg.codec_if = in_codec_if_;
     dev_cfg.data_if = in_data_if_;
     input_dev_ = esp_codec_dev_new(&dev_cfg);
-    assert(input_dev_ != nullptr);
     
-    ESP_LOGI(TAG, "ES7210 (ADC) 初始化完成");
-    ESP_LOGI(TAG, "DualI2sAudioCodec 完全初始化");
+    if (input_dev_ == nullptr) {
+        ESP_LOGW(TAG, "⚠️ ES7210 设备创建失败（设备可能未焊接）");
+        ESP_LOGW(TAG, "⚠️ 音频输入功能将不可用，但输出功能正常");
+        audio_codec_delete_codec_if(in_codec_if_);
+        audio_codec_delete_ctrl_if(in_ctrl_if_);
+        in_codec_if_ = nullptr;
+        in_ctrl_if_ = nullptr;
+        ESP_LOGI(TAG, "DualI2sAudioCodec 初始化完成（仅输出模式）");
+        return;
+    }
+    
+    ESP_LOGI(TAG, "✅ ES7210 (ADC) 初始化成功");
+    ESP_LOGI(TAG, "✅ DualI2sAudioCodec 完全初始化（输入+输出）");
 }
 
 DualI2sAudioCodec::~DualI2sAudioCodec() {

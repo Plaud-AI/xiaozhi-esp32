@@ -9,10 +9,10 @@
 #define AUDIO_OUTPUT_SAMPLE_RATE 16000
 
 // I2C 控制总线（ES8311 和 ES7210 共用）
-#define AUDIO_CODEC_I2C_SDA_PIN  GPIO_NUM_5  // ⚠️ 待确认：需要从原理图查找 ES_SDA 连接的 GPIO
-#define AUDIO_CODEC_I2C_SCL_PIN  GPIO_NUM_4  // ⚠️ 待确认：需要从原理图查找 ES_SCL 连接的 GPIO
-#define AUDIO_CODEC_ES8311_ADDR  ES8311_CODEC_DEFAULT_ADDR  // 默认 0x30，可能需要改为 0x18
-#define AUDIO_CODEC_ES7210_ADDR  0x40  // ✅ 已确认：AD0=GND, AD1=GND → 地址=0x40 (不是默认的 0x80)
+#define AUDIO_CODEC_I2C_SDA_PIN  GPIO_NUM_5  // ✅ 已从原理图确认：ESP_IO5 → ES_SDA
+#define AUDIO_CODEC_I2C_SCL_PIN  GPIO_NUM_4  // ✅ 已从原理图确认：ESP_IO4 → ES_SCL
+#define AUDIO_CODEC_ES8311_ADDR  0x18  // ✅ 从 I2C 扫描确认：实际地址为 0x18
+#define AUDIO_CODEC_ES7210_ADDR  0x40  // ✅ 从原理图确认：AD0=GND, AD1=GND → 地址=0x40
 
 // ES8311 (DAC/扬声器输出) I2S 引脚 - 使用 I2S0
 #define AUDIO_ES8311_MCLK        GPIO_NUM_3
