@@ -52,10 +52,23 @@ DualI2sAudioCodec::DualI2sAudioCodec(
         .bus_handle = i2c_master_handle,
     };
     out_ctrl_if_ = audio_codec_new_i2c_ctrl(&i2c_cfg);
-    assert(out_ctrl_if_ != nullptr);
+    
+    // ⚠️ ES8311 可能未焊接或硬件有问题，允许初始化失败
+    if (out_ctrl_if_ == nullptr) {
+        ESP_LOGW(TAG, "⚠️ ES8311 I2C 控制接口创建失败（设备可能未焊接）");
+        ESP_LOGW(TAG, "⚠️ 音频输出功能将不可用");
+        output_dev_ = nullptr;
+        goto init_es7210;  // 跳转到 ES7210 初始化
+    }
 
     out_gpio_if_ = audio_codec_new_gpio();
-    assert(out_gpio_if_ != nullptr);
+    if (out_gpio_if_ == nullptr) {
+        ESP_LOGW(TAG, "⚠️ ES8311 GPIO 接口创建失败");
+        audio_codec_delete_ctrl_if(out_ctrl_if_);
+        out_ctrl_if_ = nullptr;
+        output_dev_ = nullptr;
+        goto init_es7210;
+    }
 
     es8311_codec_cfg_t es8311_cfg = {};
     es8311_cfg.ctrl_if = out_ctrl_if_;
@@ -66,7 +79,18 @@ DualI2sAudioCodec::DualI2sAudioCodec(
     es8311_cfg.hw_gain.pa_voltage = 5.0;
     es8311_cfg.hw_gain.codec_dac_voltage = 3.3;
     out_codec_if_ = es8311_codec_new(&es8311_cfg);
-    assert(out_codec_if_ != nullptr);
+    
+    if (out_codec_if_ == nullptr) {
+        ESP_LOGW(TAG, "⚠️ ES8311 编解码器创建失败（设备可能未焊接或地址错误）");
+        ESP_LOGW(TAG, "⚠️ 当前尝试地址: 0x%02x", es8311_addr);
+        ESP_LOGW(TAG, "⚠️ I2C 扫描检测到的设备可能不是 ES8311");
+        audio_codec_delete_gpio_if(out_gpio_if_);
+        audio_codec_delete_ctrl_if(out_ctrl_if_);
+        out_gpio_if_ = nullptr;
+        out_ctrl_if_ = nullptr;
+        output_dev_ = nullptr;
+        goto init_es7210;
+    }
 
     esp_codec_dev_cfg_t dev_cfg = {
         .dev_type = ESP_CODEC_DEV_TYPE_OUT,
@@ -74,9 +98,21 @@ DualI2sAudioCodec::DualI2sAudioCodec(
         .data_if = out_data_if_,
     };
     output_dev_ = esp_codec_dev_new(&dev_cfg);
-    assert(output_dev_ != nullptr);
     
-    ESP_LOGI(TAG, "ES8311 (DAC) 初始化完成");
+    if (output_dev_ == nullptr) {
+        ESP_LOGW(TAG, "⚠️ ES8311 设备创建失败");
+        audio_codec_delete_codec_if(out_codec_if_);
+        audio_codec_delete_gpio_if(out_gpio_if_);
+        audio_codec_delete_ctrl_if(out_ctrl_if_);
+        out_codec_if_ = nullptr;
+        out_gpio_if_ = nullptr;
+        out_ctrl_if_ = nullptr;
+        goto init_es7210;
+    }
+    
+    ESP_LOGI(TAG, "✅ ES8311 (DAC) 初始化成功（地址 0x%02x）", es8311_addr);
+
+init_es7210:
 
     // ========== 初始化 ES7210 (ADC/输入) ==========
     audio_codec_i2s_cfg_t i2s_in_cfg = {
@@ -130,8 +166,15 @@ DualI2sAudioCodec::DualI2sAudioCodec(
         return;
     }
     
-    ESP_LOGI(TAG, "✅ ES7210 (ADC) 初始化成功");
-    ESP_LOGI(TAG, "✅ DualI2sAudioCodec 完全初始化（输入+输出）");
+    ESP_LOGI(TAG, "✅ ES7210 (ADC) 初始化成功（地址 0x%02x）", es7210_addr);
+    
+    // ========== 初始化完成总结 ==========
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "DualI2sAudioCodec 初始化完成");
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "音频输出 (ES8311): %s", output_dev_ ? "✅ 正常" : "❌ 不可用");
+    ESP_LOGI(TAG, "音频输入 (ES7210): %s", input_dev_ ? "✅ 正常" : "❌ 不可用");
+    ESP_LOGI(TAG, "========================================");
 }
 
 DualI2sAudioCodec::~DualI2sAudioCodec() {
