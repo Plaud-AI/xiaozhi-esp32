@@ -14,6 +14,15 @@
 
 #define TAG "esp32-speaker-s3-classic"
 
+// ========== I2C 诊断模式开关 ==========
+// 设置为 1 启用详细的 I2C 诊断（会测试多组引脚）
+// 设置为 0 使用正常模式
+#define ENABLE_I2C_DIAGNOSTIC 0  // ✅ 已禁用：硬件配置已从原理图确认
+
+#if ENABLE_I2C_DIAGNOSTIC
+extern void TestI2CConnection();  // 声明测试函数
+#endif
+
 class Esp32SpeakerS3Classic : public WifiBoard {
 private:
     i2c_master_bus_handle_t i2c_bus_;
@@ -187,12 +196,27 @@ public:
         ESP_LOGI(TAG, "初始化 ESP32 Speaker S3 Classic 开发板");
         ESP_LOGI(TAG, "========================================");
         
+#if ENABLE_I2C_DIAGNOSTIC
+        // ⚠️ I2C 诊断模式：测试所有可能的引脚组合
+        ESP_LOGW(TAG, "");
+        ESP_LOGW(TAG, "⚠️⚠️⚠️ I2C 诊断模式已启用 ⚠️⚠️⚠️");
+        ESP_LOGW(TAG, "将测试多组引脚配置以找到正确的 I2C 连接");
+        ESP_LOGW(TAG, "");
+        TestI2CConnection();
+        ESP_LOGW(TAG, "");
+        ESP_LOGW(TAG, "⚠️ 诊断完成！请查看上面的输出找到正确的引脚配置");
+        ESP_LOGW(TAG, "⚠️ 然后修改 config.h 并设置 ENABLE_I2C_DIAGNOSTIC=0");
+        ESP_LOGW(TAG, "");
+        // 诊断模式下不继续初始化其他模块，避免崩溃
+        return;
+#else
         // 按顺序初始化各个模块
         InitializeI2c();
         I2cDetect();  // 调试：扫描 I2C 设备
         InitializeSpi();
         InitializeSt7789Display();
         InitializeButtons();
+#endif
         
         // 设置背光亮度
         GetBacklight()->SetBrightness(100);
