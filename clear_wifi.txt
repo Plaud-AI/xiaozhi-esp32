@@ -4,7 +4,7 @@
 在串口终端中输入：
 nvs_erase wifi
 
-## 方法2: 擦除整个NVS分区
+## 方法2: 擦除整个NVS分区   
 idf.py erase-flash
 
 ## 方法3: 只擦除NVS命名空间
