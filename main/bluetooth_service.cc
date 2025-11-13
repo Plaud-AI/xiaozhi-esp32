@@ -27,8 +27,9 @@ static uint16_t g_char_val_handle;
 static BluetoothService* g_instance = nullptr;
 
 BluetoothService::BluetoothService() 
-    : initialized_(false), connected_(false), conn_handle_(0) {
+    : initialized_(false), connected_(false), conn_handle_(0), mtu_(23) {
     g_instance = this;
+    ESP_LOGI(TAG, "BluetoothService构造，默认MTU: %d", mtu_);
 }
 
 BluetoothService::~BluetoothService() {
@@ -142,6 +143,8 @@ int BluetoothService::gap_event_handler(struct ble_gap_event *event, void *arg) 
             ESP_LOGI(TAG, "MTU更新: conn_handle=%d mtu=%d",
                      event->mtu.conn_handle,
                      event->mtu.value);
+            g_instance->mtu_ = event->mtu.value;
+            ESP_LOGI(TAG, "✓ MTU已更新为: %d 字节", g_instance->mtu_);
             break;
 
         default:
@@ -299,19 +302,80 @@ bool BluetoothService::SendData(const std::string& data) {
         return false;
     }
 
-    struct os_mbuf *om = ble_hs_mbuf_from_flat(data.c_str(), data.length());
-    if (!om) {
-        ESP_LOGE(TAG, "分配mbuf失败");
-        return false;
-    }
+    // 添加换行符作为数据结束标记
+    std::string data_with_end = data + "\n";
+    size_t total_length = data_with_end.length();
+    
+    // BLE ATT协议开销是3字节，所以实际可用MTU是 (mtu - 3)
+    size_t max_chunk_size = (mtu_ > 3) ? (mtu_ - 3) : 20;
+    
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "准备发送数据");
+    ESP_LOGI(TAG, "数据长度: %d 字节 (含结束符)", total_length);
+    ESP_LOGI(TAG, "当前MTU: %d 字节", mtu_);
+    ESP_LOGI(TAG, "分包大小: %d 字节", max_chunk_size);
+    
+    // 如果数据小于等于单个包大小，直接发送
+    if (total_length <= max_chunk_size) {
+        ESP_LOGI(TAG, "数据适合单包传输，直接发送");
+        
+        struct os_mbuf *om = ble_hs_mbuf_from_flat(data_with_end.c_str(), total_length);
+        if (!om) {
+            ESP_LOGE(TAG, "❌ 分配mbuf失败");
+            return false;
+        }
 
-    int rc = ble_gatts_notify_custom(conn_handle_, g_char_val_handle, om);
-    if (rc != 0) {
-        ESP_LOGE(TAG, "发送通知失败: %d", rc);
-        return false;
-    }
+        int rc = ble_gatts_notify_custom(conn_handle_, g_char_val_handle, om);
+        if (rc != 0) {
+            ESP_LOGE(TAG, "❌ 发送通知失败: %d", rc);
+            return false;
+        }
 
-    ESP_LOGI(TAG, "已发送数据: %s", data.c_str());
+        ESP_LOGI(TAG, "✓ 数据发送成功");
+        ESP_LOGI(TAG, "========================================");
+        return true;
+    }
+    
+    // 需要分包发送
+    size_t chunks_count = (total_length + max_chunk_size - 1) / max_chunk_size;
+    ESP_LOGI(TAG, "数据需要分 %d 个包发送", chunks_count);
+    
+    size_t offset = 0;
+    size_t chunk_index = 0;
+    
+    while (offset < total_length) {
+        size_t chunk_size = std::min(max_chunk_size, total_length - offset);
+        chunk_index++;
+        
+        ESP_LOGD(TAG, "发送第 %d/%d 包，大小: %d 字节", 
+                 chunk_index, chunks_count, chunk_size);
+        
+        struct os_mbuf *om = ble_hs_mbuf_from_flat(
+            data_with_end.c_str() + offset, 
+            chunk_size
+        );
+        
+        if (!om) {
+            ESP_LOGE(TAG, "❌ 分配mbuf失败 (第 %d 包)", chunk_index);
+            return false;
+        }
+
+        int rc = ble_gatts_notify_custom(conn_handle_, g_char_val_handle, om);
+        if (rc != 0) {
+            ESP_LOGE(TAG, "❌ 发送第 %d 包失败: %d", chunk_index, rc);
+            return false;
+        }
+        
+        offset += chunk_size;
+        
+        // 在发送包之间添加小延迟，避免数据拥塞
+        if (offset < total_length) {
+            vTaskDelay(pdMS_TO_TICKS(10));  // 10ms延迟
+        }
+    }
+    
+    ESP_LOGI(TAG, "✓ 所有数据包发送成功 (%d 包)", chunks_count);
+    ESP_LOGI(TAG, "========================================");
     return true;
 }
 
