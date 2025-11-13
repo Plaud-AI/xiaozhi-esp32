@@ -86,6 +86,10 @@ public:
     
     virtual ~DualI2sAudioCodec();
 
+    // 覆盖基类的 Start() 方法，避免重复启用 I2S 通道
+    // 因为我们已经在构造函数中启用了 I2S（为了提供 MCLK）
+    virtual void Start() override;
+
     virtual void SetOutputVolume(int volume) override;
     virtual void EnableInput(bool enable) override;
     virtual void EnableOutput(bool enable) override;

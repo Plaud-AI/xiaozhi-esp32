@@ -1,4 +1,5 @@
 #include "dual_i2s_audio_codec.h"
+#include "settings.h"
 
 #include <esp_log.h>
 #include <driver/i2c_master.h>
@@ -205,6 +206,21 @@ DualI2sAudioCodec::DualI2sAudioCodec(
     ESP_LOGI(TAG, "音频输出 (ES8311): %s", output_dev_ ? "✅ 正常" : "❌ 不可用");
     ESP_LOGI(TAG, "音频输入 (ES7210): %s", input_dev_ ? "✅ 正常" : "❌ 不可用");
     ESP_LOGI(TAG, "========================================");
+}
+
+void DualI2sAudioCodec::Start() {
+    // ⚠️ 注意：不要调用基类的 Start()，因为它会尝试再次启用 I2S 通道
+    // 我们已经在构造函数中启用了 I2S（为了在 I2C 配置之前提供 MCLK）
+    
+    // 从设置中加载输出音量（这是基类 Start() 的第一部分）
+    Settings settings("audio", false);
+    output_volume_ = settings.GetInt("output_volume", output_volume_);
+    if (output_volume_ <= 0) {
+        ESP_LOGW(TAG, "输出音量值 (%d) 太小，设置为默认值 (10)", output_volume_);
+        output_volume_ = 10;
+    }
+    
+    ESP_LOGI(TAG, "DualI2sAudioCodec::Start() 完成（I2S 通道已在构造函数中启用）");
 }
 
 DualI2sAudioCodec::~DualI2sAudioCodec() {
