@@ -150,10 +150,12 @@ DualI2sAudioCodec::DualI2sAudioCodec(
         return;
     }
 
-    dev_cfg.dev_type = ESP_CODEC_DEV_TYPE_IN;
-    dev_cfg.codec_if = in_codec_if_;
-    dev_cfg.data_if = in_data_if_;
-    input_dev_ = esp_codec_dev_new(&dev_cfg);
+    esp_codec_dev_cfg_t dev_cfg_in = {
+        .dev_type = ESP_CODEC_DEV_TYPE_IN,
+        .codec_if = in_codec_if_,
+        .data_if = in_data_if_,
+    };
+    input_dev_ = esp_codec_dev_new(&dev_cfg_in);
     
     if (input_dev_ == nullptr) {
         ESP_LOGW(TAG, "⚠️ ES7210 设备创建失败（设备可能未焊接）");
