@@ -3,6 +3,8 @@
 #include <esp_log.h>
 #include <driver/i2c_master.h>
 #include <driver/i2s_std.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 #define TAG "DualI2sAudioCodec"
 //xxx
@@ -45,6 +47,19 @@ DualI2sAudioCodec::DualI2sAudioCodec(
     };
     out_data_if_ = audio_codec_new_i2s_data(&i2s_out_cfg);
     assert(out_data_if_ != nullptr);
+
+    // ⚠️ 关键修复：ES8311 需要 MCLK 才能响应 I2C 命令！
+    // 先启动 I2S 通道，开始输出 MCLK
+    ESP_LOGI(TAG, "⏳ 启动 I2S0 通道以提供 MCLK 给 ES8311...");
+    esp_err_t ret_es8311 = i2s_channel_enable(tx_handle_i2s0_);
+    if (ret_es8311 != ESP_OK) {
+        ESP_LOGE(TAG, "⚠️ I2S0 通道启动失败: %d", ret_es8311);
+    } else {
+        ESP_LOGI(TAG, "✅ I2S0 MCLK 已启动");
+        // 等待 ES8311 芯片稳定（需要 MCLK 才能工作）
+        vTaskDelay(pdMS_TO_TICKS(50));  // 等待 50ms
+        ESP_LOGI(TAG, "✅ ES8311 稳定时间已完成");
+    }
 
     audio_codec_i2c_cfg_t i2c_cfg = {
         .port = (i2c_port_t)1,
@@ -122,6 +137,19 @@ DualI2sAudioCodec::DualI2sAudioCodec(
     };
     in_data_if_ = audio_codec_new_i2s_data(&i2s_in_cfg);
     assert(in_data_if_ != nullptr);
+
+    // ⚠️ 关键修复：ES7210 需要 MCLK 才能响应 I2C 命令！
+    // 先启动 I2S 通道，开始输出 MCLK
+    ESP_LOGI(TAG, "⏳ 启动 I2S1 通道以提供 MCLK 给 ES7210...");
+    esp_err_t ret = i2s_channel_enable(rx_handle_i2s1_);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "⚠️ I2S1 通道启动失败: %d", ret);
+    } else {
+        ESP_LOGI(TAG, "✅ I2S1 MCLK 已启动");
+        // 等待 ES7210 芯片稳定（需要 MCLK 才能工作）
+        vTaskDelay(pdMS_TO_TICKS(50));  // 等待 50ms
+        ESP_LOGI(TAG, "✅ ES7210 稳定时间已完成");
+    }
 
     i2c_cfg.addr = es7210_addr;
     in_ctrl_if_ = audio_codec_new_i2c_ctrl(&i2c_cfg);
