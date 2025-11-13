@@ -7,6 +7,7 @@
 #include <esp_wifi.h>
 #include <esp_system.h>
 #include <esp_mac.h>
+#include <esp_app_desc.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
@@ -370,8 +371,14 @@ void BLEWiFiProvisioner::HandleWiFiConfigCommand(const std::string& ssid,
         ESP_LOGE(TAG, "========================================");
 
         // 删除刚保存的凭证
-        ssid_manager.RemoveSsid(ssid);
-        ESP_LOGW(TAG, "已删除无效的WiFi凭证");
+        auto ssid_list = ssid_manager.GetSsidList();
+        for (size_t i = 0; i < ssid_list.size(); i++) {
+            if (ssid_list[i].ssid == ssid) {
+                ssid_manager.RemoveSsid(i);
+                ESP_LOGW(TAG, "已删除无效的WiFi凭证");
+                break;
+            }
+        }
 
         SendErrorResponse("wifi_config", ERROR_CONNECTION_TIMEOUT, 
                          "WiFi连接超时，请检查密码和信号强度");
@@ -414,9 +421,21 @@ void BLEWiFiProvisioner::HandleDeleteWiFiCommand(const std::string& ssid) {
     ESP_LOGI(TAG, "========================================");
 
     auto& ssid_manager = SsidManager::GetInstance();
-    ssid_manager.RemoveSsid(ssid);
-
-    ESP_LOGI(TAG, "✓ WiFi配置已删除");
+    auto ssid_list = ssid_manager.GetSsidList();
+    
+    bool found = false;
+    for (size_t i = 0; i < ssid_list.size(); i++) {
+        if (ssid_list[i].ssid == ssid) {
+            ssid_manager.RemoveSsid(i);
+            ESP_LOGI(TAG, "✓ WiFi配置已删除");
+            found = true;
+            break;
+        }
+    }
+    
+    if (!found) {
+        ESP_LOGW(TAG, "⚠️  未找到指定的WiFi配置: %s", ssid.c_str());
+    }
 
     // 构建成功响应
     cJSON* root = cJSON_CreateObject();
@@ -548,6 +567,7 @@ std::string BLEWiFiProvisioner::BuildDeviceInfoJson() {
     ESP_LOGI(TAG, "构建设备信息JSON");
 
     auto& ble_service = BluetoothService::GetInstance();
+    auto app_desc = esp_app_get_description();
 
     cJSON* root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "cmd", "get_device_info");
@@ -555,15 +575,15 @@ std::string BLEWiFiProvisioner::BuildDeviceInfoJson() {
 
     cJSON* data = cJSON_CreateObject();
     cJSON_AddStringToObject(data, "device_name", ble_service.GetDeviceName().c_str());
-    cJSON_AddStringToObject(data, "firmware_version", SystemInfo::GetFirmwareVersion().c_str());
-    cJSON_AddStringToObject(data, "hardware_version", SystemInfo::GetChipModel().c_str());
+    cJSON_AddStringToObject(data, "firmware_version", app_desc->version);
+    cJSON_AddStringToObject(data, "hardware_version", SystemInfo::GetChipModelName().c_str());
     cJSON_AddStringToObject(data, "mac_address", ble_service.GetMacAddress().c_str());
     cJSON_AddNumberToObject(data, "free_heap", esp_get_free_heap_size());
     
     uint32_t chip_id = 0;
     esp_efuse_mac_get_default((uint8_t*)&chip_id);
     char chip_id_str[16];
-    snprintf(chip_id_str, sizeof(chip_id_str), "0x%08X", chip_id);
+    snprintf(chip_id_str, sizeof(chip_id_str), "0x%08lX", (unsigned long)chip_id);
     cJSON_AddStringToObject(data, "chip_id", chip_id_str);
 
     cJSON_AddItemToObject(root, "data", data);
@@ -576,10 +596,10 @@ std::string BLEWiFiProvisioner::BuildDeviceInfoJson() {
         
         ESP_LOGI(TAG, "设备信息:");
         ESP_LOGI(TAG, "  名称: %s", ble_service.GetDeviceName().c_str());
-        ESP_LOGI(TAG, "  固件版本: %s", SystemInfo::GetFirmwareVersion().c_str());
-        ESP_LOGI(TAG, "  硬件版本: %s", SystemInfo::GetChipModel().c_str());
+        ESP_LOGI(TAG, "  固件版本: %s", app_desc->version);
+        ESP_LOGI(TAG, "  硬件版本: %s", SystemInfo::GetChipModelName().c_str());
         ESP_LOGI(TAG, "  MAC地址: %s", ble_service.GetMacAddress().c_str());
-        ESP_LOGI(TAG, "  空闲堆: %u bytes", esp_get_free_heap_size());
+        ESP_LOGI(TAG, "  空闲堆: %lu bytes", (unsigned long)esp_get_free_heap_size());
     }
     cJSON_Delete(root);
 
