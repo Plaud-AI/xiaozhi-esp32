@@ -108,6 +108,11 @@ private:
     void HandleDeleteWiFiCommand(const std::string& ssid);
 
     /**
+     * @brief 处理断开WiFi连接命令
+     */
+    void HandleDisconnectWiFiCommand();
+
+    /**
      * @brief 发送响应数据到手机
      * @param json_response JSON响应字符串
      * @return true 发送成功，false 发送失败

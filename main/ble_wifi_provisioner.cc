@@ -2,6 +2,7 @@
 #include "bluetooth_service.h"
 #include "system_info.h"
 #include "settings.h"
+#include "clear_wifi_helper.h"
 
 #include <esp_log.h>
 #include <esp_wifi.h>
@@ -214,7 +215,16 @@ void BLEWiFiProvisioner::HandleReceivedData(const std::string& data) {
         ESP_LOGI(TAG, "要删除的WiFi SSID: %s", ssid.c_str());
         
         HandleDeleteWiFiCommand(ssid);
-    } 
+    }
+    else if (cmd == "disconnect_wifi") {
+        ESP_LOGI(TAG, "➜ 执行: 断开WiFi连接命令");
+        HandleDisconnectWiFiCommand();
+    }
+    else if (cmd == "clear_wifi") {
+        ESP_LOGI(TAG, "➜ 执行: 清除所有WiFi配置命令");
+        std::string response = HandleClearWiFiCommand();
+        SendResponse(response);
+    }
     else {
         ESP_LOGW(TAG, "⚠️  未知命令: %s", cmd.c_str());
         SendErrorResponse(cmd, ERROR_JSON_PARSE_FAILED, "未知命令");
@@ -229,50 +239,80 @@ void BLEWiFiProvisioner::HandleScanWiFiCommand() {
     ESP_LOGI(TAG, "开始WiFi扫描");
     ESP_LOGI(TAG, "========================================");
 
-    // 初始化WiFi（如果未初始化）
-    esp_err_t ret = esp_wifi_set_mode(WIFI_MODE_STA);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "❌ 设置WiFi STA模式失败: %s", esp_err_to_name(ret));
-        SendErrorResponse("scan_wifi", ERROR_UNKNOWN, "WiFi初始化失败");
-        return;
-    }
-
-    ret = esp_wifi_start();
-    if (ret != ESP_OK && ret != ESP_ERR_WIFI_STATE) {
-        ESP_LOGE(TAG, "❌ 启动WiFi失败: %s", esp_err_to_name(ret));
-        SendErrorResponse("scan_wifi", ERROR_UNKNOWN, "WiFi启动失败");
-        return;
-    }
-
-    ESP_LOGI(TAG, "✓ WiFi已启动，开始扫描...");
-
-    // 配置扫描参数
-    wifi_scan_config_t scan_config = {
-        .ssid = nullptr,
-        .bssid = nullptr,
-        .channel = 0,
-        .show_hidden = false,
-        .scan_type = WIFI_SCAN_TYPE_ACTIVE,
-        .scan_time = {
-            .active = {
-                .min = 100,
-                .max = 300
-            }
+    // 检查WiFi是否已经运行
+    wifi_mode_t mode;
+    esp_err_t ret = esp_wifi_get_mode(&mode);
+    
+    bool wifi_already_running = (ret == ESP_OK && mode != WIFI_MODE_NULL);
+    bool need_new_scan = true;
+    
+    if (wifi_already_running) {
+        ESP_LOGI(TAG, "✓ WiFi已在运行，检查是否有缓存的扫描结果...");
+        
+        // 如果已经连接，尝试使用WifiStation的扫描结果
+        auto& wifi_station = WifiStation::GetInstance();
+        if (wifi_station.IsConnected()) {
+            ESP_LOGI(TAG, "✓ 设备已连接到WiFi: %s", wifi_station.GetSsid().c_str());
+            // 仍然需要新扫描以获取最新结果
+            need_new_scan = true;
         }
-    };
+    } else {
+        // 初始化WiFi
+        ret = esp_wifi_set_mode(WIFI_MODE_STA);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "❌ 设置WiFi STA模式失败: %s", esp_err_to_name(ret));
+            SendErrorResponse("scan_wifi", ERROR_UNKNOWN, "WiFi初始化失败");
+            return;
+        }
 
-    // 启动扫描
-    ret = esp_wifi_scan_start(&scan_config, true);  // 阻塞扫描
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "❌ WiFi扫描启动失败: %s", esp_err_to_name(ret));
-        SendErrorResponse("scan_wifi", ERROR_UNKNOWN, "WiFi扫描失败");
-        return;
+        ret = esp_wifi_start();
+        if (ret != ESP_OK && ret != ESP_ERR_WIFI_STATE) {
+            ESP_LOGE(TAG, "❌ 启动WiFi失败: %s", esp_err_to_name(ret));
+            SendErrorResponse("scan_wifi", ERROR_UNKNOWN, "WiFi启动失败");
+            return;
+        }
+        ESP_LOGI(TAG, "✓ WiFi已启动");
     }
 
-    ESP_LOGI(TAG, "✓ WiFi扫描完成，正在获取结果...");
+    if (need_new_scan) {
+        ESP_LOGI(TAG, "开始新的WiFi扫描...");
+        
+        // 配置扫描参数
+        wifi_scan_config_t scan_config = {
+            .ssid = nullptr,
+            .bssid = nullptr,
+            .channel = 0,
+            .show_hidden = false,
+            .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+            .scan_time = {
+                .active = {
+                    .min = 100,
+                    .max = 300
+                }
+            }
+        };
 
-    // 延迟以确保扫描结果可用
-    vTaskDelay(pdMS_TO_TICKS(100));
+        // 启动扫描（非阻塞）
+        ret = esp_wifi_scan_start(&scan_config, false);
+        if (ret != ESP_OK && ret != ESP_ERR_WIFI_STATE) {
+            ESP_LOGE(TAG, "❌ WiFi扫描启动失败: %s", esp_err_to_name(ret));
+            SendErrorResponse("scan_wifi", ERROR_UNKNOWN, "WiFi扫描失败");
+            return;
+        }
+        
+        // 等待扫描完成（最多等待10秒）
+        for (int i = 0; i < 100; i++) {
+            uint16_t ap_count = 0;
+            ret = esp_wifi_scan_get_ap_num(&ap_count);
+            if (ret == ESP_OK && ap_count > 0) {
+                ESP_LOGI(TAG, "✓ WiFi扫描完成");
+                break;
+            }
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+    }
+
+    ESP_LOGI(TAG, "✓ 正在获取扫描结果...");
 
     // 发送扫描结果
     std::string response = BuildScanResultJson();
@@ -299,6 +339,38 @@ void BLEWiFiProvisioner::HandleWiFiConfigCommand(const std::string& ssid,
         return;
     }
 
+    // 检查是否已连接到WiFi
+    auto& wifi_station = WifiStation::GetInstance();
+    if (wifi_station.IsConnected()) {
+        std::string current_ssid = wifi_station.GetSsid();
+        if (current_ssid == ssid) {
+            ESP_LOGI(TAG, "⚠️  已经连接到目标WiFi: %s", ssid.c_str());
+            
+            // 构建响应（已连接）
+            cJSON* root = cJSON_CreateObject();
+            cJSON_AddStringToObject(root, "cmd", "wifi_config");
+            cJSON_AddStringToObject(root, "status", "success");
+            cJSON_AddStringToObject(root, "message", "已经连接到该WiFi");
+            
+            cJSON* data = cJSON_CreateObject();
+            cJSON_AddStringToObject(data, "ssid", wifi_station.GetSsid().c_str());
+            cJSON_AddStringToObject(data, "ip", wifi_station.GetIpAddress().c_str());
+            cJSON_AddNumberToObject(data, "rssi", wifi_station.GetRssi());
+            cJSON_AddItemToObject(root, "data", data);
+
+            char* json_str = cJSON_PrintUnformatted(root);
+            if (json_str) {
+                SendResponse(std::string(json_str));
+                free(json_str);
+            }
+            cJSON_Delete(root);
+            return;
+        } else {
+            ESP_LOGI(TAG, "当前已连接到: %s", current_ssid.c_str());
+            ESP_LOGI(TAG, "正在断开当前连接...");
+        }
+    }
+
     // 保存WiFi凭证
     ESP_LOGI(TAG, "保存WiFi凭证到NVS...");
     auto& ssid_manager = SsidManager::GetInstance();
@@ -310,10 +382,9 @@ void BLEWiFiProvisioner::HandleWiFiConfigCommand(const std::string& ssid,
     // 尝试连接WiFi
     ESP_LOGI(TAG, "正在连接到WiFi: %s", ssid.c_str());
     
-    auto& wifi_station = WifiStation::GetInstance();
-    wifi_station.Stop();  // 先停止当前连接
+    wifi_station.Stop();  // 先停止当前连接（如果有）
     
-    vTaskDelay(pdMS_TO_TICKS(500));  // 等待停止完成
+    vTaskDelay(pdMS_TO_TICKS(1000));  // 等待停止完成
     
     wifi_station.Start();  // 启动WiFi Station
     
@@ -414,6 +485,65 @@ void BLEWiFiProvisioner::HandleGetSavedWiFiCommand() {
     ESP_LOGI(TAG, "========================================");
 }
 
+void BLEWiFiProvisioner::HandleDisconnectWiFiCommand() {
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "断开WiFi连接");
+    ESP_LOGI(TAG, "========================================");
+
+    auto& wifi_station = WifiStation::GetInstance();
+    
+    // 检查是否已连接
+    if (!wifi_station.IsConnected()) {
+        ESP_LOGW(TAG, "⚠️  当前未连接到任何WiFi");
+        
+        cJSON* root = cJSON_CreateObject();
+        cJSON_AddStringToObject(root, "cmd", "disconnect_wifi");
+        cJSON_AddStringToObject(root, "status", "success");
+        cJSON_AddStringToObject(root, "message", "当前未连接WiFi");
+        
+        char* json_str = cJSON_PrintUnformatted(root);
+        if (json_str) {
+            SendResponse(std::string(json_str));
+            free(json_str);
+        }
+        cJSON_Delete(root);
+        
+        ESP_LOGI(TAG, "========================================");
+        return;
+    }
+    
+    std::string current_ssid = wifi_station.GetSsid();
+    ESP_LOGI(TAG, "当前连接的WiFi: %s", current_ssid.c_str());
+    ESP_LOGI(TAG, "正在断开连接...");
+    
+    // 停止WiFi Station
+    wifi_station.Stop();
+    
+    // 等待断开完成
+    vTaskDelay(pdMS_TO_TICKS(500));
+    
+    ESP_LOGI(TAG, "✓ WiFi连接已断开");
+    
+    // 构建成功响应
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "cmd", "disconnect_wifi");
+    cJSON_AddStringToObject(root, "status", "success");
+    cJSON_AddStringToObject(root, "message", "WiFi连接已断开");
+    
+    cJSON* data = cJSON_CreateObject();
+    cJSON_AddStringToObject(data, "previous_ssid", current_ssid.c_str());
+    cJSON_AddItemToObject(root, "data", data);
+
+    char* json_str = cJSON_PrintUnformatted(root);
+    if (json_str) {
+        SendResponse(std::string(json_str));
+        free(json_str);
+    }
+    cJSON_Delete(root);
+
+    ESP_LOGI(TAG, "========================================");
+}
+
 void BLEWiFiProvisioner::HandleDeleteWiFiCommand(const std::string& ssid) {
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "删除WiFi配置");
@@ -496,6 +626,15 @@ void BLEWiFiProvisioner::SendErrorResponse(const std::string& cmd,
 std::string BLEWiFiProvisioner::BuildScanResultJson() {
     ESP_LOGI(TAG, "构建WiFi扫描结果JSON");
 
+    // 获取当前连接的WiFi信息
+    std::string connected_ssid = "";
+    std::string connected_bssid = "";
+    auto& wifi_station = WifiStation::GetInstance();
+    if (wifi_station.IsConnected()) {
+        connected_ssid = wifi_station.GetSsid();
+        ESP_LOGI(TAG, "当前已连接到WiFi: %s", connected_ssid.c_str());
+    }
+
     // 获取扫描到的AP数量
     uint16_t ap_count = 0;
     esp_wifi_scan_get_ap_num(&ap_count);
@@ -520,10 +659,20 @@ std::string BLEWiFiProvisioner::BuildScanResultJson() {
 
     cJSON* data = cJSON_CreateObject();
     cJSON_AddNumberToObject(data, "count", ap_count);
+    
+    // 添加当前连接信息
+    if (!connected_ssid.empty()) {
+        cJSON_AddStringToObject(data, "connected_ssid", connected_ssid.c_str());
+        cJSON_AddNumberToObject(data, "connected_rssi", wifi_station.GetRssi());
+        cJSON_AddStringToObject(data, "connected_ip", wifi_station.GetIpAddress().c_str());
+    }
 
     cJSON* networks = cJSON_CreateArray();
     for (int i = 0; i < ap_count; i++) {
-        ESP_LOGI(TAG, "网络 %d:", i + 1);
+        std::string current_ssid((char*)ap_records[i].ssid);
+        bool is_connected = (!connected_ssid.empty() && current_ssid == connected_ssid);
+        
+        ESP_LOGI(TAG, "网络 %d:%s", i + 1, is_connected ? " [已连接]" : "");
         ESP_LOGI(TAG, "  SSID: %s", ap_records[i].ssid);
         ESP_LOGI(TAG, "  RSSI: %d dBm", ap_records[i].rssi);
         ESP_LOGI(TAG, "  信道: %d", ap_records[i].primary);
@@ -534,6 +683,9 @@ std::string BLEWiFiProvisioner::BuildScanResultJson() {
         cJSON_AddNumberToObject(network, "rssi", ap_records[i].rssi);
         cJSON_AddNumberToObject(network, "channel", ap_records[i].primary);
         cJSON_AddNumberToObject(network, "auth_mode", GetAuthModeValue(ap_records[i].authmode));
+        
+        // 标记是否为当前连接的WiFi
+        cJSON_AddBoolToObject(network, "connected", is_connected);
         
         char bssid_str[18];
         snprintf(bssid_str, sizeof(bssid_str), "%02X:%02X:%02X:%02X:%02X:%02X",
