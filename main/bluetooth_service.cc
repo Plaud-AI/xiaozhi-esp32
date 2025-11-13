@@ -65,13 +65,10 @@ int BluetoothService::gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_ha
                     
                     ESP_LOGI(TAG, "收到数据: %s (长度: %d)", data, om_len);
                     
+                    // 调用数据接收回调（不再自动回复，由上层处理）
                     if (g_instance->data_received_callback_) {
                         g_instance->data_received_callback_(std::string(data, om_len));
                     }
-                    
-                    // 自动回复
-                    std::string reply = "收到: " + std::string(data, om_len);
-                    g_instance->SendData(reply);
                     
                     free(data);
                 }
