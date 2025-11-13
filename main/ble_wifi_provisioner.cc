@@ -604,10 +604,10 @@ std::string BLEWiFiProvisioner::BuildSavedWiFiListJson() {
 
     cJSON* networks = cJSON_CreateArray();
     for (size_t i = 0; i < ssid_list.size(); i++) {
-        ESP_LOGI(TAG, "已保存WiFi %d: %s", i + 1, ssid_list[i].c_str());
+        ESP_LOGI(TAG, "已保存WiFi %d: %s", i + 1, ssid_list[i].ssid.c_str());
 
         cJSON* network = cJSON_CreateObject();
-        cJSON_AddStringToObject(network, "ssid", ssid_list[i].c_str());
+        cJSON_AddStringToObject(network, "ssid", ssid_list[i].ssid.c_str());
         cJSON_AddBoolToObject(network, "is_default", i == 0);  // 第一个为默认
         cJSON_AddStringToObject(network, "last_connected", "未知");  // 可以后续扩展
         cJSON_AddItemToArray(networks, network);
