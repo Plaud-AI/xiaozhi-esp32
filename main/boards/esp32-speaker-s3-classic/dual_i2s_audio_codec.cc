@@ -282,7 +282,7 @@ void DualI2sAudioCodec::CreateEs8311Channel(gpio_num_t mclk, gpio_num_t bclk, gp
     i2s_std_config_t std_cfg = {
         .clk_cfg = {
             .sample_rate_hz = (uint32_t)output_sample_rate_,
-            .clk_src = I2S_CLK_SRC_DEFAULT,
+            .clk_src = I2S_CLK_SRC_APLL,  // 使用 APLL 专用音频时钟（抖动更低，摆幅更足）
             .ext_clk_freq_hz = 0,
             .mclk_multiple = I2S_MCLK_MULTIPLE_256,
         },
@@ -313,7 +313,10 @@ void DualI2sAudioCodec::CreateEs8311Channel(gpio_num_t mclk, gpio_num_t bclk, gp
     };
     
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(tx_handle_i2s0_, &std_cfg));
-    ESP_LOGI(TAG, "ES8311 I2S0 通道创建成功");
+    ESP_LOGI(TAG, "✅ ES8311 I2S0 通道创建成功");
+    ESP_LOGI(TAG, "   时钟源：APLL (专用音频时钟)");
+    ESP_LOGI(TAG, "   MCLK：%d Hz × 256 = %.3f MHz", 
+             output_sample_rate_, (output_sample_rate_ * 256) / 1000000.0);
 }
 
 void DualI2sAudioCodec::CreateEs7210Channel(gpio_num_t mclk, gpio_num_t bclk, gpio_num_t ws, 
@@ -336,7 +339,7 @@ void DualI2sAudioCodec::CreateEs7210Channel(gpio_num_t mclk, gpio_num_t bclk, gp
     i2s_std_config_t std_cfg = {
         .clk_cfg = {
             .sample_rate_hz = (uint32_t)input_sample_rate_,
-            .clk_src = I2S_CLK_SRC_DEFAULT,
+            .clk_src = I2S_CLK_SRC_APLL,  // 使用 APLL 专用音频时钟（抖动更低，摆幅更足）
             .ext_clk_freq_hz = 0,
             .mclk_multiple = I2S_MCLK_MULTIPLE_256,
         },
@@ -367,7 +370,10 @@ void DualI2sAudioCodec::CreateEs7210Channel(gpio_num_t mclk, gpio_num_t bclk, gp
     };
     
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(rx_handle_i2s1_, &std_cfg));
-    ESP_LOGI(TAG, "ES7210 I2S1 通道创建成功");
+    ESP_LOGI(TAG, "✅ ES7210 I2S1 通道创建成功");
+    ESP_LOGI(TAG, "   时钟源：APLL (专用音频时钟)");
+    ESP_LOGI(TAG, "   MCLK：%d Hz × 256 = %.3f MHz", 
+             input_sample_rate_, (input_sample_rate_ * 256) / 1000000.0);
 }
 
 int DualI2sAudioCodec::Read(int16_t* dest, int samples) {
