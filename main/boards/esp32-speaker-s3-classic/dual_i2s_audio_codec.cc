@@ -4,6 +4,7 @@
 #include <esp_log.h>
 #include <driver/i2c_master.h>
 #include <driver/i2s_std.h>
+#include <driver/gpio.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
@@ -50,6 +51,15 @@ DualI2sAudioCodec::DualI2sAudioCodec(
     assert(out_data_if_ != nullptr);
 
     // ⚠️ 关键修复：ES8311 需要 MCLK 才能响应 I2C 命令！
+    // 增加 GPIO3 (ES8311_MCLK) 的驱动强度以提高信号质量
+    ESP_LOGI(TAG, "⚡ 配置 GPIO3 (ES8311_MCLK) 驱动强度为 40mA...");
+    esp_err_t gpio_ret_es8311 = gpio_set_drive_capability(es8311_mclk, GPIO_DRIVE_CAP_3);  // 40 mA
+    if (gpio_ret_es8311 == ESP_OK) {
+        ESP_LOGI(TAG, "✅ GPIO3 驱动强度已设置为 GPIO_DRIVE_CAP_3 (40mA)");
+    } else {
+        ESP_LOGW(TAG, "⚠️ GPIO3 驱动强度设置失败: %s", esp_err_to_name(gpio_ret_es8311));
+    }
+    
     // 先启动 I2S 通道，开始输出 MCLK
     ESP_LOGI(TAG, "⏳ 启动 I2S0 通道以提供 MCLK 给 ES8311...");
     esp_err_t ret_es8311 = i2s_channel_enable(tx_handle_i2s0_);
@@ -140,6 +150,15 @@ DualI2sAudioCodec::DualI2sAudioCodec(
     assert(in_data_if_ != nullptr);
 
     // ⚠️ 关键修复：ES7210 需要 MCLK 才能响应 I2C 命令！
+    // 硬件工程师反馈：需要增加 GPIO13 (ES7210_MCLK) 的驱动强度以提高电压幅度
+    ESP_LOGI(TAG, "⚡ 配置 GPIO13 (ES7210_MCLK) 驱动强度为 40mA...");
+    esp_err_t gpio_ret = gpio_set_drive_capability(es7210_mclk, GPIO_DRIVE_CAP_3);  // 40 mA
+    if (gpio_ret == ESP_OK) {
+        ESP_LOGI(TAG, "✅ GPIO13 驱动强度已设置为 GPIO_DRIVE_CAP_3 (40mA)");
+    } else {
+        ESP_LOGW(TAG, "⚠️ GPIO13 驱动强度设置失败: %s", esp_err_to_name(gpio_ret));
+    }
+    
     // 先启动 I2S 通道，开始输出 MCLK
     ESP_LOGI(TAG, "⏳ 启动 I2S1 通道以提供 MCLK 给 ES7210...");
     esp_err_t ret = i2s_channel_enable(rx_handle_i2s1_);
