@@ -1,5 +1,6 @@
 #include "dual_i2s_audio_codec.h"
 #include "settings.h"
+#include "es7210_diagnostic.h"
 
 #include <esp_log.h>
 #include <driver/i2c_master.h>
@@ -9,7 +10,9 @@
 #include <freertos/task.h>
 
 #define TAG "DualI2sAudioCodec"
-//xxx
+
+// 诊断模式开关：设置为 1 启用详细诊断
+#define ENABLE_ES7210_DIAGNOSTIC 1
 DualI2sAudioCodec::DualI2sAudioCodec(
     void* i2c_master_handle, 
     int input_sample_rate, 
@@ -198,6 +201,23 @@ DualI2sAudioCodec::DualI2sAudioCodec(
     if (in_ctrl_if_ == nullptr) {
         ESP_LOGW(TAG, "⚠️ ES7210 I2C 控制接口创建失败（设备可能未焊接）");
         ESP_LOGW(TAG, "⚠️ 音频输入功能将不可用，但输出功能正常");
+        
+#if ENABLE_ES7210_DIAGNOSTIC
+        // 运行完整诊断
+        ESP_LOGW(TAG, "");
+        ESP_LOGW(TAG, "====================================================");
+        ESP_LOGW(TAG, "⚠️ 启动 ES7210 故障诊断");
+        ESP_LOGW(TAG, "====================================================");
+        ES7210Diagnostic::RunFullDiagnostic(
+            (i2c_master_bus_handle_t)i2c_master_handle,
+            rx_handle_i2s1_,
+            es7210_mclk,
+            (gpio_num_t)5,  // SDA
+            (gpio_num_t)4,  // SCL
+            es7210_addr
+        );
+#endif
+        
         input_dev_ = nullptr;
         ESP_LOGI(TAG, "DualI2sAudioCodec 初始化完成（仅输出模式）");
         return;
@@ -211,6 +231,23 @@ DualI2sAudioCodec::DualI2sAudioCodec(
     if (in_codec_if_ == nullptr) {
         ESP_LOGW(TAG, "⚠️ ES7210 编解码器创建失败（设备可能未焊接）");
         ESP_LOGW(TAG, "⚠️ 音频输入功能将不可用，但输出功能正常");
+        
+#if ENABLE_ES7210_DIAGNOSTIC
+        // 运行完整诊断
+        ESP_LOGW(TAG, "");
+        ESP_LOGW(TAG, "====================================================");
+        ESP_LOGW(TAG, "⚠️ 启动 ES7210 故障诊断");
+        ESP_LOGW(TAG, "====================================================");
+        ES7210Diagnostic::RunFullDiagnostic(
+            (i2c_master_bus_handle_t)i2c_master_handle,
+            rx_handle_i2s1_,
+            es7210_mclk,
+            (gpio_num_t)5,  // SDA
+            (gpio_num_t)4,  // SCL
+            es7210_addr
+        );
+#endif
+        
         audio_codec_delete_ctrl_if(in_ctrl_if_);
         in_ctrl_if_ = nullptr;
         input_dev_ = nullptr;
@@ -228,6 +265,23 @@ DualI2sAudioCodec::DualI2sAudioCodec(
     if (input_dev_ == nullptr) {
         ESP_LOGW(TAG, "⚠️ ES7210 设备创建失败（设备可能未焊接）");
         ESP_LOGW(TAG, "⚠️ 音频输入功能将不可用，但输出功能正常");
+        
+#if ENABLE_ES7210_DIAGNOSTIC
+        // 运行完整诊断
+        ESP_LOGW(TAG, "");
+        ESP_LOGW(TAG, "====================================================");
+        ESP_LOGW(TAG, "⚠️ 启动 ES7210 故障诊断");
+        ESP_LOGW(TAG, "====================================================");
+        ES7210Diagnostic::RunFullDiagnostic(
+            (i2c_master_bus_handle_t)i2c_master_handle,
+            rx_handle_i2s1_,
+            es7210_mclk,
+            (gpio_num_t)5,  // SDA
+            (gpio_num_t)4,  // SCL
+            es7210_addr
+        );
+#endif
+        
         audio_codec_delete_codec_if(in_codec_if_);
         audio_codec_delete_ctrl_if(in_ctrl_if_);
         in_codec_if_ = nullptr;
@@ -287,6 +341,16 @@ void DualI2sAudioCodec::CreateEs8311Channel(gpio_num_t mclk, gpio_num_t bclk, gp
     ESP_LOGI(TAG, "创建 ES8311 I2S0 通道: MCLK=%d, BCLK=%d, WS=%d, DOUT=%d, DIN=%d", 
              mclk, bclk, ws, dout, din);
 
+    // ⚠️ 优化：在 I2S 接管 GPIO 之前先尝试设置驱动强度
+    // 这样 I2S 驱动可能会保留这个设置
+    ESP_LOGI(TAG, "⚡ 预设 GPIO%d (MCLK) 驱动强度为最大 (40mA)...", mclk);
+    esp_err_t pre_drive_ret = gpio_set_drive_capability(mclk, GPIO_DRIVE_CAP_3);
+    if (pre_drive_ret == ESP_OK) {
+        ESP_LOGI(TAG, "  ✅ 预设驱动强度成功");
+    } else {
+        ESP_LOGW(TAG, "  ⚠️ 预设驱动强度失败: %s", esp_err_to_name(pre_drive_ret));
+    }
+
     i2s_chan_config_t chan_cfg = {
         .id = I2S_NUM_0,
         .role = I2S_ROLE_MASTER,
@@ -343,6 +407,16 @@ void DualI2sAudioCodec::CreateEs7210Channel(gpio_num_t mclk, gpio_num_t bclk, gp
                                             gpio_num_t din) {
     ESP_LOGI(TAG, "创建 ES7210 I2S1 通道: MCLK=%d, BCLK=%d, WS=%d, DIN=%d", 
              mclk, bclk, ws, din);
+
+    // ⚠️ 优化：在 I2S 接管 GPIO 之前先尝试设置驱动强度
+    // 这样 I2S 驱动可能会保留这个设置
+    ESP_LOGI(TAG, "⚡ 预设 GPIO%d (MCLK) 驱动强度为最大 (40mA)...", mclk);
+    esp_err_t pre_drive_ret = gpio_set_drive_capability(mclk, GPIO_DRIVE_CAP_3);
+    if (pre_drive_ret == ESP_OK) {
+        ESP_LOGI(TAG, "  ✅ 预设驱动强度成功");
+    } else {
+        ESP_LOGW(TAG, "  ⚠️ 预设驱动强度失败: %s", esp_err_to_name(pre_drive_ret));
+    }
 
     i2s_chan_config_t chan_cfg = {
         .id = I2S_NUM_1,

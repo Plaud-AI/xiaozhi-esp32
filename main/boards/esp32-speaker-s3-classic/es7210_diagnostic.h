@@ -1,273 +1,271 @@
-#ifndef ES7210_DIAGNOSTIC_H
-#define ES7210_DIAGNOSTIC_H
+#ifndef _ES7210_DIAGNOSTIC_H_
+#define _ES7210_DIAGNOSTIC_H_
 
 #include <esp_log.h>
 #include <driver/i2c_master.h>
+#include <driver/gpio.h>
+#include <driver/i2s_std.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
-#define ES7210_DIAG_TAG "ES7210_Diag"
-
 /**
- * ES7210 寄存器地址
+ * ES7210 诊断工具
+ * 
+ * 用于诊断 ES7210 初始化失败的问题
+ * 主要检查：
+ * 1. I2C 总线通信
+ * 2. MCLK 输出状态
+ * 3. GPIO 配置状态
+ * 4. 时钟频率配置
  */
-#define ES7210_RESET_REG        0x00
-#define ES7210_CLOCK_OFF_REG    0x01
-#define ES7210_MAINCLK_REG      0x02
-#define ES7210_MASTER_CLK_REG   0x03
-#define ES7210_LRCK_DIVH_REG    0x04
-#define ES7210_LRCK_DIVL_REG    0x05
-#define ES7210_POWER_DOWN_REG   0x06
-#define ES7210_OSR_REG          0x07
-#define ES7210_MODE_CONFIG_REG  0x08
-#define ES7210_TIME_CONTROL0_REG 0x09
-#define ES7210_TIME_CONTROL1_REG 0x0A
-#define ES7210_SDP_INTERFACE1_REG 0x11
-#define ES7210_SDP_INTERFACE2_REG 0x12
 
-/**
- * ES7210 诊断结果
- */
-struct ES7210DiagResult {
-    bool i2c_address_detected;      // I2C 地址检测
-    bool mclk_present;              // MCLK 是否存在（软件层面）
-    bool register_read_success;     // 寄存器读取成功
-    bool register_write_success;    // 寄存器写入成功
-    uint8_t chip_id;                // 芯片 ID（如果能读取）
-    int error_count;                // 错误计数
+class ES7210Diagnostic {
+public:
+    static void RunFullDiagnostic(
+        i2c_master_bus_handle_t i2c_handle,
+        i2s_chan_handle_t i2s_rx_handle,
+        gpio_num_t mclk_pin,
+        gpio_num_t sda_pin,
+        gpio_num_t scl_pin,
+        uint8_t es7210_addr
+    ) {
+        const char* TAG = "ES7210_Diag";
+        
+        ESP_LOGI(TAG, "========================================");
+        ESP_LOGI(TAG, "ES7210 完整诊断开始");
+        ESP_LOGI(TAG, "========================================");
+        
+        // 1. 检查 GPIO 配置
+        CheckGpioConfiguration(mclk_pin, sda_pin, scl_pin);
+        
+        // 2. 检查 I2S 通道状态
+        CheckI2sChannelState(i2s_rx_handle);
+        
+        // 3. 扫描 I2C 总线
+        ScanI2CBus(i2c_handle);
+        
+        // 4. 测试 ES7210 地址
+        TestES7210Address(i2c_handle, es7210_addr);
+        
+        // 5. 尝试不同的 I2C 速度
+        TestI2CSpeed(i2c_handle, es7210_addr);
+        
+        // 6. 提供诊断建议
+        ProvideDiagnosticSuggestions(mclk_pin);
+        
+        ESP_LOGI(TAG, "========================================");
+        ESP_LOGI(TAG, "ES7210 诊断完成");
+        ESP_LOGI(TAG, "========================================");
+    }
+
+private:
+    static void CheckGpioConfiguration(gpio_num_t mclk, gpio_num_t sda, gpio_num_t scl) {
+        const char* TAG = "ES7210_Diag";
+        
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, "【步骤 1】检查 GPIO 配置");
+        ESP_LOGI(TAG, "----------------------------------------");
+        
+        // 检查 MCLK
+        gpio_mode_t mclk_mode;
+        gpio_get_mode(mclk, &mclk_mode);
+        ESP_LOGI(TAG, "GPIO%d (MCLK):", mclk);
+        ESP_LOGI(TAG, "  模式: %d (0=Input, 1=Output, 2=IO, 3=OD)", mclk_mode);
+        
+        gpio_drive_cap_t mclk_drive;
+        if (gpio_get_drive_capability(mclk, &mclk_drive) == ESP_OK) {
+            ESP_LOGI(TAG, "  驱动强度: %d (0=5mA, 1=10mA, 2=20mA, 3=40mA)", mclk_drive);
+        }
+        
+        // 检查 I2C 引脚
+        ESP_LOGI(TAG, "GPIO%d (SDA):", sda);
+        gpio_mode_t sda_mode;
+        gpio_get_mode(sda, &sda_mode);
+        ESP_LOGI(TAG, "  模式: %d", sda_mode);
+        
+        ESP_LOGI(TAG, "GPIO%d (SCL):", scl);
+        gpio_mode_t scl_mode;
+        gpio_get_mode(scl, &scl_mode);
+        ESP_LOGI(TAG, "  模式: %d", scl_mode);
+    }
+    
+    static void CheckI2sChannelState(i2s_chan_handle_t handle) {
+        const char* TAG = "ES7210_Diag";
+        
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, "【步骤 2】检查 I2S 通道状态");
+        ESP_LOGI(TAG, "----------------------------------------");
+        
+        // I2S 通道没有直接查询状态的 API
+        // 我们只能根据是否能成功操作来判断
+        ESP_LOGI(TAG, "I2S 通道句柄: %p", handle);
+        
+        if (handle == nullptr) {
+            ESP_LOGE(TAG, "❌ I2S 通道句柄为空！");
+        } else {
+            ESP_LOGI(TAG, "✅ I2S 通道句柄有效");
+        }
+    }
+    
+    static void ScanI2CBus(i2c_master_bus_handle_t bus_handle) {
+        const char* TAG = "ES7210_Diag";
+        
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, "【步骤 3】扫描 I2C 总线");
+        ESP_LOGI(TAG, "----------------------------------------");
+        ESP_LOGI(TAG, "     0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f");
+        
+        int found_count = 0;
+        uint8_t found_addresses[128];
+        
+        for (int i = 0; i < 128; i += 16) {
+            printf("%02x: ", i);
+            for (int j = 0; j < 16; j++) {
+                uint8_t addr = i + j;
+                
+                // 跳过保留地址
+                if (addr < 0x08 || addr > 0x77) {
+                    printf("   ");
+                    continue;
+                }
+                
+                esp_err_t ret = i2c_master_probe(bus_handle, addr, pdMS_TO_TICKS(100));
+                if (ret == ESP_OK) {
+                    printf("%02x ", addr);
+                    found_addresses[found_count++] = addr;
+                } else {
+                    printf("-- ");
+                }
+            }
+            printf("\r\n");
+        }
+        
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, "找到 %d 个 I2C 设备:", found_count);
+        for (int i = 0; i < found_count; i++) {
+            ESP_LOGI(TAG, "  - 地址 0x%02X", found_addresses[i]);
+        }
+    }
+    
+    static void TestES7210Address(i2c_master_bus_handle_t bus_handle, uint8_t addr) {
+        const char* TAG = "ES7210_Diag";
+        
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, "【步骤 4】测试 ES7210 地址");
+        ESP_LOGI(TAG, "----------------------------------------");
+        
+        // ES7210 的可能地址（取决于 AD0/AD1 引脚配置）
+        uint8_t possible_addresses[] = {
+            0x40,  // AD0=GND, AD1=GND
+            0x41,  // AD0=VDD, AD1=GND
+            0x42,  // AD0=GND, AD1=VDD
+            0x43,  // AD0=VDD, AD1=VDD
+        };
+        
+        ESP_LOGI(TAG, "当前配置的地址: 0x%02X", addr);
+        ESP_LOGI(TAG, "测试所有可能的 ES7210 地址:");
+        
+        for (int i = 0; i < 4; i++) {
+            uint8_t test_addr = possible_addresses[i];
+            esp_err_t ret = i2c_master_probe(bus_handle, test_addr, pdMS_TO_TICKS(200));
+            
+            if (ret == ESP_OK) {
+                ESP_LOGI(TAG, "  ✅ 0x%02X - 响应", test_addr);
+                
+                if (test_addr != addr) {
+                    ESP_LOGW(TAG, "     ⚠️ 这个地址能响应，但不是配置的地址！");
+                    ESP_LOGW(TAG, "     建议修改 config.h 中的 AUDIO_CODEC_ES7210_ADDR 为 0x%02X", test_addr);
+                }
+            } else {
+                ESP_LOGI(TAG, "  ❌ 0x%02X - 无响应 (%s)", test_addr, esp_err_to_name(ret));
+            }
+        }
+    }
+    
+    static void TestI2CSpeed(i2c_master_bus_handle_t bus_handle, uint8_t addr) {
+        const char* TAG = "ES7210_Diag";
+        
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, "【步骤 5】测试不同的 I2C 速度");
+        ESP_LOGI(TAG, "----------------------------------------");
+        
+        // 注意：这个测试需要创建新的设备句柄，但我们无法修改总线速度
+        // 只能测试设备级别的速度设置
+        
+        uint32_t test_speeds[] = {100000, 400000};  // 100kHz, 400kHz
+        
+        for (int i = 0; i < 2; i++) {
+            uint32_t speed = test_speeds[i];
+            
+            i2c_device_config_t dev_cfg = {
+                .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+                .device_address = addr,
+                .scl_speed_hz = speed,
+            };
+            
+            i2c_master_dev_handle_t dev_handle;
+            esp_err_t ret = i2c_master_bus_add_device(bus_handle, &dev_cfg, &dev_handle);
+            
+            if (ret == ESP_OK) {
+                // 尝试 probe
+                esp_err_t probe_ret = i2c_master_probe(bus_handle, addr, pdMS_TO_TICKS(200));
+                
+                if (probe_ret == ESP_OK) {
+                    ESP_LOGI(TAG, "  ✅ %d Hz - 设备响应", speed);
+                } else {
+                    ESP_LOGI(TAG, "  ❌ %d Hz - 设备无响应", speed);
+                }
+                
+                i2c_master_bus_rm_device(dev_handle);
+            } else {
+                ESP_LOGE(TAG, "  ❌ %d Hz - 无法创建设备句柄", speed);
+            }
+        }
+    }
+    
+    static void ProvideDiagnosticSuggestions(gpio_num_t mclk_pin) {
+        const char* TAG = "ES7210_Diag";
+        
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, "【诊断建议】");
+        ESP_LOGI(TAG, "========================================");
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, "1. MCLK 电压问题：");
+        ESP_LOGI(TAG, "   - 用万用表测量 GPIO%d", mclk_pin);
+        ESP_LOGI(TAG, "   - 如果显示 1.5-2.0V：✅ 正常（方波平均值）");
+        ESP_LOGI(TAG, "   - 如果显示 3.3V：❌ MCLK 丢失（变成静态高电平）");
+        ESP_LOGI(TAG, "   - 如果显示 0V：❌ MCLK 未启动");
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, "2. 用示波器检查（如果有）：");
+        ESP_LOGI(TAG, "   - 应该看到 4.096 MHz 方波");
+        ESP_LOGI(TAG, "   - 峰峰值应该接近 3.3V");
+        ESP_LOGI(TAG, "   - 占空比应该接近 50%%");
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, "3. 硬件检查：");
+        ESP_LOGI(TAG, "   - 确认 ES7210 芯片已焊接");
+        ESP_LOGI(TAG, "   - 确认 GPIO13 到 ES7210 MCLK 引脚连接正常");
+        ESP_LOGI(TAG, "   - 确认 I2C (SDA/SCL) 连接正常");
+        ESP_LOGI(TAG, "   - 确认 ES7210 供电正常 (3.3V)");
+        ESP_LOGI(TAG, "   - 检查 AD0/AD1 引脚电平（决定 I2C 地址）");
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, "4. 可能的解决方案：");
+        ESP_LOGI(TAG, "   a) 如果 I2C 扫描找不到任何设备在 0x40-0x43：");
+        ESP_LOGI(TAG, "      → ES7210 芯片可能未焊接或损坏");
+        ESP_LOGI(TAG, "      → 检查硬件连接");
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, "   b) 如果 I2C 扫描找到设备但地址不对：");
+        ESP_LOGI(TAG, "      → 修改 config.h 中的地址");
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, "   c) 如果设备能响应但初始化失败：");
+        ESP_LOGI(TAG, "      → 可能需要特殊的初始化序列");
+        ESP_LOGI(TAG, "      → 检查 ES7210 数据手册");
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, "   d) 如果 MCLK 驱动能力不足：");
+        ESP_LOGI(TAG, "      → 减小 PCB 走线长度");
+        ESP_LOGI(TAG, "      → 减小负载电容");
+        ESP_LOGI(TAG, "      → 使用外部时钟缓冲器");
+        ESP_LOGI(TAG, "========================================");
+    }
 };
 
-/**
- * ES7210 详细诊断
- * 
- * @param i2c_bus I2C 总线句柄
- * @param device_addr ES7210 I2C 地址（7-bit）
- * @return 诊断结果
- */
-inline ES7210DiagResult DiagnoseES7210(i2c_master_bus_handle_t i2c_bus, uint8_t device_addr) {
-    ES7210DiagResult result = {0};
-    
-    ESP_LOGI(ES7210_DIAG_TAG, "========================================");
-    ESP_LOGI(ES7210_DIAG_TAG, "开始 ES7210 详细诊断");
-    ESP_LOGI(ES7210_DIAG_TAG, "目标地址: 0x%02x", device_addr);
-    ESP_LOGI(ES7210_DIAG_TAG, "========================================");
-    
-    // 1. 测试 I2C 地址检测
-    ESP_LOGI(ES7210_DIAG_TAG, "");
-    ESP_LOGI(ES7210_DIAG_TAG, "1️⃣ 测试 I2C 地址检测...");
-    i2c_master_dev_handle_t dev_handle;
-    i2c_device_config_t dev_cfg = {
-        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = device_addr,
-        .scl_speed_hz = 100000,  // 降低速度以提高稳定性
-    };
-    
-    esp_err_t ret = i2c_master_bus_add_device(i2c_bus, &dev_cfg, &dev_handle);
-    if (ret == ESP_OK) {
-        ESP_LOGI(ES7210_DIAG_TAG, "   ✅ I2C 地址 0x%02x 响应正常", device_addr);
-        result.i2c_address_detected = true;
-        
-        // 2. 测试寄存器读取
-        ESP_LOGI(ES7210_DIAG_TAG, "");
-        ESP_LOGI(ES7210_DIAG_TAG, "2️⃣ 测试寄存器读取...");
-        
-        // 尝试读取几个关键寄存器
-        uint8_t test_registers[] = {
-            ES7210_RESET_REG,
-            ES7210_CLOCK_OFF_REG,
-            ES7210_MAINCLK_REG,
-            ES7210_MODE_CONFIG_REG
-        };
-        
-        int read_success_count = 0;
-        for (int i = 0; i < sizeof(test_registers); i++) {
-            uint8_t reg_addr = test_registers[i];
-            uint8_t reg_value = 0;
-            
-            ret = i2c_master_transmit_receive(dev_handle, &reg_addr, 1, &reg_value, 1, 1000);
-            if (ret == ESP_OK) {
-                ESP_LOGI(ES7210_DIAG_TAG, "   ✅ 寄存器 0x%02x 读取成功: 0x%02x", reg_addr, reg_value);
-                read_success_count++;
-            } else {
-                ESP_LOGE(ES7210_DIAG_TAG, "   ❌ 寄存器 0x%02x 读取失败: %s", reg_addr, esp_err_to_name(ret));
-                result.error_count++;
-            }
-            vTaskDelay(pdMS_TO_TICKS(10));  // 短暂延迟
-        }
-        
-        result.register_read_success = (read_success_count > 0);
-        
-        // 3. 测试寄存器写入
-        ESP_LOGI(ES7210_DIAG_TAG, "");
-        ESP_LOGI(ES7210_DIAG_TAG, "3️⃣ 测试寄存器写入...");
-        
-        // 尝试写入一个安全的寄存器（时钟关闭寄存器）
-        uint8_t write_data[2] = {ES7210_CLOCK_OFF_REG, 0x00};
-        ret = i2c_master_transmit(dev_handle, write_data, 2, 1000);
-        if (ret == ESP_OK) {
-            ESP_LOGI(ES7210_DIAG_TAG, "   ✅ 寄存器写入成功");
-            result.register_write_success = true;
-            
-            // 回读验证
-            uint8_t read_back = 0;
-            ret = i2c_master_transmit_receive(dev_handle, &write_data[0], 1, &read_back, 1, 1000);
-            if (ret == ESP_OK) {
-                ESP_LOGI(ES7210_DIAG_TAG, "   ✅ 写入验证: 写入 0x%02x, 读回 0x%02x", write_data[1], read_back);
-            }
-        } else {
-            ESP_LOGE(ES7210_DIAG_TAG, "   ❌ 寄存器写入失败: %s", esp_err_to_name(ret));
-            result.register_write_success = false;
-            result.error_count++;
-        }
-        
-        // 4. 尝试软件复位
-        ESP_LOGI(ES7210_DIAG_TAG, "");
-        ESP_LOGI(ES7210_DIAG_TAG, "4️⃣ 尝试软件复位...");
-        uint8_t reset_data[2] = {ES7210_RESET_REG, 0xFF};  // 复位命令
-        ret = i2c_master_transmit(dev_handle, reset_data, 2, 1000);
-        if (ret == ESP_OK) {
-            ESP_LOGI(ES7210_DIAG_TAG, "   ✅ 软件复位命令发送成功");
-            vTaskDelay(pdMS_TO_TICKS(100));  // 等待复位完成
-            
-            // 复位后再次尝试读取
-            uint8_t reg_addr = ES7210_RESET_REG;
-            uint8_t reg_value = 0;
-            ret = i2c_master_transmit_receive(dev_handle, &reg_addr, 1, &reg_value, 1, 1000);
-            if (ret == ESP_OK) {
-                ESP_LOGI(ES7210_DIAG_TAG, "   ✅ 复位后寄存器可读: 0x%02x", reg_value);
-            } else {
-                ESP_LOGE(ES7210_DIAG_TAG, "   ❌ 复位后寄存器读取失败");
-            }
-        } else {
-            ESP_LOGE(ES7210_DIAG_TAG, "   ❌ 软件复位失败: %s", esp_err_to_name(ret));
-        }
-        
-        i2c_master_bus_rm_device(dev_handle);
-    } else {
-        ESP_LOGE(ES7210_DIAG_TAG, "   ❌ I2C 地址 0x%02x 无响应: %s", device_addr, esp_err_to_name(ret));
-        result.i2c_address_detected = false;
-    }
-    
-    // 5. 诊断总结
-    ESP_LOGI(ES7210_DIAG_TAG, "");
-    ESP_LOGI(ES7210_DIAG_TAG, "========================================");
-    ESP_LOGI(ES7210_DIAG_TAG, "诊断结果总结");
-    ESP_LOGI(ES7210_DIAG_TAG, "========================================");
-    ESP_LOGI(ES7210_DIAG_TAG, "I2C 地址检测: %s", result.i2c_address_detected ? "✅ 正常" : "❌ 失败");
-    ESP_LOGI(ES7210_DIAG_TAG, "寄存器读取:   %s", result.register_read_success ? "✅ 正常" : "❌ 失败");
-    ESP_LOGI(ES7210_DIAG_TAG, "寄存器写入:   %s", result.register_write_success ? "✅ 正常" : "❌ 失败");
-    ESP_LOGI(ES7210_DIAG_TAG, "错误计数:     %d", result.error_count);
-    ESP_LOGI(ES7210_DIAG_TAG, "========================================");
-    
-    // 6. 给出建议
-    ESP_LOGI(ES7210_DIAG_TAG, "");
-    ESP_LOGI(ES7210_DIAG_TAG, "📋 诊断建议:");
-    if (!result.i2c_address_detected) {
-        ESP_LOGI(ES7210_DIAG_TAG, "   ⚠️ I2C 地址无响应 → 检查硬件连接和供电");
-    } else if (!result.register_read_success) {
-        ESP_LOGI(ES7210_DIAG_TAG, "   ⚠️ 地址响应但无法读取寄存器 → 芯片可能损坏或 MCLK 缺失");
-    } else if (!result.register_write_success) {
-        ESP_LOGI(ES7210_DIAG_TAG, "   ⚠️ 可读但无法写入 → 芯片可能处于保护模式或损坏");
-    } else {
-        ESP_LOGI(ES7210_DIAG_TAG, "   ✅ I2C 通信正常 → 问题可能在初始化序列");
-    }
-    ESP_LOGI(ES7210_DIAG_TAG, "");
-    
-    return result;
-}
-
-/**
- * 测试不同的 I2C 速度
- */
-inline void TestES7210I2CSpeed(i2c_master_bus_handle_t i2c_bus, uint8_t device_addr) {
-    ESP_LOGI(ES7210_DIAG_TAG, "========================================");
-    ESP_LOGI(ES7210_DIAG_TAG, "测试不同的 I2C 速度");
-    ESP_LOGI(ES7210_DIAG_TAG, "========================================");
-    
-    uint32_t speeds[] = {50000, 100000, 200000, 400000};  // 50kHz, 100kHz, 200kHz, 400kHz
-    
-    for (int i = 0; i < sizeof(speeds) / sizeof(speeds[0]); i++) {
-        ESP_LOGI(ES7210_DIAG_TAG, "");
-        ESP_LOGI(ES7210_DIAG_TAG, "测试速度: %d Hz", speeds[i]);
-        
-        i2c_device_config_t dev_cfg = {
-            .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-            .device_address = device_addr,
-            .scl_speed_hz = speeds[i],
-        };
-        
-        i2c_master_dev_handle_t dev_handle;
-        esp_err_t ret = i2c_master_bus_add_device(i2c_bus, &dev_cfg, &dev_handle);
-        if (ret == ESP_OK) {
-            // 尝试读取寄存器
-            uint8_t reg_addr = ES7210_RESET_REG;
-            uint8_t reg_value = 0;
-            ret = i2c_master_transmit_receive(dev_handle, &reg_addr, 1, &reg_value, 1, 1000);
-            if (ret == ESP_OK) {
-                ESP_LOGI(ES7210_DIAG_TAG, "   ✅ 速度 %d Hz: 读取成功 (值: 0x%02x)", speeds[i], reg_value);
-            } else {
-                ESP_LOGE(ES7210_DIAG_TAG, "   ❌ 速度 %d Hz: 读取失败 (%s)", speeds[i], esp_err_to_name(ret));
-            }
-            i2c_master_bus_rm_device(dev_handle);
-        } else {
-            ESP_LOGE(ES7210_DIAG_TAG, "   ❌ 速度 %d Hz: 无法添加设备", speeds[i]);
-        }
-        
-        vTaskDelay(pdMS_TO_TICKS(50));
-    }
-    
-    ESP_LOGI(ES7210_DIAG_TAG, "========================================");
-}
-
-/**
- * 测试不同的等待时间
- */
-inline void TestES7210StabilizationTime(i2c_master_bus_handle_t i2c_bus, uint8_t device_addr, 
-                                       void (*start_mclk_func)()) {
-    ESP_LOGI(ES7210_DIAG_TAG, "========================================");
-    ESP_LOGI(ES7210_DIAG_TAG, "测试不同的 MCLK 稳定时间");
-    ESP_LOGI(ES7210_DIAG_TAG, "========================================");
-    
-    uint32_t delays[] = {10, 50, 100, 200, 500};  // ms
-    
-    for (int i = 0; i < sizeof(delays) / sizeof(delays[0]); i++) {
-        ESP_LOGI(ES7210_DIAG_TAG, "");
-        ESP_LOGI(ES7210_DIAG_TAG, "测试延迟: %d ms", delays[i]);
-        
-        // 重新启动 MCLK
-        if (start_mclk_func) {
-            start_mclk_func();
-        }
-        
-        // 等待指定时间
-        vTaskDelay(pdMS_TO_TICKS(delays[i]));
-        
-        // 尝试 I2C 通信
-        i2c_device_config_t dev_cfg = {
-            .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-            .device_address = device_addr,
-            .scl_speed_hz = 100000,
-        };
-        
-        i2c_master_dev_handle_t dev_handle;
-        esp_err_t ret = i2c_master_bus_add_device(i2c_bus, &dev_cfg, &dev_handle);
-        if (ret == ESP_OK) {
-            uint8_t reg_addr = ES7210_RESET_REG;
-            uint8_t reg_value = 0;
-            ret = i2c_master_transmit_receive(dev_handle, &reg_addr, 1, &reg_value, 1, 1000);
-            if (ret == ESP_OK) {
-                ESP_LOGI(ES7210_DIAG_TAG, "   ✅ 延迟 %d ms: 通信成功", delays[i]);
-            } else {
-                ESP_LOGE(ES7210_DIAG_TAG, "   ❌ 延迟 %d ms: 通信失败", delays[i]);
-            }
-            i2c_master_bus_rm_device(dev_handle);
-        }
-        
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
-    
-    ESP_LOGI(ES7210_DIAG_TAG, "========================================");
-}
-
-#endif // ES7210_DIAGNOSTIC_H
-
+#endif // _ES7210_DIAGNOSTIC_H_
