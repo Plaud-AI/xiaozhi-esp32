@@ -190,7 +190,9 @@ DualI2sAudioCodec::DualI2sAudioCodec(
         }
         
         // 等待 ES7210 芯片稳定（需要 MCLK 才能工作）
-        vTaskDelay(pdMS_TO_TICKS(50));  // 等待 50ms
+        // ⚠️ 增加等待时间：从 50ms → 200ms
+        ESP_LOGI(TAG, "⏳ 等待 ES7210 芯片稳定（200ms）...");
+        vTaskDelay(pdMS_TO_TICKS(200));  // 等待 200ms（增加稳定时间）
         ESP_LOGI(TAG, "✅ ES7210 稳定时间已完成");
     }
 
