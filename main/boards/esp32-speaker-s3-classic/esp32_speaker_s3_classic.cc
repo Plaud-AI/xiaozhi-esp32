@@ -23,6 +23,15 @@
 extern void TestI2CConnection();  // 声明测试函数
 #endif
 
+// ========== MCLK 诊断模式开关 ==========
+// 设置为 1 启用 MCLK 输出电压测试（硬件工程师反馈 MCLK 只有 1.6V）
+// 设置为 0 使用正常模式
+#define ENABLE_MCLK_VOLTAGE_TEST 0  // 默认关闭，需要时手动开启
+
+#if ENABLE_MCLK_VOLTAGE_TEST
+#include "mclk_test.h"
+#endif
+
 class Esp32SpeakerS3Classic : public WifiBoard {
 private:
     i2c_master_bus_handle_t i2c_bus_;
