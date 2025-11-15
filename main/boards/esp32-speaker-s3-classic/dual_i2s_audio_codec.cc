@@ -51,30 +51,7 @@ DualI2sAudioCodec::DualI2sAudioCodec(
     assert(out_data_if_ != nullptr);
 
     // ⚠️ 关键修复：ES8311 需要 MCLK 才能响应 I2C 命令！
-    // 硬件工程师优化建议：
-    // 1. 增加驱动强度到 40mA
-    // 2. 初始化前先设置低电平（减少启动冲击）
-    // 3. 使用 hold 操作减少寄生电容影响
-    
-    ESP_LOGI(TAG, "⚡ 优化 GPIO3 (ES8311_MCLK) 配置...");
-    
-    // 步骤 1：先设置为低电平（避免启动瞬间的高电平冲击）
-    gpio_set_level(es8311_mclk, 0);
-    ESP_LOGD(TAG, "  - GPIO3 初始化为低电平");
-    
-    // 步骤 2：设置驱动强度为 40mA
-    esp_err_t gpio_ret_es8311 = gpio_set_drive_capability(es8311_mclk, GPIO_DRIVE_CAP_3);
-    if (gpio_ret_es8311 == ESP_OK) {
-        ESP_LOGI(TAG, "  ✅ GPIO3 驱动强度：40mA (GPIO_DRIVE_CAP_3)");
-    } else {
-        ESP_LOGW(TAG, "  ⚠️ GPIO3 驱动强度设置失败: %s", esp_err_to_name(gpio_ret_es8311));
-    }
-    
-    // 步骤 3：Hold 操作（关闭输入缓冲，减小寄生电容）
-    gpio_hold_en(es8311_mclk);
-    ESP_LOGD(TAG, "  - GPIO3 hold 已使能（减小寄生电容）");
-    gpio_hold_dis(es8311_mclk);
-    ESP_LOGD(TAG, "  - GPIO3 hold 已禁用（恢复正常工作）");
+    // 策略：让 I2S 驱动自己配置 GPIO，不干预
     
     // 先启动 I2S 通道，开始输出 MCLK
     ESP_LOGI(TAG, "⏳ 启动 I2S0 通道以提供 MCLK 给 ES8311...");
@@ -84,38 +61,21 @@ DualI2sAudioCodec::DualI2sAudioCodec(
     } else {
         ESP_LOGI(TAG, "✅ I2S0 MCLK 已启动");
         
-        // ⚠️ 关键修复：I2S 驱动可能覆盖了 GPIO 配置
-        ESP_LOGI(TAG, "⚡ I2S 启动后重新配置 GPIO3 (ES8311_MCLK)...");
+        // ⚠️ 修复策略：不使用 gpio_config()，避免覆盖 I2S 外设配置
+        // 只在 I2S 启动后尝试增加驱动强度（可能无效，但不会破坏 MCLK）
+        ESP_LOGI(TAG, "⚡ 尝试增加 GPIO3 (ES8311_MCLK) 驱动强度...");
         
-        // 步骤 1：重新配置 GPIO 为推挽输出模式
-        gpio_config_t io_conf_es8311 = {};
-        io_conf_es8311.pin_bit_mask = (1ULL << es8311_mclk);
-        io_conf_es8311.mode = GPIO_MODE_OUTPUT;
-        io_conf_es8311.pull_up_en = GPIO_PULLUP_DISABLE;
-        io_conf_es8311.pull_down_en = GPIO_PULLDOWN_DISABLE;
-        io_conf_es8311.intr_type = GPIO_INTR_DISABLE;
-        
-        esp_err_t gpio_cfg_ret_es8311 = gpio_config(&io_conf_es8311);
-        if (gpio_cfg_ret_es8311 == ESP_OK) {
-            ESP_LOGI(TAG, "  ✅ GPIO3 已重新配置为推挽输出");
-        }
-        
-        // 步骤 2：设置输出为高电平
-        gpio_set_level(es8311_mclk, 1);
-        ESP_LOGI(TAG, "  ✅ GPIO3 输出设为高电平");
-        
-        // 步骤 3：设置驱动强度
         esp_err_t gpio_ret_post_es8311 = gpio_set_drive_capability(es8311_mclk, GPIO_DRIVE_CAP_3);
         if (gpio_ret_post_es8311 == ESP_OK) {
-            ESP_LOGI(TAG, "  ✅ GPIO3 驱动强度：40mA");
+            ESP_LOGI(TAG, "  ✅ GPIO3 驱动强度设置为 40mA");
             
             gpio_drive_cap_t actual_cap_es8311;
             if (gpio_get_drive_capability(es8311_mclk, &actual_cap_es8311) == ESP_OK) {
-                ESP_LOGI(TAG, "  📊 GPIO3 驱动强度：%d", actual_cap_es8311);
+                ESP_LOGI(TAG, "  📊 GPIO3 当前驱动强度：%d (0=5mA, 1=10mA, 2=20mA, 3=40mA)", actual_cap_es8311);
             }
+        } else {
+            ESP_LOGW(TAG, "  ⚠️ GPIO3 驱动强度设置失败: %s", esp_err_to_name(gpio_ret_post_es8311));
         }
-        
-        vTaskDelay(pdMS_TO_TICKS(100));
         
         // 等待 ES8311 芯片稳定（需要 MCLK 才能工作）
         vTaskDelay(pdMS_TO_TICKS(50));  // 等待 50ms
@@ -200,30 +160,7 @@ DualI2sAudioCodec::DualI2sAudioCodec(
     assert(in_data_if_ != nullptr);
 
     // ⚠️ 关键修复：ES7210 需要 MCLK 才能响应 I2C 命令！
-    // 硬件工程师优化建议：
-    // 1. 增加驱动强度到 40mA
-    // 2. 初始化前先设置低电平（减少启动冲击）
-    // 3. 使用 hold 操作减少寄生电容影响
-    
-    ESP_LOGI(TAG, "⚡ 优化 GPIO13 (ES7210_MCLK) 配置...");
-    
-    // 步骤 1：先设置为低电平（避免启动瞬间的高电平冲击）
-    gpio_set_level(es7210_mclk, 0);
-    ESP_LOGD(TAG, "  - GPIO13 初始化为低电平");
-    
-    // 步骤 2：设置驱动强度为 40mA
-    esp_err_t gpio_ret = gpio_set_drive_capability(es7210_mclk, GPIO_DRIVE_CAP_3);
-    if (gpio_ret == ESP_OK) {
-        ESP_LOGI(TAG, "  ✅ GPIO13 驱动强度：40mA (GPIO_DRIVE_CAP_3)");
-    } else {
-        ESP_LOGW(TAG, "  ⚠️ GPIO13 驱动强度设置失败: %s", esp_err_to_name(gpio_ret));
-    }
-    
-    // 步骤 3：Hold 操作（关闭输入缓冲，减小寄生电容）
-    gpio_hold_en(es7210_mclk);
-    ESP_LOGD(TAG, "  - GPIO13 hold 已使能（减小寄生电容）");
-    gpio_hold_dis(es7210_mclk);
-    ESP_LOGD(TAG, "  - GPIO13 hold 已禁用（恢复正常工作）");
+    // 策略：让 I2S 驱动自己配置 GPIO，不干预
     
     // 先启动 I2S 通道，开始输出 MCLK
     ESP_LOGI(TAG, "⏳ 启动 I2S1 通道以提供 MCLK 给 ES7210...");
@@ -233,51 +170,21 @@ DualI2sAudioCodec::DualI2sAudioCodec(
     } else {
         ESP_LOGI(TAG, "✅ I2S1 MCLK 已启动");
         
-        // ⚠️ 关键修复：I2S 驱动可能覆盖了 GPIO 配置
-        // 硬件工程师反馈：
-        // - 电源 3.3V 正常
-        // - GPIO13 空载和带载都是 1.6V ← 说明 GPIO 输出模式有问题！
-        // 诊断：GPIO 可能被配置为开漏输出或有冲突配置
+        // ⚠️ 修复策略：不使用 gpio_config()，避免覆盖 I2S 外设配置
+        // 只在 I2S 启动后尝试增加驱动强度（可能无效，但不会破坏 MCLK）
+        ESP_LOGI(TAG, "⚡ 尝试增加 GPIO13 (ES7210_MCLK) 驱动强度...");
         
-        ESP_LOGI(TAG, "⚡ I2S 启动后重新配置 GPIO13 (ES7210_MCLK)...");
-        
-        // 步骤 1：重新配置 GPIO 为推挽输出模式
-        gpio_config_t io_conf = {};
-        io_conf.pin_bit_mask = (1ULL << es7210_mclk);
-        io_conf.mode = GPIO_MODE_OUTPUT;           // 输出模式
-        io_conf.pull_up_en = GPIO_PULLUP_DISABLE;  // 禁用上拉
-        io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE; // 禁用下拉
-        io_conf.intr_type = GPIO_INTR_DISABLE;
-        
-        esp_err_t gpio_cfg_ret = gpio_config(&io_conf);
-        if (gpio_cfg_ret == ESP_OK) {
-            ESP_LOGI(TAG, "  ✅ GPIO13 已重新配置为推挽输出（禁用上下拉）");
-        } else {
-            ESP_LOGW(TAG, "  ⚠️ GPIO13 配置失败: %s", esp_err_to_name(gpio_cfg_ret));
-        }
-        
-        // 步骤 2：设置输出为高电平
-        gpio_set_level(es7210_mclk, 1);
-        ESP_LOGI(TAG, "  ✅ GPIO13 输出设为高电平");
-        
-        // 步骤 3：设置驱动强度
         esp_err_t gpio_ret_post = gpio_set_drive_capability(es7210_mclk, GPIO_DRIVE_CAP_3);
         if (gpio_ret_post == ESP_OK) {
-            ESP_LOGI(TAG, "  ✅ GPIO13 驱动强度：40mA");
+            ESP_LOGI(TAG, "  ✅ GPIO13 驱动强度设置为 40mA");
             
-            // 验证设置
             gpio_drive_cap_t actual_cap;
             if (gpio_get_drive_capability(es7210_mclk, &actual_cap) == ESP_OK) {
-                ESP_LOGI(TAG, "  📊 GPIO13 驱动强度：%d (0=5mA, 1=10mA, 2=20mA, 3=40mA)", actual_cap);
+                ESP_LOGI(TAG, "  📊 GPIO13 当前驱动强度：%d (0=5mA, 1=10mA, 2=20mA, 3=40mA)", actual_cap);
             }
         } else {
             ESP_LOGW(TAG, "  ⚠️ GPIO13 驱动强度设置失败: %s", esp_err_to_name(gpio_ret_post));
         }
-        
-        ESP_LOGW(TAG, "  ⚠️ 请测量 GPIO13 电压，应该从 1.6V 提升到 3.0V+");
-        
-        // 等待稳定
-        vTaskDelay(pdMS_TO_TICKS(100));
         
         // 等待 ES7210 芯片稳定（需要 MCLK 才能工作）
         vTaskDelay(pdMS_TO_TICKS(50));  // 等待 50ms
