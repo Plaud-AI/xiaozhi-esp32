@@ -190,13 +190,61 @@ DualI2sAudioCodec::DualI2sAudioCodec(
         }
         
         // 等待 ES7210 芯片稳定（需要 MCLK 才能工作）
-        // ⚠️ 增加等待时间：从 50ms → 200ms
-        ESP_LOGI(TAG, "⏳ 等待 ES7210 芯片稳定（200ms）...");
-        vTaskDelay(pdMS_TO_TICKS(200));  // 等待 200ms（增加稳定时间）
+        // ⚠️ 进一步增加等待时间：50ms → 200ms → 1000ms
+        ESP_LOGI(TAG, "⏳ 等待 ES7210 芯片稳定（1000ms）...");
+        ESP_LOGI(TAG, "💡 说明：200ms 仍不足，尝试 1000ms 长延时");
+        vTaskDelay(pdMS_TO_TICKS(1000));  // 等待 1000ms（极长稳定时间）
         ESP_LOGI(TAG, "✅ ES7210 稳定时间已完成");
     }
 
-    i2c_cfg.addr = es7210_addr;
+    // ========== 手动 I2C 测试 ==========
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "🔬 进行 ES7210 I2C 读写测试...");
+    
+    // 测试 1：尝试读取芯片 ID （寄存器 0x00）
+    {
+        uint8_t chip_id = 0;
+        uint8_t reg_addr = 0x00;
+        
+        i2c_device_config_t dev_cfg = {
+            .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+            .device_address = es7210_addr,
+            .scl_speed_hz = 100000,  // 使用较低速度测试
+        };
+        
+        i2c_master_dev_handle_t dev_handle;
+        esp_err_t ret = i2c_master_bus_add_device((i2c_master_bus_handle_t)i2c_master_handle, &dev_cfg, &dev_handle);
+        
+        if (ret == ESP_OK) {
+            // 尝试读取
+            ret = i2c_master_transmit_receive(dev_handle, &reg_addr, 1, &chip_id, 1, 1000);
+            if (ret == ESP_OK) {
+                ESP_LOGI(TAG, "✅ I2C 读取成功！芯片 ID 寄存器 (0x00) = 0x%02x", chip_id);
+            } else {
+                ESP_LOGW(TAG, "⚠️ I2C 读取失败: %s", esp_err_to_name(ret));
+            }
+            
+            // 测试 2：尝试写入一个安全的寄存器（假设 0x00 是只读的，尝试 0x01）
+            uint8_t write_data[2] = {0x01, 0x00};  // 寄存器 0x01, 值 0x00
+            ret = i2c_master_transmit(dev_handle, write_data, 2, 1000);
+            if (ret == ESP_OK) {
+                ESP_LOGI(TAG, "✅ I2C 写入成功！");
+            } else {
+                ESP_LOGW(TAG, "⚠️ I2C 写入失败: %s", esp_err_to_name(ret));
+                ESP_LOGW(TAG, "💡 这可能说明 ES7210 芯片处于保护模式或需要特殊初始化序列");
+            }
+            
+            i2c_master_bus_rm_device(dev_handle);
+        }
+    }
+    ESP_LOGI(TAG, "");
+    
+    // ========== 创建 ES7210 控制接口 ==========
+    // ⚠️ 重要：ESP-ADF 驱动会将地址右移 1 位（audio_codec_ctrl_i2c.c:52）
+    // 所以需要左移 1 位：0x40 << 1 = 0x80 → ESP-ADF 右移后 → 0x40 ✅
+    ESP_LOGI(TAG, "📝 修正 I2C 地址格式：0x%02x → 0x%02x (左移 1 位，适配 ESP-ADF)", 
+             es7210_addr, es7210_addr << 1);
+    i2c_cfg.addr = es7210_addr << 1;  // 左移以适配 ESP-ADF 的地址格式
     in_ctrl_if_ = audio_codec_new_i2c_ctrl(&i2c_cfg);
     
     // ⚠️ ES7210 可能未焊接，允许初始化失败
