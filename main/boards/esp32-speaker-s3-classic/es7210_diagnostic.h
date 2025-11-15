@@ -66,27 +66,22 @@ private:
         ESP_LOGI(TAG, "【步骤 1】检查 GPIO 配置");
         ESP_LOGI(TAG, "----------------------------------------");
         
-        // 检查 MCLK
-        gpio_mode_t mclk_mode;
-        gpio_get_mode(mclk, &mclk_mode);
+        // 检查 MCLK 驱动强度
         ESP_LOGI(TAG, "GPIO%d (MCLK):", mclk);
-        ESP_LOGI(TAG, "  模式: %d (0=Input, 1=Output, 2=IO, 3=OD)", mclk_mode);
-        
         gpio_drive_cap_t mclk_drive;
         if (gpio_get_drive_capability(mclk, &mclk_drive) == ESP_OK) {
             ESP_LOGI(TAG, "  驱动强度: %d (0=5mA, 1=10mA, 2=20mA, 3=40mA)", mclk_drive);
+        } else {
+            ESP_LOGI(TAG, "  驱动强度: 无法读取");
         }
         
-        // 检查 I2C 引脚
-        ESP_LOGI(TAG, "GPIO%d (SDA):", sda);
-        gpio_mode_t sda_mode;
-        gpio_get_mode(sda, &sda_mode);
-        ESP_LOGI(TAG, "  模式: %d", sda_mode);
+        // 检查 MCLK 电平
+        int mclk_level = gpio_get_level(mclk);
+        ESP_LOGI(TAG, "  当前电平: %d", mclk_level);
         
-        ESP_LOGI(TAG, "GPIO%d (SCL):", scl);
-        gpio_mode_t scl_mode;
-        gpio_get_mode(scl, &scl_mode);
-        ESP_LOGI(TAG, "  模式: %d", scl_mode);
+        // 检查 I2C 引脚电平
+        ESP_LOGI(TAG, "GPIO%d (SDA): 电平=%d", sda, gpio_get_level(sda));
+        ESP_LOGI(TAG, "GPIO%d (SCL): 电平=%d", scl, gpio_get_level(scl));
     }
     
     static void CheckI2sChannelState(i2s_chan_handle_t handle) {
