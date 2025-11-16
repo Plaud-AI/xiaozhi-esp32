@@ -5,11 +5,14 @@
 #include "system_info.h"
 #include "settings.h"
 #include "assets/lang_config.h"
+#include "ble_wifi_provisioner.h"
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <esp_network.h>
 #include <esp_log.h>
+#include <esp_wifi.h>
+#include <esp_err.h>
 
 #include <font_awesome.h>
 #include <wifi_station.h>
@@ -36,12 +39,65 @@ void WifiBoard::EnterWifiConfigMode() {
     auto& application = Application::GetInstance();
     application.SetDeviceState(kDeviceStateWifiConfiguring);
 
+    // ====== 第一步：启动 Soft AP WiFi 配网 ======
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "第1步: 启动 Soft AP WiFi 配网");
+    ESP_LOGI(TAG, "========================================");
+    
     auto& wifi_ap = WifiConfigurationAp::GetInstance();
     wifi_ap.SetLanguage(Lang::CODE);
     wifi_ap.SetSsidPrefix("Xiaozhi");
     wifi_ap.Start();
 
-    // 等待 1.5 秒显示开发板信息
+    ESP_LOGI(TAG, "✓ Soft AP 已启动: %s", wifi_ap.GetSsid().c_str());
+
+    // ====== 预扫描 WiFi 网络（提前准备列表）======
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "预扫描 WiFi 网络...");
+    ESP_LOGI(TAG, "========================================");
+    
+    // 在后台启动WiFi扫描，这样Soft AP和BLE都能使用缓存结果
+    xTaskCreate([](void* arg) {
+        const char* task_tag = "WiFiPreScan";
+        
+        // Soft AP模式下，WiFi已经在运行（AP+STA模式）
+        // 直接发起扫描
+        wifi_scan_config_t scan_config = {
+            .ssid = nullptr,
+            .bssid = nullptr,
+            .channel = 0,
+            .show_hidden = false,
+            .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+            .scan_time = {
+                .active = {
+                    .min = 0,  // 使用默认值
+                    .max = 0   // 使用默认值
+                }
+            }
+        };
+        
+        esp_err_t ret = esp_wifi_scan_start(&scan_config, false);
+        if (ret == ESP_OK) {
+            ESP_LOGI(task_tag, "✓ WiFi扫描已启动（非阻塞）");
+            
+            // 等待扫描完成（最多10秒）
+            for (int i = 0; i < 100; i++) {
+                uint16_t ap_count = 0;
+                ret = esp_wifi_scan_get_ap_num(&ap_count);
+                if (ret == ESP_OK && ap_count > 0) {
+                    ESP_LOGI(task_tag, "✓ WiFi预扫描完成，发现 %d 个网络", ap_count);
+                    break;
+                }
+                vTaskDelay(pdMS_TO_TICKS(100));
+            }
+        } else {
+            ESP_LOGW(task_tag, "WiFi预扫描启动失败: %s（不影响配网）", esp_err_to_name(ret));
+        }
+        
+        vTaskDelete(NULL);
+    }, "wifi_prescan", 3072, NULL, 5, NULL);
+    
+    // 等待 1.5 秒让扫描开始，同时显示开发板信息
     vTaskDelay(pdMS_TO_TICKS(1500));
 
     // 显示 WiFi 配置 AP 的 SSID 和 Web 服务器 URL
@@ -53,6 +109,60 @@ void WifiBoard::EnterWifiConfigMode() {
     
     // 播报配置 WiFi 的提示
     application.Alert(Lang::Strings::WIFI_CONFIG_MODE, hint.c_str(), "gear", Lang::Sounds::OGG_WIFICONFIG);
+    
+    ESP_LOGI(TAG, "✓ 提示音播报完成，WiFi列表已准备就绪");
+
+    // ====== 第二步：延迟启动 BLE 配网（15秒后）======
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "将在 15 秒后启动 BLE 配网服务...");
+    ESP_LOGI(TAG, "========================================");
+    
+    // 创建后台任务来延迟启动 BLE
+    xTaskCreate([](void* arg) {
+        // 等待15秒，给用户时间先尝试 Soft AP
+        vTaskDelay(pdMS_TO_TICKS(15000));
+        
+        ESP_LOGI(TAG, "========================================");
+        ESP_LOGI(TAG, "第2步: 启动 BLE WiFi 配网");
+        ESP_LOGI(TAG, "========================================");
+        
+        auto& provisioner = BLEWiFiProvisioner::GetInstance();
+        
+        // 设置配网成功回调
+        provisioner.SetProvisionSuccessCallback([](const std::string& ssid, const std::string& password) {
+            ESP_LOGI(TAG, "╔════════════════════════════════════════╗");
+            ESP_LOGI(TAG, "║   ✅ BLE WiFi配网成功！                ║");
+            ESP_LOGI(TAG, "╚════════════════════════════════════════╝");
+            ESP_LOGI(TAG, "SSID: %s", ssid.c_str());
+            ESP_LOGI(TAG, "设备将在2秒后重启...");
+        });
+        
+        // 设置配网失败回调
+        provisioner.SetProvisionFailureCallback([](const std::string& error_message) {
+            ESP_LOGE(TAG, "╔════════════════════════════════════════╗");
+            ESP_LOGE(TAG, "║   ❌ BLE WiFi配网失败                  ║");
+            ESP_LOGE(TAG, "╚════════════════════════════════════════╝");
+            ESP_LOGE(TAG, "错误: %s", error_message.c_str());
+        });
+        
+        // 初始化并启动 BLE WiFi 配网
+        // BLE 配网会自动使用 WifiStation 缓存的扫描结果
+        if (provisioner.Initialize("ESP32-PLAUD")) {
+            if (provisioner.Start()) {
+                ESP_LOGI(TAG, "✓ BLE配网服务已启动");
+                ESP_LOGI(TAG, "✓ BLE将复用Soft AP的WiFi扫描结果");
+            } else {
+                ESP_LOGE(TAG, "❌ BLE广播启动失败");
+            }
+        } else {
+            ESP_LOGE(TAG, "❌ BLE配网服务初始化失败");
+        }
+        
+        ESP_LOGI(TAG, "========================================");
+        
+        // 任务完成，删除自己
+        vTaskDelete(NULL);
+    }, "ble_delayed_start", 4096, NULL, 5, NULL);
 
     #if CONFIG_USE_ACOUSTIC_WIFI_PROVISIONING
     auto display = Board::GetInstance().GetDisplay();

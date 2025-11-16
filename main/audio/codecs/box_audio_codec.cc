@@ -183,6 +183,7 @@ void BoxAudioCodec::CreateDuplexChannels(gpio_num_t mclk, gpio_num_t bclk, gpio_
 }
 
 void BoxAudioCodec::SetOutputVolume(int volume) {
+    ESP_LOGI(TAG, "🔊 设置音量: %d -> %d", output_volume_, volume);
     ESP_ERROR_CHECK(esp_codec_dev_set_out_vol(output_dev_, volume));
     AudioCodec::SetOutputVolume(volume);
 }
@@ -234,7 +235,9 @@ void BoxAudioCodec::EnableOutput(bool enable) {
         };
         ESP_ERROR_CHECK(esp_codec_dev_open(output_dev_, &fs));
         ESP_ERROR_CHECK(esp_codec_dev_set_out_vol(output_dev_, output_volume_));
+        ESP_LOGI(TAG, "🔊 音频输出已启用: 采样率=%d Hz, 音量=%d/100", output_sample_rate_, output_volume_);
     } else {
+        ESP_LOGI(TAG, "🔇 音频输出已关闭");
         ESP_ERROR_CHECK(esp_codec_dev_close(output_dev_));
     }
     AudioCodec::EnableOutput(enable);

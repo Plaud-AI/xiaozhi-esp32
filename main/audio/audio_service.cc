@@ -532,7 +532,10 @@ void AudioService::SetCallbacks(AudioServiceCallbacks& callbacks) {
 }
 
 void AudioService::PlaySound(const std::string_view& ogg) {
+    ESP_LOGI(TAG, "🎵 播放提示音: 大小=%d 字节", ogg.size());
+    
     if (!codec_->output_enabled()) {
+        ESP_LOGI(TAG, "🔊 音频输出未启用，正在启用...");
         esp_timer_stop(audio_power_timer_);
         esp_timer_start_periodic(audio_power_timer_, AUDIO_POWER_CHECK_INTERVAL_MS * 1000);
         codec_->EnableOutput(true);

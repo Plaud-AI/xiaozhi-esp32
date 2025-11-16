@@ -278,6 +278,8 @@ void BLEWiFiProvisioner::HandleScanWiFiCommand() {
         ESP_LOGI(TAG, "开始新的WiFi扫描...");
         
         // 配置扫描参数
+        // 注意：当蓝牙启用时，必须使用默认扫描时间参数（设置为0）
+        // 否则会导致扫描结果不完整
         wifi_scan_config_t scan_config = {
             .ssid = nullptr,
             .bssid = nullptr,
@@ -286,8 +288,8 @@ void BLEWiFiProvisioner::HandleScanWiFiCommand() {
             .scan_type = WIFI_SCAN_TYPE_ACTIVE,
             .scan_time = {
                 .active = {
-                    .min = 100,
-                    .max = 300
+                    .min = 0,  // 使用默认值，适配BLE+WiFi共存
+                    .max = 0   // 使用默认值，适配BLE+WiFi共存
                 }
             }
         };
