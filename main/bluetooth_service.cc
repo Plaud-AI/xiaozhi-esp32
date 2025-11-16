@@ -246,6 +246,12 @@ bool BluetoothService::StartAdvertising() {
         return false;
     }
 
+    // 检查是否已经在广播
+    if (ble_gap_adv_active()) {
+        ESP_LOGW(TAG, "BLE广播已在运行，跳过重复启动");
+        return true;  // 返回成功，因为广播确实在运行
+    }
+
     struct ble_gap_adv_params adv_params;
     struct ble_hs_adv_fields fields;
     const char *name;
