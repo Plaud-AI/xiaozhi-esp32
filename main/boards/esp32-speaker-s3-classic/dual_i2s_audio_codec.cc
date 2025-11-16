@@ -356,6 +356,75 @@ DualI2sAudioCodec::DualI2sAudioCodec(
     
     ESP_LOGI(TAG, "✅ ES7210 (ADC) 初始化成功（地址 0x%02x）", es7210_addr);
     
+    // ========== 配置 MICBIAS 寄存器（针对外部麦克风供电的硬件设计）==========
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "╔════════════════════════════════════════╗");
+    ESP_LOGI(TAG, "║   🔧 配置 ES7210 MICBIAS 寄存器       ║");
+    ESP_LOGI(TAG, "╚════════════════════════════════════════╝");
+    ESP_LOGI(TAG, "💡 硬件说明：麦克风使用外部 3.3V 供电");
+    ESP_LOGI(TAG, "💡 需要关闭 ES7210 内部 MICBIAS 检测");
+    ESP_LOGI(TAG, "");
+    
+    // 创建 I2C 设备句柄用于写入寄存器
+    {
+        i2c_device_config_t dev_cfg = {
+            .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+            .device_address = es7210_addr,
+            .scl_speed_hz = 100000,
+        };
+        
+        i2c_master_dev_handle_t dev_handle;
+        esp_err_t ret = i2c_master_bus_add_device((i2c_master_bus_handle_t)i2c_master_handle, &dev_cfg, &dev_handle);
+        
+        if (ret == ESP_OK) {
+            // 寄存器 0x07 (PWR_CTRL2): bit0=1 关闭内部 BIAS
+            uint8_t reg_0x07[2] = {0x07, 0x01};
+            ret = i2c_master_transmit(dev_handle, reg_0x07, 2, 1000);
+            if (ret == ESP_OK) {
+                ESP_LOGI(TAG, "✅ 寄存器 0x07 = 0x01 (关闭内部 MICBIAS)");
+            } else {
+                ESP_LOGE(TAG, "❌ 写入寄存器 0x07 失败: %s", esp_err_to_name(ret));
+            }
+            
+            // 寄存器 0x09 (MIC_EN): 0x00 = 四路缓冲器全开
+            uint8_t reg_0x09[2] = {0x09, 0x00};
+            ret = i2c_master_transmit(dev_handle, reg_0x09, 2, 1000);
+            if (ret == ESP_OK) {
+                ESP_LOGI(TAG, "✅ 寄存器 0x09 = 0x00 (四路缓冲器全开)");
+            } else {
+                ESP_LOGE(TAG, "❌ 写入寄存器 0x09 失败: %s", esp_err_to_name(ret));
+            }
+            
+            // 验证写入结果（读回寄存器）
+            uint8_t readback_0x07 = 0, readback_0x09 = 0;
+            uint8_t reg_addr;
+            
+            reg_addr = 0x07;
+            ret = i2c_master_transmit_receive(dev_handle, &reg_addr, 1, &readback_0x07, 1, 1000);
+            if (ret == ESP_OK) {
+                ESP_LOGI(TAG, "📖 读回寄存器 0x07 = 0x%02x %s", readback_0x07, 
+                         (readback_0x07 == 0x01) ? "✅" : "⚠️ 值不匹配！");
+            }
+            
+            reg_addr = 0x09;
+            ret = i2c_master_transmit_receive(dev_handle, &reg_addr, 1, &readback_0x09, 1, 1000);
+            if (ret == ESP_OK) {
+                ESP_LOGI(TAG, "📖 读回寄存器 0x09 = 0x%02x %s", readback_0x09,
+                         (readback_0x09 == 0x00) ? "✅" : "⚠️ 值不匹配！");
+            }
+            
+            i2c_master_bus_rm_device(dev_handle);
+            
+            ESP_LOGI(TAG, "");
+            ESP_LOGI(TAG, "✅ MICBIAS 寄存器配置完成");
+            ESP_LOGI(TAG, "💡 现在 ES7210 应该可以正常采集外部供电的麦克风信号了");
+        } else {
+            ESP_LOGE(TAG, "❌ 创建 I2C 设备句柄失败: %s", esp_err_to_name(ret));
+            ESP_LOGE(TAG, "⚠️  无法配置 MICBIAS 寄存器，麦克风可能仍然无法工作");
+        }
+    }
+    ESP_LOGI(TAG, "");
+    
     // ========== 初始化完成总结 ==========
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "DualI2sAudioCodec 初始化完成");
@@ -574,9 +643,13 @@ int DualI2sAudioCodec::Read(int16_t* dest, int samples) {
     
     std::lock_guard<std::mutex> lock(data_if_mutex_);
     
-    // ⚠️ TDM 模式优化：参考 BoxAudioCodec，read 操作在正确配置后是阻塞的
-    // 使用 ESP_ERROR_CHECK_WITHOUT_ABORT 简化错误处理
-    esp_err_t ret = esp_codec_dev_read(input_dev_, dest, samples * sizeof(int16_t));
+    // ⚠️ 双麦克风 TDM 模式：读取的数据是交错格式
+    // 交错格式：CH0, CH1, CH0, CH1, CH0, CH1, ...
+    // 我们需要读取 2*samples 个数据，然后混合为 samples 个单声道数据
+    static std::vector<int16_t> tdm_buffer;
+    tdm_buffer.resize(samples * 2);  // 2个通道的数据
+    
+    esp_err_t ret = esp_codec_dev_read(input_dev_, tdm_buffer.data(), samples * 2 * sizeof(int16_t));
     
     if (ret != ESP_OK) {
         // 只有在真正出错时才记录
@@ -586,34 +659,97 @@ int DualI2sAudioCodec::Read(int16_t* dest, int samples) {
         return 0;
     }
     
-    // 🔍 调试：每隔一段时间打印前几个采样值
+    // 将2通道数据混合为单声道：(CH0 + CH1) / 2
+    // TDM 交错格式：tdm_buffer[0]=CH0, tdm_buffer[1]=CH1, tdm_buffer[2]=CH0, tdm_buffer[3]=CH1, ...
+    for (int i = 0; i < samples; i++) {
+        int ch0 = tdm_buffer[i * 2];      // 通道0 (MIC1)
+        int ch1 = tdm_buffer[i * 2 + 1];  // 通道1 (MIC2)
+        dest[i] = (ch0 + ch1) / 2;        // 混合平均
+    }
+    
+    // 🔍 诊断：每隔一段时间打印双麦克风数据
     static int read_count = 0;
     if (++read_count % 200 == 0) {  // 每200次打印一次
-        ESP_LOGI(TAG, "🎤 TDM I2S 读取成功（采样数=%d）", samples);
-        ESP_LOGI(TAG, "   前8个采样: %d, %d, %d, %d, %d, %d, %d, %d",
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, "╔════════════════════════════════════════╗");
+        ESP_LOGI(TAG, "║   🎤 双麦克风 TDM 数据诊断            ║");
+        ESP_LOGI(TAG, "╚════════════════════════════════════════╝");
+        
+        // 显示 TDM 原始交错数据（前8个：CH0, CH1, CH0, CH1, ...）
+        ESP_LOGI(TAG, "📊 TDM 原始数据（交错格式 CH0/CH1）:");
+        ESP_LOGI(TAG, "   [%d, %d] [%d, %d] [%d, %d] [%d, %d]",
+                 tdm_buffer[0], tdm_buffer[1],    // 第1组
+                 tdm_buffer[2], tdm_buffer[3],    // 第2组
+                 tdm_buffer[4], tdm_buffer[5],    // 第3组
+                 tdm_buffer[6], tdm_buffer[7]);   // 第4组
+        
+        // 显示混合后的单声道数据
+        ESP_LOGI(TAG, "📊 混合输出（单声道）:");
+        ESP_LOGI(TAG, "   %d, %d, %d, %d, %d, %d, %d, %d",
                  dest[0], dest[1], dest[2], dest[3],
                  dest[4], dest[5], dest[6], dest[7]);
         
-        // 计算音频能量
-        int64_t sum = 0;
-        int max_val = 0;
-        for (int i = 0; i < samples; i++) {
-            sum += abs(dest[i]);
-            if (abs(dest[i]) > max_val) {
-                max_val = abs(dest[i]);
-            }
-        }
-        int avg = samples > 0 ? sum / samples : 0;
-        ESP_LOGI(TAG, "📊 音频能量：平均=%d, 最大=%d", avg, max_val);
+        // 分别计算2个通道的能量
+        int64_t sum_ch0 = 0, sum_ch1 = 0, sum_mixed = 0;
+        int max_ch0 = 0, max_ch1 = 0, max_mixed = 0;
         
-        if (max_val == 0) {
-            ESP_LOGW(TAG, "⚠️ 麦克风数据全是0！请检查：");
-            ESP_LOGW(TAG, "   1. 麦克风是否焊接/连接");
-            ESP_LOGW(TAG, "   2. 麦克风是否连接到正确的ES7210输入通道 (SLOT0)");
-            ESP_LOGW(TAG, "   3. I2S数据线（GPIO 11）是否正常");
-            ESP_LOGW(TAG, "   4. 麦克风供电是否正常");
-            ESP_LOGW(TAG, "   5. TDM 时间槽配置是否正确");
+        for (int i = 0; i < samples; i++) {
+            int ch0_val = abs(tdm_buffer[i * 2]);
+            int ch1_val = abs(tdm_buffer[i * 2 + 1]);
+            int mixed_val = abs(dest[i]);
+            
+            sum_ch0 += ch0_val;
+            sum_ch1 += ch1_val;
+            sum_mixed += mixed_val;
+            
+            if (ch0_val > max_ch0) max_ch0 = ch0_val;
+            if (ch1_val > max_ch1) max_ch1 = ch1_val;
+            if (mixed_val > max_mixed) max_mixed = mixed_val;
         }
+        
+        int avg_ch0 = samples > 0 ? sum_ch0 / samples : 0;
+        int avg_ch1 = samples > 0 ? sum_ch1 / samples : 0;
+        int avg_mixed = samples > 0 ? sum_mixed / samples : 0;
+        
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, "📊 各通道音频能量:");
+        ESP_LOGI(TAG, "   通道0 (MIC1): 平均=%d, 最大=%d %s",
+                 avg_ch0, max_ch0, max_ch0 < 10 ? "❌ 无信号" : "✅");
+        ESP_LOGI(TAG, "   通道1 (MIC2): 平均=%d, 最大=%d %s",
+                 avg_ch1, max_ch1, max_ch1 < 10 ? "❌ 无信号" : "✅");
+        ESP_LOGI(TAG, "   混合输出:     平均=%d, 最大=%d",
+                 avg_mixed, max_mixed);
+        
+        ESP_LOGI(TAG, "");
+        
+        // 判断麦克风状态
+        bool mic1_active = max_ch0 > 10;
+        bool mic2_active = max_ch1 > 10;
+        
+        if (!mic1_active && !mic2_active) {
+            ESP_LOGW(TAG, "⚠️ 两个麦克风都无信号！");
+            ESP_LOGW(TAG, "╔════════════════════════════════════════╗");
+            ESP_LOGW(TAG, "║   ❌ 硬件检查清单                      ║");
+            ESP_LOGW(TAG, "╚════════════════════════════════════════╝");
+            ESP_LOGW(TAG, "1. 确认 MIC2 (MIC2N/MIC2P) 已焊接");
+            ESP_LOGW(TAG, "2. 检查麦克风供电（VCC 3.3V）");
+            ESP_LOGW(TAG, "3. 检查 ES7210 供电 (VDD/DVDD)");
+            ESP_LOGW(TAG, "4. 检查 I2S 数据线 GPIO 11");
+            ESP_LOGW(TAG, "5. 用示波器检查 BCLK/WS/DOUT 信号");
+        } else if (!mic1_active && mic2_active) {
+            ESP_LOGI(TAG, "✅ 单麦克风模式运行正常");
+            ESP_LOGI(TAG, "   • MIC1 (通道0): 未焊接（预期）");
+            ESP_LOGI(TAG, "   • MIC2 (通道1): 工作正常 ✅");
+        } else if (mic1_active && !mic2_active) {
+            ESP_LOGW(TAG, "⚠️ 意外：MIC1有信号，MIC2无信号");
+            ESP_LOGW(TAG, "   请检查硬件连接是否正确");
+        } else {
+            ESP_LOGI(TAG, "✅ 双麦克风模式运行正常");
+            ESP_LOGI(TAG, "   • MIC1 (通道0): 工作正常 ✅");
+            ESP_LOGI(TAG, "   • MIC2 (通道1): 工作正常 ✅");
+            ESP_LOGI(TAG, "   • 混合输出: 双麦克风降噪效果");
+        }
+        ESP_LOGI(TAG, "");
     }
     
     // TDM 模式：成功读取，返回采样数
@@ -654,18 +790,30 @@ void DualI2sAudioCodec::EnableInput(bool enable) {
             ESP_LOGI(TAG, "📝 配置采样参数:");
             ESP_LOGI(TAG, "   - bits_per_sample: 16");
             ESP_LOGI(TAG, "   - channel: 4 (TDM 模式，对应 4 个时间槽)");
-            ESP_LOGI(TAG, "   - channel_mask: 0x1 (使用 SLOT0，即第一个麦克风)");
+            ESP_LOGI(TAG, "   - channel_mask: 0x3 (使用 SLOT0 + SLOT1，即 MIC1 + MIC2)");
             ESP_LOGI(TAG, "   - sample_rate: %d", input_sample_rate_);
             
-            // ⚠️ 关键修复：TDM 模式必须配置 4 个通道，即使只使用 1 个麦克风
-            // 参考 BoxAudioCodec: channel=4, channel_mask=ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0)
+            // ⚠️ 双麦克风配置：读取 MIC1 (通道0) + MIC2 (通道1)
+            // 硬件连接：
+            //   - MIC1: MIC1N/MIC1P (通道0/SLOT0) - 将来焊接
+            //   - MIC2: MIC2N/MIC2P (通道1/SLOT1) - 已焊接 ✅
+            // 数据处理：2个通道混合平均为单声道，自动适应单/双麦克风场景
             esp_codec_dev_sample_info_t fs = {
                 .bits_per_sample = 16,
                 .channel = 4,  // TDM 模式：4 个时间槽
-                .channel_mask = ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0),  // 使用第 0 个通道（SLOT0）
+                // 读取通道0 (MIC1) + 通道1 (MIC2)
+                .channel_mask = ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0) | ESP_CODEC_DEV_MAKE_CHANNEL_MASK(1),
                 .sample_rate = (uint32_t)input_sample_rate_,
                 .mclk_multiple = 0,
             };
+            ESP_LOGI(TAG, "");
+            ESP_LOGI(TAG, "╔════════════════════════════════════════╗");
+            ESP_LOGI(TAG, "║   🎤 双麦克风模式                      ║");
+            ESP_LOGI(TAG, "╚════════════════════════════════════════╝");
+            ESP_LOGI(TAG, "💡 MIC1 (SLOT0/通道0): 将来焊接");
+            ESP_LOGI(TAG, "💡 MIC2 (SLOT1/通道1): 已焊接 ✅");
+            ESP_LOGI(TAG, "💡 数据混合：2通道平均为单声道输出");
+            ESP_LOGI(TAG, "");
             
             ESP_LOGI(TAG, "🔧 调用 esp_codec_dev_open()...");
             esp_err_t ret = esp_codec_dev_open(input_dev_, &fs);
