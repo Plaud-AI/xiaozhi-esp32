@@ -961,31 +961,38 @@ void DualI2sAudioCodec::EnableInput(bool enable) {
         if (enable) {
             ESP_LOGI(TAG, "📝 配置采样参数:");
             ESP_LOGI(TAG, "   - bits_per_sample: 16");
-            ESP_LOGI(TAG, "   - channel: 1 (单声道模式)");
-            ESP_LOGI(TAG, "   - channel_mask: 0x2 (只使用 SLOT1，即 MIC2)");
+            ESP_LOGI(TAG, "   - channel: 4 (TDM 4 通道，硬件要求)");
+            ESP_LOGI(TAG, "   - channel_mask: 0x2 (只读取 SLOT1，即 MIC2)");
             ESP_LOGI(TAG, "   - sample_rate: %d", input_sample_rate_);
             
-            // ⚠️ 单麦克风配置：只读取 MIC2 (通道1/SLOT1)
+            // ⚠️ 单麦克风配置：TDM 模式只读取 MIC2 (SLOT1)
             // 原因：MIC1 信号太弱（avg=1-24），拖累整体性能
             // MIC2 信号已足够（avg=800-3370），满足语音唤醒要求
+            // 
+            // TDM 模式要求：
+            //   - channel 必须设置为 4（TDM 总时间槽数）
+            //   - channel_mask 可以只用部分 SLOT（如 0x2 只用 SLOT1）
+            //   - 硬件按 4 通道传输，软件只提取 SLOT1 的数据
+            // 
             // 硬件连接：
             //   - MIC1: 未使用（信号太弱，avg < 50）
-            //   - MIC2: MIC2N/MIC2P (通道1/SLOT1) - 已焊接 ✅
+            //   - MIC2: MIC2N/MIC2P (SLOT1) - 已焊接 ✅
             esp_codec_dev_sample_info_t fs = {
                 .bits_per_sample = 16,
-                .channel = 1,  // 单声道模式
-                // 只读取通道1 (MIC2) - 信号强度足够，避免被 MIC1 拉低
+                .channel = 4,  // TDM 4 通道（硬件要求，不能改）
+                // 只读取 SLOT1 (MIC2) - 信号强度足够，避免被 MIC1 拉低
                 .channel_mask = ESP_CODEC_DEV_MAKE_CHANNEL_MASK(1),
                 .sample_rate = (uint32_t)input_sample_rate_,
                 .mclk_multiple = 0,
             };
             ESP_LOGI(TAG, "");
             ESP_LOGI(TAG, "╔════════════════════════════════════════╗");
-            ESP_LOGI(TAG, "║   🎤 单麦克风模式（仅 MIC2）          ║");
+            ESP_LOGI(TAG, "║   🎤 单麦克风模式（仅 MIC2/SLOT1）    ║");
             ESP_LOGI(TAG, "╚════════════════════════════════════════╝");
-            ESP_LOGI(TAG, "💡 MIC2 (SLOT1/通道1): 主麦克风 ✅");
-            ESP_LOGI(TAG, "💡 MIC1 (SLOT0/通道0): 未使用（信号太弱）");
-            ESP_LOGI(TAG, "💡 数据输出：MIC2 单声道直接输出");
+            ESP_LOGI(TAG, "💡 TDM 模式：4 通道硬件传输");
+            ESP_LOGI(TAG, "💡 数据提取：只读取 SLOT1 (MIC2)");
+            ESP_LOGI(TAG, "💡 MIC2 (SLOT1): 主麦克风 ✅（信号强）");
+            ESP_LOGI(TAG, "💡 MIC1 (SLOT0): 未读取（信号太弱）");
             ESP_LOGI(TAG, "💡 预期信号强度：avg=800-3000（语音唤醒要求）");
             ESP_LOGI(TAG, "");
             
