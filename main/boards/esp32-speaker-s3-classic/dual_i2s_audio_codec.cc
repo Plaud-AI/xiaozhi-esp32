@@ -996,6 +996,83 @@ void DualI2sAudioCodec::EnableInput(bool enable) {
                 vTaskDelay(pdMS_TO_TICKS(100));
                 
                 ESP_LOGI(TAG, "✅ 输入通道已启用，准备读取数据");
+                
+                // ⚠️ 关键修复：强制重新配置 PGA 增益（防止被 ESP-ADF 覆盖）
+                ESP_LOGI(TAG, "");
+                ESP_LOGI(TAG, "🔧 强制重新配置 ES7210 PGA 增益（在 EnableInput 之后）");
+                {
+                    i2c_device_config_t dev_cfg = {
+                        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+                        .device_address = 0x40,  // ES7210 I2C 地址
+                        .scl_speed_hz = 100000,
+                    };
+                    
+                    i2c_master_dev_handle_t dev_handle;
+                    esp_err_t ret = i2c_master_bus_add_device((i2c_master_bus_handle_t)i2c_master_handle, &dev_cfg, &dev_handle);
+                    
+                    if (ret == ESP_OK) {
+                        // 读取当前 PGA 值
+                        auto read_reg = [&](uint8_t addr) -> uint8_t {
+                            uint8_t value = 0xFF;
+                            uint8_t reg_addr = addr;
+                            i2c_master_transmit_receive(dev_handle, &reg_addr, 1, &value, 1, 1000);
+                            return value;
+                        };
+                        
+                        ESP_LOGI(TAG, "  读取当前 PGA 值:");
+                        uint8_t pga1_before = read_reg(0x10);
+                        uint8_t pga2_before = read_reg(0x11);
+                        uint8_t pga3_before = read_reg(0x12);
+                        uint8_t pga4_before = read_reg(0x13);
+                        ESP_LOGI(TAG, "    MIC1=0x%02X (%.1fdB), MIC2=0x%02X (%.1fdB), MIC3=0x%02X (%.1fdB), MIC4=0x%02X (%.1fdB)", 
+                                 pga1_before, pga1_before * 1.5, 
+                                 pga2_before, pga2_before * 1.5,
+                                 pga3_before, pga3_before * 1.5,
+                                 pga4_before, pga4_before * 1.5);
+                        
+                        // 强制写入 PGA 增益值 0x14 = +30dB
+                        uint8_t pga_gain = 0x14;  // +30dB
+                        ESP_LOGI(TAG, "  强制写入 PGA 增益 0x%02X (%.1fdB) 到所有通道...", pga_gain, pga_gain * 1.5);
+                        
+                        for (uint8_t mic = 0; mic < 4; mic++) {
+                            uint8_t reg_addr = 0x10 + mic;
+                            uint8_t reg_data[2] = {reg_addr, pga_gain};
+                            ret = i2c_master_transmit(dev_handle, reg_data, 2, 1000);
+                            if (ret == ESP_OK) {
+                                ESP_LOGI(TAG, "    ✅ MIC%d (0x%02X) 写入成功", mic + 1, reg_addr);
+                            } else {
+                                ESP_LOGE(TAG, "    ❌ MIC%d (0x%02X) 写入失败", mic + 1, reg_addr);
+                            }
+                        }
+                        
+                        // 等待寄存器生效
+                        vTaskDelay(pdMS_TO_TICKS(10));
+                        
+                        // 验证写入结果
+                        uint8_t pga1_after = read_reg(0x10);
+                        uint8_t pga2_after = read_reg(0x11);
+                        uint8_t pga3_after = read_reg(0x12);
+                        uint8_t pga4_after = read_reg(0x13);
+                        ESP_LOGI(TAG, "  验证 PGA 值:");
+                        ESP_LOGI(TAG, "    MIC1=0x%02X (%.1fdB), MIC2=0x%02X (%.1fdB), MIC3=0x%02X (%.1fdB), MIC4=0x%02X (%.1fdB)", 
+                                 pga1_after, pga1_after * 1.5, 
+                                 pga2_after, pga2_after * 1.5,
+                                 pga3_after, pga3_after * 1.5,
+                                 pga4_after, pga4_after * 1.5);
+                        
+                        if (pga1_after == pga_gain && pga2_after == pga_gain && 
+                            pga3_after == pga_gain && pga4_after == pga_gain) {
+                            ESP_LOGI(TAG, "  ✅ PGA 配置成功并保持稳定！");
+                        } else {
+                            ESP_LOGW(TAG, "  ⚠️ PGA 配置后值仍然异常，可能被 ESP-ADF 持续覆盖");
+                        }
+                        
+                        i2c_master_bus_rm_device(dev_handle);
+                    } else {
+                        ESP_LOGE(TAG, "  ❌ 无法创建 I2C 设备句柄: %s", esp_err_to_name(ret));
+                    }
+                }
+                ESP_LOGI(TAG, "");
             }
             ESP_LOGI(TAG, "");
         } else {
