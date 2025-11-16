@@ -5,6 +5,7 @@
 #include <esp_log.h>
 #include <driver/i2c_master.h>
 #include <driver/i2s_std.h>
+#include <driver/i2s_tdm.h>  // ⚠️ 添加 TDM 模式支持
 #include <driver/gpio.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -493,24 +494,38 @@ void DualI2sAudioCodec::CreateEs7210Channel(gpio_num_t mclk, gpio_num_t bclk, gp
     ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, nullptr, &rx_handle_i2s1_));
     rx_handle_ = rx_handle_i2s1_;  // 设置基类成员
 
-    i2s_std_config_t std_cfg = {
+    // ⚠️ 关键修复：ES7210 使用 TDM 模式，4个麦克风在 4 个时间槽中传输数据
+    // 参考官方 ESP32-S3-Korvo-2 的 BoxAudioCodec 配置
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "╔════════════════════════════════════════╗");
+    ESP_LOGI(TAG, "║   🎤 配置 ES7210 为 TDM 模式           ║");
+    ESP_LOGI(TAG, "╚════════════════════════════════════════╝");
+    ESP_LOGI(TAG, "💡 ES7210 芯片使用 TDM (Time Division Multiplexing)");
+    ESP_LOGI(TAG, "💡 4个麦克风数据在 4 个时间槽中传输");
+    ESP_LOGI(TAG, "");
+    
+    i2s_tdm_config_t tdm_cfg = {
         .clk_cfg = {
             .sample_rate_hz = (uint32_t)input_sample_rate_,
-            .clk_src = I2S_CLK_SRC_PLL_160M,  // ESP32-S3 不支持 APLL，使用 PLL_160M
+            .clk_src = I2S_CLK_SRC_DEFAULT,
             .ext_clk_freq_hz = 0,
             .mclk_multiple = I2S_MCLK_MULTIPLE_256,
+            .bclk_div = 8,  // 参考 BoxAudioCodec
         },
         .slot_cfg = {
             .data_bit_width = I2S_DATA_BIT_WIDTH_16BIT,
             .slot_bit_width = I2S_SLOT_BIT_WIDTH_AUTO,
-            .slot_mode = I2S_SLOT_MODE_MONO,  // 单声道
-            .slot_mask = I2S_STD_SLOT_LEFT,   // 使用左声道
-            .ws_width = I2S_DATA_BIT_WIDTH_16BIT,
+            .slot_mode = I2S_SLOT_MODE_STEREO,  // TDM 模式使用立体声配置
+            // 启用所有 4 个时间槽（对应 4 个麦克风）
+            .slot_mask = i2s_tdm_slot_mask_t(I2S_TDM_SLOT0 | I2S_TDM_SLOT1 | I2S_TDM_SLOT2 | I2S_TDM_SLOT3),
+            .ws_width = I2S_TDM_AUTO_WS_WIDTH,
             .ws_pol = false,
             .bit_shift = true,
-            .left_align = true,
+            .left_align = false,  // TDM 模式不使用左对齐
             .big_endian = false,
             .bit_order_lsb = false,
+            .skip_mask = false,
+            .total_slot = I2S_TDM_AUTO_SLOT_NUM
         },
         .gpio_cfg = {
             .mclk = mclk,
@@ -526,11 +541,14 @@ void DualI2sAudioCodec::CreateEs7210Channel(gpio_num_t mclk, gpio_num_t bclk, gp
         },
     };
     
-    ESP_ERROR_CHECK(i2s_channel_init_std_mode(rx_handle_i2s1_, &std_cfg));
-    ESP_LOGI(TAG, "✅ ES7210 I2S1 通道创建成功");
-    ESP_LOGI(TAG, "   时钟源：PLL_160M (ESP32-S3 不支持 APLL)");
+    ESP_ERROR_CHECK(i2s_channel_init_tdm_mode(rx_handle_i2s1_, &tdm_cfg));
+    ESP_LOGI(TAG, "✅ ES7210 I2S1 TDM 通道创建成功");
+    ESP_LOGI(TAG, "   模式: TDM (4时间槽)");
+    ESP_LOGI(TAG, "   时间槽: SLOT0 + SLOT1 + SLOT2 + SLOT3");
+    ESP_LOGI(TAG, "   时钟源：I2S_CLK_SRC_DEFAULT");
     ESP_LOGI(TAG, "   MCLK：%d Hz × 256 = %.3f MHz", 
              input_sample_rate_, (input_sample_rate_ * 256) / 1000000.0);
+    ESP_LOGI(TAG, "");
 }
 
 int DualI2sAudioCodec::Read(int16_t* dest, int samples) {
@@ -555,77 +573,51 @@ int DualI2sAudioCodec::Read(int16_t* dest, int samples) {
     }
     
     std::lock_guard<std::mutex> lock(data_if_mutex_);
-    int bytes_read = esp_codec_dev_read(input_dev_, dest, samples * sizeof(int16_t));
     
-    if (bytes_read < 0) {
-        ESP_LOGE(TAG, "❌ esp_codec_dev_read() 返回错误: %d (第%d次调用)", bytes_read, read_call_count);
-        return 0;
-    }
+    // ⚠️ TDM 模式优化：参考 BoxAudioCodec，read 操作在正确配置后是阻塞的
+    // 使用 ESP_ERROR_CHECK_WITHOUT_ABORT 简化错误处理
+    esp_err_t ret = esp_codec_dev_read(input_dev_, dest, samples * sizeof(int16_t));
     
-    // ⚠️ 首次调用重试逻辑：如果返回0，等待并重试最多3次
-    if (bytes_read == 0 && read_call_count <= 3) {
-        ESP_LOGW(TAG, "⚠️ esp_codec_dev_read() 返回0字节 (第%d次调用)，等待20ms后重试...", read_call_count);
-        vTaskDelay(pdMS_TO_TICKS(20));
-        bytes_read = esp_codec_dev_read(input_dev_, dest, samples * sizeof(int16_t));
-        
-        if (bytes_read > 0) {
-            ESP_LOGI(TAG, "✅ 重试成功！读取到 %d 字节", bytes_read);
-        } else if (bytes_read == 0) {
-            ESP_LOGW(TAG, "⚠️ 重试后仍返回0字节");
-            if (read_call_count == 3) {
-                ESP_LOGE(TAG, "");
-                ESP_LOGE(TAG, "╔════════════════════════════════════════╗");
-                ESP_LOGE(TAG, "║   ❌ I2S 数据读取失败                  ║");
-                ESP_LOGE(TAG, "╚════════════════════════════════════════╝");
-                ESP_LOGE(TAG, "可能原因:");
-                ESP_LOGE(TAG, "  1. 麦克风硬件连接问题");
-                ESP_LOGE(TAG, "  2. ES7210 配置错误");
-                ESP_LOGE(TAG, "  3. I2S 时钟或同步问题");
-                ESP_LOGE(TAG, "  4. I2S DMA 未正常工作");
-                ESP_LOGE(TAG, "");
-            }
-            return 0;
-        } else {
-            ESP_LOGE(TAG, "❌ 重试后返回错误: %d", bytes_read);
-            return 0;
+    if (ret != ESP_OK) {
+        // 只有在真正出错时才记录
+        if (read_call_count <= 5) {  // 前 5 次调用显示错误
+            ESP_LOGE(TAG, "❌ esp_codec_dev_read() 错误: %s (第%d次调用)", esp_err_to_name(ret), read_call_count);
         }
-    } else if (bytes_read == 0) {
-        ESP_LOGW(TAG, "⚠️ esp_codec_dev_read() 返回0字节 (第%d次调用)", read_call_count);
         return 0;
     }
     
     // 🔍 调试：每隔一段时间打印前几个采样值
     static int read_count = 0;
     if (++read_count % 200 == 0) {  // 每200次打印一次
-        int num_samples = bytes_read / sizeof(int16_t);
-        if (num_samples > 0) {
-            ESP_LOGI(TAG, "🎤 I2S 读取数据（前8个采样）: %d, %d, %d, %d, %d, %d, %d, %d",
-                     dest[0], dest[1], dest[2], dest[3],
-                     dest[4], dest[5], dest[6], dest[7]);
-            
-            // 计算音频能量
-            int64_t sum = 0;
-            int max_val = 0;
-            for (int i = 0; i < num_samples; i++) {
-                sum += abs(dest[i]);
-                if (abs(dest[i]) > max_val) {
-                    max_val = abs(dest[i]);
-                }
+        ESP_LOGI(TAG, "🎤 TDM I2S 读取成功（采样数=%d）", samples);
+        ESP_LOGI(TAG, "   前8个采样: %d, %d, %d, %d, %d, %d, %d, %d",
+                 dest[0], dest[1], dest[2], dest[3],
+                 dest[4], dest[5], dest[6], dest[7]);
+        
+        // 计算音频能量
+        int64_t sum = 0;
+        int max_val = 0;
+        for (int i = 0; i < samples; i++) {
+            sum += abs(dest[i]);
+            if (abs(dest[i]) > max_val) {
+                max_val = abs(dest[i]);
             }
-            int avg = num_samples > 0 ? sum / num_samples : 0;
-            ESP_LOGI(TAG, "🎤 音频能量：平均=%d, 最大=%d, 采样数=%d", avg, max_val, num_samples);
-            
-            if (max_val == 0) {
-                ESP_LOGW(TAG, "⚠️ 麦克风数据全是0！请检查：");
-                ESP_LOGW(TAG, "   1. 麦克风是否焊接/连接");
-                ESP_LOGW(TAG, "   2. 麦克风是否连接到正确的ES7210输入通道");
-                ESP_LOGW(TAG, "   3. I2S数据线（GPIO 11）是否正常");
-                ESP_LOGW(TAG, "   4. 麦克风供电是否正常");
-            }
+        }
+        int avg = samples > 0 ? sum / samples : 0;
+        ESP_LOGI(TAG, "📊 音频能量：平均=%d, 最大=%d", avg, max_val);
+        
+        if (max_val == 0) {
+            ESP_LOGW(TAG, "⚠️ 麦克风数据全是0！请检查：");
+            ESP_LOGW(TAG, "   1. 麦克风是否焊接/连接");
+            ESP_LOGW(TAG, "   2. 麦克风是否连接到正确的ES7210输入通道 (SLOT0)");
+            ESP_LOGW(TAG, "   3. I2S数据线（GPIO 11）是否正常");
+            ESP_LOGW(TAG, "   4. 麦克风供电是否正常");
+            ESP_LOGW(TAG, "   5. TDM 时间槽配置是否正确");
         }
     }
     
-    return bytes_read / sizeof(int16_t);
+    // TDM 模式：成功读取，返回采样数
+    return samples;
 }
 
 int DualI2sAudioCodec::Write(const int16_t* data, int samples) {
@@ -661,13 +653,16 @@ void DualI2sAudioCodec::EnableInput(bool enable) {
         if (enable) {
             ESP_LOGI(TAG, "📝 配置采样参数:");
             ESP_LOGI(TAG, "   - bits_per_sample: 16");
-            ESP_LOGI(TAG, "   - channel: 1");
+            ESP_LOGI(TAG, "   - channel: 4 (TDM 模式，对应 4 个时间槽)");
+            ESP_LOGI(TAG, "   - channel_mask: 0x1 (使用 SLOT0，即第一个麦克风)");
             ESP_LOGI(TAG, "   - sample_rate: %d", input_sample_rate_);
             
+            // ⚠️ 关键修复：TDM 模式必须配置 4 个通道，即使只使用 1 个麦克风
+            // 参考 BoxAudioCodec: channel=4, channel_mask=ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0)
             esp_codec_dev_sample_info_t fs = {
                 .bits_per_sample = 16,
-                .channel = 1,
-                .channel_mask = 0,
+                .channel = 4,  // TDM 模式：4 个时间槽
+                .channel_mask = ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0),  // 使用第 0 个通道（SLOT0）
                 .sample_rate = (uint32_t)input_sample_rate_,
                 .mclk_multiple = 0,
             };
@@ -679,15 +674,19 @@ void DualI2sAudioCodec::EnableInput(bool enable) {
             } else {
                 ESP_LOGI(TAG, "✅ esp_codec_dev_open() 成功");
                 
-                // 设置输入增益（最大值）
-                // ⚠️ 重要：esp_codec_dev_set_in_gain() 需要 float 类型参数
+                // ⚠️ 关键修复：TDM 模式需要为每个通道单独设置增益
+                // 参考 BoxAudioCodec: 使用 esp_codec_dev_set_in_channel_gain()
                 float gain_float = (float)input_gain_;
-                ESP_LOGI(TAG, "🔧 设置增益 %.1f dB...", gain_float);
-                ret = esp_codec_dev_set_in_gain(input_dev_, gain_float);
-                if (ret == ESP_OK) {
-                    ESP_LOGI(TAG, "✅ 输入增益设置为: %.1f (最大47.0)", gain_float);
-                } else {
-                    ESP_LOGW(TAG, "⚠️ 输入增益设置失败: %s", esp_err_to_name(ret));
+                ESP_LOGI(TAG, "🔧 为所有通道设置增益 %.1f dB...", gain_float);
+                
+                // 为 4 个通道都设置增益（虽然我们只使用 SLOT0）
+                for (int ch = 0; ch < 4; ch++) {
+                    ret = esp_codec_dev_set_in_channel_gain(input_dev_, ESP_CODEC_DEV_MAKE_CHANNEL_MASK(ch), gain_float);
+                    if (ret == ESP_OK) {
+                        ESP_LOGI(TAG, "✅ 通道 %d 增益设置为: %.1f dB", ch, gain_float);
+                    } else {
+                        ESP_LOGW(TAG, "⚠️ 通道 %d 增益设置失败: %s", ch, esp_err_to_name(ret));
+                    }
                 }
                 
                 // ⚠️ 关键修复：等待 I2S DMA 开始工作
