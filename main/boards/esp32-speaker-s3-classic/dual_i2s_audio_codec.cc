@@ -535,13 +535,62 @@ void DualI2sAudioCodec::CreateEs7210Channel(gpio_num_t mclk, gpio_num_t bclk, gp
 
 int DualI2sAudioCodec::Read(int16_t* dest, int samples) {
     if (!input_dev_) {
+        ESP_LOGE(TAG, "❌ Read() 失败：input_dev_ 为空！");
         return 0;
+    }
+    
+    // 🔍 首次调用日志和重试逻辑
+    static bool first_call = true;
+    static int read_call_count = 0;
+    read_call_count++;
+    
+    if (first_call) {
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, "╔════════════════════════════════════════╗");
+        ESP_LOGI(TAG, "║   🎤 首次读取麦克风数据                ║");
+        ESP_LOGI(TAG, "╚════════════════════════════════════════╝");
+        ESP_LOGI(TAG, "请求采样数: %d", samples);
+        ESP_LOGI(TAG, "请求字节数: %d", samples * sizeof(int16_t));
+        first_call = false;
     }
     
     std::lock_guard<std::mutex> lock(data_if_mutex_);
     int bytes_read = esp_codec_dev_read(input_dev_, dest, samples * sizeof(int16_t));
+    
     if (bytes_read < 0) {
-        ESP_LOGE(TAG, "读取音频数据失败: %d", bytes_read);
+        ESP_LOGE(TAG, "❌ esp_codec_dev_read() 返回错误: %d (第%d次调用)", bytes_read, read_call_count);
+        return 0;
+    }
+    
+    // ⚠️ 首次调用重试逻辑：如果返回0，等待并重试最多3次
+    if (bytes_read == 0 && read_call_count <= 3) {
+        ESP_LOGW(TAG, "⚠️ esp_codec_dev_read() 返回0字节 (第%d次调用)，等待20ms后重试...", read_call_count);
+        vTaskDelay(pdMS_TO_TICKS(20));
+        bytes_read = esp_codec_dev_read(input_dev_, dest, samples * sizeof(int16_t));
+        
+        if (bytes_read > 0) {
+            ESP_LOGI(TAG, "✅ 重试成功！读取到 %d 字节", bytes_read);
+        } else if (bytes_read == 0) {
+            ESP_LOGW(TAG, "⚠️ 重试后仍返回0字节");
+            if (read_call_count == 3) {
+                ESP_LOGE(TAG, "");
+                ESP_LOGE(TAG, "╔════════════════════════════════════════╗");
+                ESP_LOGE(TAG, "║   ❌ I2S 数据读取失败                  ║");
+                ESP_LOGE(TAG, "╚════════════════════════════════════════╝");
+                ESP_LOGE(TAG, "可能原因:");
+                ESP_LOGE(TAG, "  1. 麦克风硬件连接问题");
+                ESP_LOGE(TAG, "  2. ES7210 配置错误");
+                ESP_LOGE(TAG, "  3. I2S 时钟或同步问题");
+                ESP_LOGE(TAG, "  4. I2S DMA 未正常工作");
+                ESP_LOGE(TAG, "");
+            }
+            return 0;
+        } else {
+            ESP_LOGE(TAG, "❌ 重试后返回错误: %d", bytes_read);
+            return 0;
+        }
+    } else if (bytes_read == 0) {
+        ESP_LOGW(TAG, "⚠️ esp_codec_dev_read() 返回0字节 (第%d次调用)", read_call_count);
         return 0;
     }
     
@@ -602,9 +651,19 @@ void DualI2sAudioCodec::SetOutputVolume(int volume) {
 }
 
 void DualI2sAudioCodec::EnableInput(bool enable) {
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "╔════════════════════════════════════════╗");
+    ESP_LOGI(TAG, "║   🎤 EnableInput(%s)                   ║", enable ? "true " : "false");
+    ESP_LOGI(TAG, "╚════════════════════════════════════════╝");
+    
     input_enabled_ = enable;
     if (input_dev_) {
         if (enable) {
+            ESP_LOGI(TAG, "📝 配置采样参数:");
+            ESP_LOGI(TAG, "   - bits_per_sample: 16");
+            ESP_LOGI(TAG, "   - channel: 1");
+            ESP_LOGI(TAG, "   - sample_rate: %d", input_sample_rate_);
+            
             esp_codec_dev_sample_info_t fs = {
                 .bits_per_sample = 16,
                 .channel = 1,
@@ -612,28 +671,38 @@ void DualI2sAudioCodec::EnableInput(bool enable) {
                 .sample_rate = (uint32_t)input_sample_rate_,
                 .mclk_multiple = 0,
             };
+            
+            ESP_LOGI(TAG, "🔧 调用 esp_codec_dev_open()...");
             esp_err_t ret = esp_codec_dev_open(input_dev_, &fs);
             if (ret != ESP_OK) {
-                ESP_LOGE(TAG, "❌ 启用输入失败: %s", esp_err_to_name(ret));
+                ESP_LOGE(TAG, "❌ 启用输入失败: %s (错误码: 0x%x)", esp_err_to_name(ret), ret);
             } else {
-                ESP_LOGI(TAG, "✅ 启用输入成功");
+                ESP_LOGI(TAG, "✅ esp_codec_dev_open() 成功");
                 
                 // 设置输入增益（最大值）
                 // ⚠️ 重要：esp_codec_dev_set_in_gain() 需要 float 类型参数
                 float gain_float = (float)input_gain_;
+                ESP_LOGI(TAG, "🔧 设置增益 %.1f dB...", gain_float);
                 ret = esp_codec_dev_set_in_gain(input_dev_, gain_float);
                 if (ret == ESP_OK) {
                     ESP_LOGI(TAG, "✅ 输入增益设置为: %.1f (最大47.0)", gain_float);
                 } else {
                     ESP_LOGW(TAG, "⚠️ 输入增益设置失败: %s", esp_err_to_name(ret));
                 }
+                
+                // ⚠️ 关键修复：等待 I2S DMA 开始工作
+                ESP_LOGI(TAG, "⏳ 等待 I2S DMA 缓冲区填充（100ms）...");
+                vTaskDelay(pdMS_TO_TICKS(100));
+                
+                ESP_LOGI(TAG, "✅ 输入通道已启用，准备读取数据");
             }
+            ESP_LOGI(TAG, "");
         } else {
             esp_codec_dev_close(input_dev_);
             ESP_LOGI(TAG, "禁用输入");
         }
     } else {
-        ESP_LOGW(TAG, "⚠️ 输入设备不可用，无法%s输入", enable ? "启用" : "禁用");
+        ESP_LOGE(TAG, "❌ input_dev_ 为空，无法启用输入！");
     }
 }
 
