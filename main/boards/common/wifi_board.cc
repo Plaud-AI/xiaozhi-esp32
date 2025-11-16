@@ -51,66 +51,71 @@ void WifiBoard::EnterWifiConfigMode() {
 
     ESP_LOGI(TAG, "✓ Soft AP 已启动: %s", wifi_ap.GetSsid().c_str());
 
-    // ====== 预扫描 WiFi 网络（提前准备列表）======
-    ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "预扫描 WiFi 网络...");
-    ESP_LOGI(TAG, "========================================");
-    
-    // 在后台启动WiFi扫描，这样Soft AP和BLE都能使用缓存结果
-    xTaskCreate([](void* arg) {
-        const char* task_tag = "WiFiPreScan";
-        
-        // Soft AP模式下，WiFi已经在运行（AP+STA模式）
-        // 直接发起扫描
-        wifi_scan_config_t scan_config = {
-            .ssid = nullptr,
-            .bssid = nullptr,
-            .channel = 0,
-            .show_hidden = false,
-            .scan_type = WIFI_SCAN_TYPE_ACTIVE,
-            .scan_time = {
-                .active = {
-                    .min = 0,  // 使用默认值
-                    .max = 0   // 使用默认值
-                }
-            }
-        };
-        
-        esp_err_t ret = esp_wifi_scan_start(&scan_config, false);
-        if (ret == ESP_OK) {
-            ESP_LOGI(task_tag, "✓ WiFi扫描已启动（非阻塞）");
-            
-            // 等待扫描完成（最多10秒）
-            for (int i = 0; i < 100; i++) {
-                uint16_t ap_count = 0;
-                ret = esp_wifi_scan_get_ap_num(&ap_count);
-                if (ret == ESP_OK && ap_count > 0) {
-                    ESP_LOGI(task_tag, "✓ WiFi预扫描完成，发现 %d 个网络", ap_count);
-                    break;
-                }
-                vTaskDelay(pdMS_TO_TICKS(100));
-            }
-        } else {
-            ESP_LOGW(task_tag, "WiFi预扫描启动失败: %s（不影响配网）", esp_err_to_name(ret));
-        }
-        
-        vTaskDelete(NULL);
-    }, "wifi_prescan", 3072, NULL, 5, NULL);
-    
-    // 等待 1.5 秒让扫描开始，同时显示开发板信息
-    vTaskDelay(pdMS_TO_TICKS(1500));
-
-    // 显示 WiFi 配置 AP 的 SSID 和 Web 服务器 URL
+    // 立即播报语音提示（不等待扫描完成）
     std::string hint = Lang::Strings::CONNECT_TO_HOTSPOT;
     hint += wifi_ap.GetSsid();
     hint += Lang::Strings::ACCESS_VIA_BROWSER;
     hint += wifi_ap.GetWebServerUrl();
     hint += "\n\n";
     
-    // 播报配置 WiFi 的提示
     application.Alert(Lang::Strings::WIFI_CONFIG_MODE, hint.c_str(), "gear", Lang::Sounds::OGG_WIFICONFIG);
+    ESP_LOGI(TAG, "✓ 配网提示音已播报");
+
+    // ====== 预扫描 WiFi 网络（与语音播报并行）+ 定期刷新 ======
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "开始预扫描 WiFi 网络（后台持续刷新）...");
+    ESP_LOGI(TAG, "========================================");
     
-    ESP_LOGI(TAG, "✓ 提示音播报完成，WiFi列表已准备就绪");
+    // 在后台启动WiFi扫描任务，持续刷新缓存
+    xTaskCreate([](void* arg) {
+        const char* task_tag = "WiFiPeriodicScan";
+        
+        // 等待300ms确保Soft AP完全启动
+        vTaskDelay(pdMS_TO_TICKS(300));
+        
+        ESP_LOGI(task_tag, "启动WiFi周期性扫描任务（每30秒刷新一次）");
+        
+        while (true) {
+            // Soft AP模式下，WiFi已经在运行（AP+STA模式）
+            // 发起全信道扫描
+            wifi_scan_config_t scan_config = {
+                .ssid = nullptr,
+                .bssid = nullptr,
+                .channel = 0,  // 0 = 扫描所有信道
+                .show_hidden = false,
+                .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+                .scan_time = {
+                    .active = {
+                        .min = 0,  // 使用默认值，适配BLE+WiFi共存
+                        .max = 0   // 使用默认值，适配BLE+WiFi共存
+                    }
+                }
+            };
+            
+            esp_err_t ret = esp_wifi_scan_start(&scan_config, false);
+            if (ret == ESP_OK) {
+                ESP_LOGI(task_tag, "✓ WiFi扫描已启动（全信道扫描）");
+                
+                // 等待扫描完成（最多10秒）
+                for (int i = 0; i < 100; i++) {
+                    uint16_t ap_count = 0;
+                    ret = esp_wifi_scan_get_ap_num(&ap_count);
+                    if (ret == ESP_OK && ap_count > 0) {
+                        ESP_LOGI(task_tag, "✓ WiFi扫描完成，发现 %d 个网络（缓存有效期约60秒）", ap_count);
+                        break;
+                    }
+                    vTaskDelay(pdMS_TO_TICKS(100));
+                }
+            } else {
+                ESP_LOGW(task_tag, "WiFi扫描启动失败: %s（30秒后重试）", esp_err_to_name(ret));
+            }
+            
+            // 每30秒刷新一次缓存，确保BLE始终能获取到最新列表
+            vTaskDelay(pdMS_TO_TICKS(30000));
+        }
+        
+        // 永不退出（配网模式持续运行）
+    }, "wifi_periodic_scan", 3072, NULL, 5, NULL);
 
     // ====== 第二步：延迟启动 BLE 配网（15秒后）======
     ESP_LOGI(TAG, "========================================");

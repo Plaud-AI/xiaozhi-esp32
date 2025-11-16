@@ -249,12 +249,24 @@ void BLEWiFiProvisioner::HandleScanWiFiCommand() {
     if (wifi_already_running) {
         ESP_LOGI(TAG, "✓ WiFi已在运行，检查是否有缓存的扫描结果...");
         
-        // 如果已经连接，尝试使用WifiStation的扫描结果
-        auto& wifi_station = WifiStation::GetInstance();
-        if (wifi_station.IsConnected()) {
-            ESP_LOGI(TAG, "✓ 设备已连接到WiFi: %s", wifi_station.GetSsid().c_str());
-            // 仍然需要新扫描以获取最新结果
+        // 优先检查是否有缓存的扫描结果（来自Soft AP的周期性扫描）
+        uint16_t cached_ap_count = 0;
+        ret = esp_wifi_scan_get_ap_num(&cached_ap_count);
+        
+        if (ret == ESP_OK && cached_ap_count > 0) {
+            ESP_LOGI(TAG, "✅ 发现缓存的WiFi扫描结果（%d 个网络），直接使用", cached_ap_count);
+            ESP_LOGI(TAG, "✅ 这些结果来自Soft AP的周期性扫描（每30秒刷新）");
+            need_new_scan = false;  // 使用缓存，不需要新扫描
+        } else {
+            ESP_LOGW(TAG, "⚠️  缓存中没有扫描结果，将启动新扫描（仅扫描当前信道，结果可能不完整）");
             need_new_scan = true;
+            
+            // 记录缓存为空的原因
+            if (ret != ESP_OK) {
+                ESP_LOGW(TAG, "获取缓存扫描结果失败: %s", esp_err_to_name(ret));
+            } else {
+                ESP_LOGW(TAG, "缓存为空的可能原因：周期性扫描尚未完成或缓存已过期");
+            }
         }
     } else {
         // 初始化WiFi
@@ -275,15 +287,15 @@ void BLEWiFiProvisioner::HandleScanWiFiCommand() {
     }
 
     if (need_new_scan) {
-        ESP_LOGI(TAG, "开始新的WiFi扫描...");
+        ESP_LOGW(TAG, "⚠️  开始新的WiFi扫描（BLE+WiFi共存模式下，扫描范围受限）...");
         
         // 配置扫描参数
-        // 注意：当蓝牙启用时，必须使用默认扫描时间参数（设置为0）
-        // 否则会导致扫描结果不完整
+        // 注意：在BLE+WiFi共存模式下，WiFi扫描会受到限制
+        // 通常只能扫描当前信道的网络，导致结果不完整
         wifi_scan_config_t scan_config = {
             .ssid = nullptr,
             .bssid = nullptr,
-            .channel = 0,
+            .channel = 0,  // 尝试扫描所有信道（共存模式下可能被限制）
             .show_hidden = false,
             .scan_type = WIFI_SCAN_TYPE_ACTIVE,
             .scan_time = {
@@ -307,7 +319,8 @@ void BLEWiFiProvisioner::HandleScanWiFiCommand() {
             uint16_t ap_count = 0;
             ret = esp_wifi_scan_get_ap_num(&ap_count);
             if (ret == ESP_OK && ap_count > 0) {
-                ESP_LOGI(TAG, "✓ WiFi扫描完成");
+                ESP_LOGW(TAG, "⚠️  BLE模式扫描完成（仅扫描到 %d 个网络，可能不完整）", ap_count);
+                ESP_LOGW(TAG, "💡 建议：使用Soft AP Web配网可获取完整列表");
                 break;
             }
             vTaskDelay(pdMS_TO_TICKS(100));
@@ -318,9 +331,19 @@ void BLEWiFiProvisioner::HandleScanWiFiCommand() {
 
     // 发送扫描结果
     std::string response = BuildScanResultJson();
-    SendResponse(response);
-
-    ESP_LOGI(TAG, "✓ WiFi扫描结果已发送");
+    
+    // 检查响应大小，大数据包可能导致BLE发送失败
+    if (response.length() > 3000) {
+        ESP_LOGW(TAG, "⚠️  响应数据较大（%d 字节），BLE分包发送可能不稳定", response.length());
+    }
+    
+    bool send_success = SendResponse(response);
+    
+    if (send_success) {
+        ESP_LOGI(TAG, "✅ WiFi扫描结果已成功发送");
+    } else {
+        ESP_LOGE(TAG, "❌ WiFi扫描结果发送失败（可能是BLE连接不稳定或数据包过大）");
+    }
     ESP_LOGI(TAG, "========================================");
 }
 
