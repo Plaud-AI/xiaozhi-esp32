@@ -35,7 +35,7 @@ DualI2sAudioCodec::DualI2sAudioCodec(
     input_channels_ = 1;
     input_sample_rate_ = input_sample_rate;
     output_sample_rate_ = output_sample_rate;
-    input_gain_ = 30;  // 默认增益
+    input_gain_ = 47;  // 最大增益（0-47），从30提升到47以增强麦克风灵敏度
     
     ESP_LOGI(TAG, "DualI2sAudioCodec 初始化: input_rate=%d, output_rate=%d", 
              input_sample_rate_, output_sample_rate_);
@@ -275,7 +275,20 @@ DualI2sAudioCodec::DualI2sAudioCodec(
 
     es7210_codec_cfg_t es7210_cfg = {};
     es7210_cfg.ctrl_if = in_ctrl_if_;
-    es7210_cfg.mic_selected = ES7210_SEL_MIC1;  // 使用单麦克风
+    
+    // ⚠️ 调试：尝试所有4个麦克风输入通道
+    // ESP32-S3-Korvo-2 的麦克风可能连接到不同的通道
+    ESP_LOGW(TAG, "");
+    ESP_LOGW(TAG, "╔════════════════════════════════════════╗");
+    ESP_LOGW(TAG, "║   🎤 ES7210 麦克风通道测试             ║");
+    ESP_LOGW(TAG, "╚════════════════════════════════════════╝");
+    ESP_LOGW(TAG, "💡 当前尝试 MIC1-MIC4 （D1-D4）所有通道");
+    ESP_LOGW(TAG, "💡 如果麦克风连接到MIC2/3/4，会显示全0数据");
+    ESP_LOGW(TAG, "");
+    
+    // 尝试使用所有 4 个麦克风输入（D1+D2+D3+D4）
+    es7210_cfg.mic_selected = ES7210_SEL_MIC1 | ES7210_SEL_MIC2 | ES7210_SEL_MIC3 | ES7210_SEL_MIC4;
+    ESP_LOGI(TAG, "✓ 启用所有麦克风通道：MIC1+MIC2+MIC3+MIC4");
     in_codec_if_ = es7210_codec_new(&es7210_cfg);
     
     if (in_codec_if_ == nullptr) {
@@ -531,6 +544,38 @@ int DualI2sAudioCodec::Read(int16_t* dest, int samples) {
         ESP_LOGE(TAG, "读取音频数据失败: %d", bytes_read);
         return 0;
     }
+    
+    // 🔍 调试：每隔一段时间打印前几个采样值
+    static int read_count = 0;
+    if (++read_count % 200 == 0) {  // 每200次打印一次
+        int num_samples = bytes_read / sizeof(int16_t);
+        if (num_samples > 0) {
+            ESP_LOGI(TAG, "🎤 I2S 读取数据（前8个采样）: %d, %d, %d, %d, %d, %d, %d, %d",
+                     dest[0], dest[1], dest[2], dest[3],
+                     dest[4], dest[5], dest[6], dest[7]);
+            
+            // 计算音频能量
+            int64_t sum = 0;
+            int max_val = 0;
+            for (int i = 0; i < num_samples; i++) {
+                sum += abs(dest[i]);
+                if (abs(dest[i]) > max_val) {
+                    max_val = abs(dest[i]);
+                }
+            }
+            int avg = num_samples > 0 ? sum / num_samples : 0;
+            ESP_LOGI(TAG, "🎤 音频能量：平均=%d, 最大=%d, 采样数=%d", avg, max_val, num_samples);
+            
+            if (max_val == 0) {
+                ESP_LOGW(TAG, "⚠️ 麦克风数据全是0！请检查：");
+                ESP_LOGW(TAG, "   1. 麦克风是否焊接/连接");
+                ESP_LOGW(TAG, "   2. 麦克风是否连接到正确的ES7210输入通道");
+                ESP_LOGW(TAG, "   3. I2S数据线（GPIO 11）是否正常");
+                ESP_LOGW(TAG, "   4. 麦克风供电是否正常");
+            }
+        }
+    }
+    
     return bytes_read / sizeof(int16_t);
 }
 
@@ -560,12 +605,35 @@ void DualI2sAudioCodec::EnableInput(bool enable) {
     input_enabled_ = enable;
     if (input_dev_) {
         if (enable) {
-            esp_codec_dev_open(input_dev_, nullptr);
-            ESP_LOGI(TAG, "启用输入");
+            esp_codec_dev_sample_info_t fs = {
+                .bits_per_sample = 16,
+                .channel = 1,
+                .channel_mask = 0,
+                .sample_rate = (uint32_t)input_sample_rate_,
+                .mclk_multiple = 0,
+            };
+            esp_err_t ret = esp_codec_dev_open(input_dev_, &fs);
+            if (ret != ESP_OK) {
+                ESP_LOGE(TAG, "❌ 启用输入失败: %s", esp_err_to_name(ret));
+            } else {
+                ESP_LOGI(TAG, "✅ 启用输入成功");
+                
+                // 设置输入增益（最大值）
+                // ⚠️ 重要：esp_codec_dev_set_in_gain() 需要 float 类型参数
+                float gain_float = (float)input_gain_;
+                ret = esp_codec_dev_set_in_gain(input_dev_, gain_float);
+                if (ret == ESP_OK) {
+                    ESP_LOGI(TAG, "✅ 输入增益设置为: %.1f (最大47.0)", gain_float);
+                } else {
+                    ESP_LOGW(TAG, "⚠️ 输入增益设置失败: %s", esp_err_to_name(ret));
+                }
+            }
         } else {
             esp_codec_dev_close(input_dev_);
             ESP_LOGI(TAG, "禁用输入");
         }
+    } else {
+        ESP_LOGW(TAG, "⚠️ 输入设备不可用，无法%s输入", enable ? "启用" : "禁用");
     }
 }
 
