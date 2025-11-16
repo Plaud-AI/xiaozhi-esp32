@@ -507,15 +507,16 @@ DualI2sAudioCodec::DualI2sAudioCodec(
             // 🔧 关键配置 3：只启用 MIC2 (SLOT1)
             // 寄存器 0x09 (MIC_EN): 每个 MIC 占 2 bits
             // MIC4[7:6] | MIC3[5:4] | MIC2[3:2] | MIC1[1:0]
+            //   - 每个 MIC 需要 2 bits 都为 1 才能使能（11=使能, 00=禁用）
             //   - 0xFF = 11111111 = 所有 MIC 使能 ← 旧配置
-            //   - 0x02 = 00000010 = 只启用 MIC2 (bit 1 = 1) ← 新配置
+            //   - 0x0C = 00001100 = MIC2[3:2]=11，只启用 MIC2 ← 正确配置
             ESP_LOGI(TAG, "");
             ESP_LOGI(TAG, "  🔧 配置寄存器 0x09 (MIC_EN): MIC 通道使能");
-            ESP_LOGI(TAG, "     说明: 只启用 MIC2 (SLOT1)，其他 MIC 未使用");
-            uint8_t reg_0x09_data[2] = {0x09, 0x02};  // 0x02 = 只启用 MIC2
+            ESP_LOGI(TAG, "     说明: 只启用 MIC2 (SLOT1)，MIC2[3:2]=11");
+            uint8_t reg_0x09_data[2] = {0x09, 0x0C};  // 0x0C = MIC2 使能 (bit[3:2]=11)
             ret = i2c_master_transmit(dev_handle, reg_0x09_data, 2, 1000);
             if (ret == ESP_OK) {
-                ESP_LOGI(TAG, "     ✅ 写入成功: 0x09 = 0x02 (只启用 MIC2/SLOT1)");
+                ESP_LOGI(TAG, "     ✅ 写入成功: 0x09 = 0x0C (只启用 MIC2/SLOT1)");
             } else {
                 ESP_LOGE(TAG, "     ❌ 写入失败: %s", esp_err_to_name(ret));
             }
@@ -584,11 +585,11 @@ DualI2sAudioCodec::DualI2sAudioCodec(
                 ESP_LOGI(TAG, "  ✅ 寄存器 0x07 验证成功: 0x00 (MICBIAS 已禁用，使用外部供电)");
             }
             
-            if (verify_0x09 != 0x02) {
-                ESP_LOGW(TAG, "  ⚠️  寄存器 0x09 验证失败: 期望 0x02, 实际 0x%02X", verify_0x09);
+            if (verify_0x09 != 0x0C) {
+                ESP_LOGW(TAG, "  ⚠️  寄存器 0x09 验证失败: 期望 0x0C, 实际 0x%02X", verify_0x09);
                 config_ok = false;
             } else {
-                ESP_LOGI(TAG, "  ✅ 寄存器 0x09 验证成功: 0x02 (只启用 MIC2/SLOT1)");
+                ESP_LOGI(TAG, "  ✅ 寄存器 0x09 验证成功: 0x0C (只启用 MIC2/SLOT1，MIC2[3:2]=11)");
             }
             
             i2c_master_bus_rm_device(dev_handle);
@@ -883,7 +884,7 @@ int DualI2sAudioCodec::Read(int16_t* dest, int samples) {
             ESP_LOGW(TAG, "3. 检查 ES7210 供电 (VDD/DVDD)");
             ESP_LOGW(TAG, "4. 检查 I2S 数据线 GPIO 11 (DIN)");
             ESP_LOGW(TAG, "5. 用示波器检查 BCLK/WS/DOUT 信号");
-            ESP_LOGW(TAG, "6. 确认 ES7210 寄存器配置（0x08=0x10, 0x09=0x02）");
+            ESP_LOGW(TAG, "6. 确认 ES7210 寄存器配置（0x08=0x10, 0x09=0x0C）");
             ESP_LOGW(TAG, "7. 确认 MIC2N 已正确接地（伪差分模式）");
         } else if (avg < 100) {
             ESP_LOGW(TAG, "");
@@ -1082,11 +1083,11 @@ void DualI2sAudioCodec::EnableInput(bool enable) {
                         uint8_t mic_en_before = read_reg(0x09);
                         ESP_LOGI(TAG, "    读取当前值: 0x09 = 0x%02X", mic_en_before);
                         
-                        // 写入 0x02 = 只启用 MIC2 (SLOT1)
-                        uint8_t reg_0x09_data[2] = {0x09, 0x02};
+                        // 写入 0x0C = 只启用 MIC2 (SLOT1)，MIC2[3:2]=11
+                        uint8_t reg_0x09_data[2] = {0x09, 0x0C};
                         ret = i2c_master_transmit(dev_handle, reg_0x09_data, 2, 1000);
                         if (ret == ESP_OK) {
-                            ESP_LOGI(TAG, "    ✅ MIC_EN 写入成功: 0x09 = 0x02");
+                            ESP_LOGI(TAG, "    ✅ MIC_EN 写入成功: 0x09 = 0x0C");
                         } else {
                             ESP_LOGE(TAG, "    ❌ MIC_EN 写入失败: %s", esp_err_to_name(ret));
                         }
@@ -1096,10 +1097,10 @@ void DualI2sAudioCodec::EnableInput(bool enable) {
                         uint8_t mic_en_after = read_reg(0x09);
                         ESP_LOGI(TAG, "    验证: 0x09 = 0x%02X", mic_en_after);
                         
-                        if (mic_en_after == 0x02) {
+                        if (mic_en_after == 0x0C) {
                             ESP_LOGI(TAG, "  ✅ MIC_EN 配置成功！MIC2 已启用！");
                         } else {
-                            ESP_LOGW(TAG, "  ⚠️ MIC_EN 配置失败！期望 0x02，实际 0x%02X", mic_en_after);
+                            ESP_LOGW(TAG, "  ⚠️ MIC_EN 配置失败！期望 0x0C，实际 0x%02X", mic_en_after);
                         }
                         
                         i2c_master_bus_rm_device(dev_handle);
