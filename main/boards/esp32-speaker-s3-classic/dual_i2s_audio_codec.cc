@@ -194,70 +194,10 @@ DualI2sAudioCodec::DualI2sAudioCodec(
         }
         
         // 等待 ES7210 芯片稳定（需要 MCLK 才能工作）
-        // ⚠️ 首次上电需要更长时间：1000ms → 2000ms，并验证 CHIP_ID
-        ESP_LOGI(TAG, "⏳ 等待 ES7210 芯片稳定并验证 CHIP_ID...");
-        ESP_LOGI(TAG, "💡 说明：首次上电 CHIP_ID 可能读取不正确（0x32），需要延迟和重试");
-        
-        // 创建 I2C 设备句柄用于验证
-        i2c_device_config_t dev_cfg = {
-            .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-            .device_address = es7210_addr,
-            .scl_speed_hz = 100000,  // 使用较低速度测试
-        };
-        
-        i2c_master_dev_handle_t dev_handle;
-        esp_err_t ret = i2c_master_bus_add_device((i2c_master_bus_handle_t)i2c_master_handle, &dev_cfg, &dev_handle);
-        
-        bool chip_id_valid = false;
-        uint8_t chip_id = 0;
-        const uint8_t expected_chip_id = 0x41;  // ES7210 标准 CHIP_ID
-        
-        if (ret == ESP_OK) {
-            // 尝试最多 5 次读取，每次间隔递增
-            for (int attempt = 1; attempt <= 5; attempt++) {
-                // 第一次尝试前等待，之后每次等待时间递增
-                uint32_t delay_ms = 500 * attempt;  // 500ms, 1000ms, 1500ms, 2000ms, 2500ms
-                ESP_LOGI(TAG, "  尝试 %d/5: 等待 %lu ms...", attempt, delay_ms);
-                vTaskDelay(pdMS_TO_TICKS(delay_ms));
-                
-                uint8_t reg_addr = 0x00;
-                ret = i2c_master_transmit_receive(dev_handle, &reg_addr, 1, &chip_id, 1, 1000);
-                
-                if (ret == ESP_OK) {
-                    ESP_LOGI(TAG, "  尝试 %d/5: CHIP_ID = 0x%02X", attempt, chip_id);
-                    
-                    if (chip_id == expected_chip_id) {
-                        ESP_LOGI(TAG, "  ✅ CHIP_ID 验证成功！(0x%02X = ES7210 标准 ID)", chip_id);
-                        chip_id_valid = true;
-                        break;
-                    } else if (chip_id == 0x32) {
-                        ESP_LOGW(TAG, "  ⚠️  CHIP_ID = 0x32 (错误值，芯片可能还在初始化)");
-                    } else {
-                        ESP_LOGW(TAG, "  ⚠️  CHIP_ID = 0x%02X (非预期值)", chip_id);
-                    }
-                } else {
-                    ESP_LOGW(TAG, "  ⚠️  尝试 %d/5: I2C 读取失败: %s", attempt, esp_err_to_name(ret));
-                }
-            }
-            
-            if (!chip_id_valid) {
-                ESP_LOGW(TAG, "");
-                ESP_LOGW(TAG, "❌ ES7210 CHIP_ID 验证失败！");
-                ESP_LOGW(TAG, "   期望: 0x%02X, 实际: 0x%02X", expected_chip_id, chip_id);
-                ESP_LOGW(TAG, "   可能原因:");
-                ESP_LOGW(TAG, "   1. 芯片初始化时间不足（已尝试 2.5 秒延迟）");
-                ESP_LOGW(TAG, "   2. MCLK 信号异常");
-                ESP_LOGW(TAG, "   3. 芯片硬件故障");
-                ESP_LOGW(TAG, "   4. 兼容芯片（非原装 ES7210）");
-                ESP_LOGW(TAG, "");
-            } else {
-                ESP_LOGI(TAG, "✅ ES7210 芯片稳定并验证完成！");
-            }
-            
-            i2c_master_bus_rm_device(dev_handle);
-        } else {
-            ESP_LOGW(TAG, "⚠️ 无法创建 I2C 设备句柄: %s", esp_err_to_name(ret));
-        }
+        ESP_LOGI(TAG, "⏳ 等待 ES7210 芯片稳定（1500ms）...");
+        ESP_LOGI(TAG, "💡 说明：芯片需要时间初始化，等待 MCLK 信号稳定");
+        vTaskDelay(pdMS_TO_TICKS(1500));  // 固定等待 1.5 秒
+        ESP_LOGI(TAG, "✅ ES7210 稳定时间已完成");
     }
 
     // ========== 手动 I2C 测试 ==========
