@@ -377,50 +377,168 @@ DualI2sAudioCodec::DualI2sAudioCodec(
         esp_err_t ret = i2c_master_bus_add_device((i2c_master_bus_handle_t)i2c_master_handle, &dev_cfg, &dev_handle);
         
         if (ret == ESP_OK) {
-            // 寄存器 0x07 (PWR_CTRL2): bit0=1 关闭内部 BIAS
-            uint8_t reg_0x07[2] = {0x07, 0x01};
-            ret = i2c_master_transmit(dev_handle, reg_0x07, 2, 1000);
-            if (ret == ESP_OK) {
-                ESP_LOGI(TAG, "✅ 寄存器 0x07 = 0x01 (关闭内部 MICBIAS)");
+            ESP_LOGI(TAG, "");
+            ESP_LOGI(TAG, "【步骤 1】读取 ES7210 初始化后的寄存器状态");
+            ESP_LOGI(TAG, "─────────────────────────────────────────");
+            
+            // 先读取关键寄存器的初始值（ESP-ADF 驱动初始化后的状态）
+            auto read_reg = [&](uint8_t addr, const char* name) -> uint8_t {
+                uint8_t value = 0xFF;
+                uint8_t reg_addr = addr;
+                esp_err_t r = i2c_master_transmit_receive(dev_handle, &reg_addr, 1, &value, 1, 1000);
+                if (r == ESP_OK) {
+                    ESP_LOGI(TAG, "  寄存器 0x%02X (%s) = 0x%02X", addr, name, value);
+                } else {
+                    ESP_LOGE(TAG, "  寄存器 0x%02X (%s) 读取失败", addr, name);
+                }
+                return value;
+            };
+            
+            uint8_t reg_0x00 = read_reg(0x00, "CHIP_ID");
+            uint8_t reg_0x02 = read_reg(0x02, "CLK_ON_OFF");
+            uint8_t reg_0x04 = read_reg(0x04, "MODE_CFG");
+            uint8_t reg_0x07 = read_reg(0x07, "PWR_CTRL2/MICBIAS");
+            uint8_t reg_0x08 = read_reg(0x08, "PWR_CTRL1/ADC使能");
+            uint8_t reg_0x09 = read_reg(0x09, "MIC_EN");
+            
+            ESP_LOGI(TAG, "");
+            ESP_LOGI(TAG, "【步骤 2】分析寄存器状态");
+            ESP_LOGI(TAG, "─────────────────────────────────────────");
+            
+            // 分析 0x08 (最关键！)
+            if (reg_0x08 == 0xFF) {
+                ESP_LOGW(TAG, "  ⚠️  寄存器 0x08 = 0xFF: 所有 ADC 已关断！");
+                ESP_LOGW(TAG, "      这会导致麦克风数据全为 0");
+            } else if (reg_0x08 == 0x00) {
+                ESP_LOGI(TAG, "  ✅ 寄存器 0x08 = 0x00: 所有 ADC 已使能");
             } else {
-                ESP_LOGE(TAG, "❌ 写入寄存器 0x07 失败: %s", esp_err_to_name(ret));
+                ESP_LOGW(TAG, "  ⚠️  寄存器 0x08 = 0x%02X: 部分 ADC 关断", reg_0x08);
+            }
+            
+            // 分析 0x07
+            if ((reg_0x07 & 0x01) == 0x00) {
+                ESP_LOGW(TAG, "  ⚠️  寄存器 0x07.bit0 = 0: 内部 MICBIAS 已启用");
+                ESP_LOGW(TAG, "      但你的麦克风使用外部 3.3V 供电，需要关闭");
+            } else {
+                ESP_LOGI(TAG, "  ✅ 寄存器 0x07.bit0 = 1: 内部 MICBIAS 已禁用");
+            }
+            
+            // 分析 0x09
+            if (reg_0x09 == 0x0F) {
+                ESP_LOGW(TAG, "  ⚠️  寄存器 0x09 = 0x0F: 所有 MIC 通道禁用");
+            } else if (reg_0x09 == 0x00) {
+                ESP_LOGI(TAG, "  ✅ 寄存器 0x09 = 0x00: 所有 MIC 通道已使能");
+            }
+            
+            ESP_LOGI(TAG, "");
+            ESP_LOGI(TAG, "【步骤 3】针对外部 3.3V 供电麦克风进行配置");
+            ESP_LOGI(TAG, "─────────────────────────────────────────");
+            
+            // 🔧 关键修复：强制配置寄存器 0x08 以确保 ADC 上电
+            ESP_LOGI(TAG, "");
+            ESP_LOGI(TAG, "  🔧 配置寄存器 0x08 (PWR_CTRL1): ADC 电源控制");
+            uint8_t reg_0x08_data[2] = {0x08, 0x00};  // 0x00 = 所有 ADC 正常工作
+            ret = i2c_master_transmit(dev_handle, reg_0x08_data, 2, 1000);
+            if (ret == ESP_OK) {
+                ESP_LOGI(TAG, "     ✅ 写入成功: 0x08 = 0x00 (所有 ADC 上电)");
+            } else {
+                ESP_LOGE(TAG, "     ❌ 写入失败: %s", esp_err_to_name(ret));
+            }
+            
+            // 寄存器 0x07 (PWR_CTRL2): bit0=1 关闭内部 BIAS
+            ESP_LOGI(TAG, "");
+            ESP_LOGI(TAG, "  🔧 配置寄存器 0x07 (PWR_CTRL2): MICBIAS 控制");
+            uint8_t reg_0x07_data[2] = {0x07, 0x01};  // bit0=1 禁用内部 MICBIAS
+            ret = i2c_master_transmit(dev_handle, reg_0x07_data, 2, 1000);
+            if (ret == ESP_OK) {
+                ESP_LOGI(TAG, "     ✅ 写入成功: 0x07 = 0x01 (关闭内部 MICBIAS)");
+            } else {
+                ESP_LOGE(TAG, "     ❌ 写入失败: %s", esp_err_to_name(ret));
             }
             
             // 寄存器 0x09 (MIC_EN): 0x00 = 四路缓冲器全开
-            uint8_t reg_0x09[2] = {0x09, 0x00};
-            ret = i2c_master_transmit(dev_handle, reg_0x09, 2, 1000);
+            ESP_LOGI(TAG, "");
+            ESP_LOGI(TAG, "  🔧 配置寄存器 0x09 (MIC_EN): MIC 通道使能");
+            uint8_t reg_0x09_data[2] = {0x09, 0x00};  // 0x00 = 所有通道使能
+            ret = i2c_master_transmit(dev_handle, reg_0x09_data, 2, 1000);
             if (ret == ESP_OK) {
-                ESP_LOGI(TAG, "✅ 寄存器 0x09 = 0x00 (四路缓冲器全开)");
+                ESP_LOGI(TAG, "     ✅ 写入成功: 0x09 = 0x00 (所有 MIC 通道使能)");
             } else {
-                ESP_LOGE(TAG, "❌ 写入寄存器 0x09 失败: %s", esp_err_to_name(ret));
+                ESP_LOGE(TAG, "     ❌ 写入失败: %s", esp_err_to_name(ret));
             }
             
-            // 验证写入结果（读回寄存器）
-            uint8_t readback_0x07 = 0, readback_0x09 = 0;
-            uint8_t reg_addr;
+            // 🔧 关键修复：配置 PGA 增益寄存器 (0x10~0x13)
+            // ES7210 的 PGA 增益范围：0x00~0x2E (0~46.5dB, 1.5dB/step)
+            // 建议值：0x14 = 30dB（适中增益，避免过饱和）
+            ESP_LOGI(TAG, "");
+            ESP_LOGI(TAG, "  🔧 配置寄存器 0x10~0x13: MIC1~MIC4 PGA 增益");
+            ESP_LOGI(TAG, "     说明: ES7210 的模拟增益 (PGA) 是信号链的第一级放大");
+            ESP_LOGI(TAG, "           如果 PGA 增益为 0，数字 ADC 输出会非常微弱或全 0");
             
-            reg_addr = 0x07;
-            ret = i2c_master_transmit_receive(dev_handle, &reg_addr, 1, &readback_0x07, 1, 1000);
-            if (ret == ESP_OK) {
-                ESP_LOGI(TAG, "📖 读回寄存器 0x07 = 0x%02x %s", readback_0x07, 
-                         (readback_0x07 == 0x01) ? "✅" : "⚠️ 值不匹配！");
+            // 设置合理的 PGA 增益值
+            // 0x14 = 20 * 1.5dB = 30dB（推荐起始值）
+            // 可根据实际麦克风灵敏度调整：0x00~0x2E (0~46.5dB)
+            uint8_t pga_gain = 0x14;  // 30dB
+            
+            for (uint8_t mic = 0; mic < 4; mic++) {
+                uint8_t reg_addr = 0x10 + mic;  // 0x10, 0x11, 0x12, 0x13
+                uint8_t reg_data[2] = {reg_addr, pga_gain};
+                
+                ret = i2c_master_transmit(dev_handle, reg_data, 2, 1000);
+                if (ret == ESP_OK) {
+                    ESP_LOGI(TAG, "     ✅ MIC%d (0x%02X) = 0x%02X (+%.1f dB)", 
+                             mic + 1, reg_addr, pga_gain, pga_gain * 1.5);
+                } else {
+                    ESP_LOGE(TAG, "     ❌ MIC%d (0x%02X) 写入失败: %s", 
+                             mic + 1, reg_addr, esp_err_to_name(ret));
+                }
             }
             
-            reg_addr = 0x09;
-            ret = i2c_master_transmit_receive(dev_handle, &reg_addr, 1, &readback_0x09, 1, 1000);
-            if (ret == ESP_OK) {
-                ESP_LOGI(TAG, "📖 读回寄存器 0x09 = 0x%02x %s", readback_0x09,
-                         (readback_0x09 == 0x00) ? "✅" : "⚠️ 值不匹配！");
+            // 验证写入结果
+            ESP_LOGI(TAG, "");
+            ESP_LOGI(TAG, "【步骤 4】验证寄存器配置结果");
+            ESP_LOGI(TAG, "─────────────────────────────────────────");
+            
+            uint8_t verify_0x08 = read_reg(0x08, "PWR_CTRL1/ADC使能");
+            uint8_t verify_0x07 = read_reg(0x07, "PWR_CTRL2/MICBIAS");
+            uint8_t verify_0x09 = read_reg(0x09, "MIC_EN");
+            
+            ESP_LOGI(TAG, "");
+            bool config_ok = true;
+            
+            if (verify_0x08 != 0x00) {
+                ESP_LOGW(TAG, "  ⚠️  寄存器 0x08 验证失败: 期望 0x00, 实际 0x%02X", verify_0x08);
+                config_ok = false;
+            } else {
+                ESP_LOGI(TAG, "  ✅ 寄存器 0x08 验证成功: 0x00 (ADC 已上电)");
+            }
+            
+            if (verify_0x07 != 0x01) {
+                ESP_LOGW(TAG, "  ⚠️  寄存器 0x07 验证失败: 期望 0x01, 实际 0x%02X", verify_0x07);
+                config_ok = false;
+            } else {
+                ESP_LOGI(TAG, "  ✅ 寄存器 0x07 验证成功: 0x01 (MICBIAS 已禁用)");
+            }
+            
+            if (verify_0x09 != 0x00) {
+                ESP_LOGW(TAG, "  ⚠️  寄存器 0x09 验证失败: 期望 0x00, 实际 0x%02X", verify_0x09);
+                config_ok = false;
+            } else {
+                ESP_LOGI(TAG, "  ✅ 寄存器 0x09 验证成功: 0x00 (MIC 通道已使能)");
             }
             
             i2c_master_bus_rm_device(dev_handle);
             
             ESP_LOGI(TAG, "");
-            ESP_LOGI(TAG, "✅ MICBIAS 寄存器配置完成");
-            ESP_LOGI(TAG, "💡 现在 ES7210 应该可以正常采集外部供电的麦克风信号了");
+            if (config_ok) {
+                ESP_LOGI(TAG, "✅ ES7210 寄存器配置完成（针对外部 3.3V 供电麦克风）");
+                ESP_LOGI(TAG, "💡 现在应该可以正常采集麦克风信号了");
+            } else {
+                ESP_LOGW(TAG, "⚠️  ES7210 寄存器配置存在异常，请检查上述警告");
+            }
         } else {
             ESP_LOGE(TAG, "❌ 创建 I2C 设备句柄失败: %s", esp_err_to_name(ret));
-            ESP_LOGE(TAG, "⚠️  无法配置 MICBIAS 寄存器，麦克风可能仍然无法工作");
+            ESP_LOGE(TAG, "⚠️  无法配置 ES7210 寄存器，麦克风可能仍然无法工作");
         }
     }
     ESP_LOGI(TAG, "");
