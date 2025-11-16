@@ -428,10 +428,11 @@ DualI2sAudioCodec::DualI2sAudioCodec(
             
             // 分析 0x07
             if ((reg_0x07 & 0x01) == 0x00) {
-                ESP_LOGW(TAG, "  ⚠️  寄存器 0x07.bit0 = 0: 内部 MICBIAS 已启用");
-                ESP_LOGW(TAG, "      但你的麦克风使用外部 3.3V 供电，需要关闭");
+                ESP_LOGI(TAG, "  ✅ 寄存器 0x07.bit0 = 0: 内部 MICBIAS 已禁用（正确）");
+                ESP_LOGI(TAG, "      麦克风使用外部 3.3V 供电");
             } else {
-                ESP_LOGI(TAG, "  ✅ 寄存器 0x07.bit0 = 1: 内部 MICBIAS 已禁用");
+                ESP_LOGW(TAG, "  ⚠️  寄存器 0x07.bit0 = 1: 内部 MICBIAS 已启用（错误）");
+                ESP_LOGW(TAG, "      麦克风使用外部 3.3V 供电时，应禁用内部 MICBIAS");
             }
             
             // 分析 0x09
@@ -475,13 +476,16 @@ DualI2sAudioCodec::DualI2sAudioCodec(
                 ESP_LOGE(TAG, "     ❌ 写入失败: %s", esp_err_to_name(ret));
             }
             
-            // 寄存器 0x07 (PWR_CTRL2): bit0=1 关闭内部 BIAS
+            // 寄存器 0x07 (PWR_CTRL2): bit0 控制 MICBIAS
+            // bit0=0: MICBIAS 禁用（使用外部 3.3V 供电）
+            // bit0=1: MICBIAS 使能（使用内部 BIAS）
             ESP_LOGI(TAG, "");
             ESP_LOGI(TAG, "  🔧 配置寄存器 0x07 (PWR_CTRL2): MICBIAS 控制");
-            uint8_t reg_0x07_data[2] = {0x07, 0x01};  // bit0=1 禁用内部 MICBIAS
+            ESP_LOGI(TAG, "     说明: 麦克风使用外部 3.3V 独立供电，禁用内部 MICBIAS");
+            uint8_t reg_0x07_data[2] = {0x07, 0x00};  // bit0=0 禁用内部 MICBIAS
             ret = i2c_master_transmit(dev_handle, reg_0x07_data, 2, 1000);
             if (ret == ESP_OK) {
-                ESP_LOGI(TAG, "     ✅ 写入成功: 0x07 = 0x01 (关闭内部 MICBIAS)");
+                ESP_LOGI(TAG, "     ✅ 写入成功: 0x07 = 0x00 (内部 MICBIAS 已禁用，使用外部供电)");
             } else {
                 ESP_LOGE(TAG, "     ❌ 写入失败: %s", esp_err_to_name(ret));
             }
@@ -556,11 +560,11 @@ DualI2sAudioCodec::DualI2sAudioCodec(
                 ESP_LOGI(TAG, "  ✅ 寄存器 0x08 验证成功: 0x00 (ADC 已上电)");
             }
             
-            if (verify_0x07 != 0x01) {
-                ESP_LOGW(TAG, "  ⚠️  寄存器 0x07 验证失败: 期望 0x01, 实际 0x%02X", verify_0x07);
+            if (verify_0x07 != 0x00) {
+                ESP_LOGW(TAG, "  ⚠️  寄存器 0x07 验证失败: 期望 0x00, 实际 0x%02X", verify_0x07);
                 config_ok = false;
             } else {
-                ESP_LOGI(TAG, "  ✅ 寄存器 0x07 验证成功: 0x01 (MICBIAS 已禁用)");
+                ESP_LOGI(TAG, "  ✅ 寄存器 0x07 验证成功: 0x00 (MICBIAS 已禁用，使用外部供电)");
             }
             
             if (verify_0x09 != 0x00) {
