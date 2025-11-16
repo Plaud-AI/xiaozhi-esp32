@@ -401,6 +401,14 @@ DualI2sAudioCodec::DualI2sAudioCodec(
             uint8_t reg_0x08 = read_reg(0x08, "PWR_CTRL1/ADC使能");
             uint8_t reg_0x09 = read_reg(0x09, "MIC_EN");
             
+            // 读取 PGA 增益寄存器（关键！）
+            ESP_LOGI(TAG, "");
+            ESP_LOGI(TAG, "  PGA 增益寄存器 (0x10~0x13):");
+            uint8_t reg_0x10 = read_reg(0x10, "MIC1_GAIN");
+            uint8_t reg_0x11 = read_reg(0x11, "MIC2_GAIN");
+            uint8_t reg_0x12 = read_reg(0x12, "MIC3_GAIN");
+            uint8_t reg_0x13 = read_reg(0x13, "MIC4_GAIN");
+            
             ESP_LOGI(TAG, "");
             ESP_LOGI(TAG, "【步骤 2】分析寄存器状态");
             ESP_LOGI(TAG, "─────────────────────────────────────────");
@@ -428,6 +436,25 @@ DualI2sAudioCodec::DualI2sAudioCodec(
                 ESP_LOGW(TAG, "  ⚠️  寄存器 0x09 = 0x0F: 所有 MIC 通道禁用");
             } else if (reg_0x09 == 0x00) {
                 ESP_LOGI(TAG, "  ✅ 寄存器 0x09 = 0x00: 所有 MIC 通道已使能");
+            }
+            
+            // 分析 PGA 增益 (0x10~0x13) - 最关键！
+            ESP_LOGI(TAG, "");
+            ESP_LOGI(TAG, "  分析 PGA 增益 (模拟放大器):");
+            bool pga_all_zero = (reg_0x10 == 0x00 && reg_0x11 == 0x00 && 
+                                 reg_0x12 == 0x00 && reg_0x13 == 0x00);
+            
+            if (pga_all_zero) {
+                ESP_LOGW(TAG, "  ⚠️  所有 PGA 增益都是 0 dB！");
+                ESP_LOGW(TAG, "      这是导致数据全 0 的最可能原因！");
+                ESP_LOGW(TAG, "      ES7210 的信号链：麦克风 → PGA → ADC → I2S");
+                ESP_LOGW(TAG, "      如果 PGA = 0dB，模拟信号会非常微弱");
+            } else {
+                ESP_LOGI(TAG, "  PGA 增益配置:");
+                ESP_LOGI(TAG, "    MIC1: +%.1f dB", reg_0x10 * 1.5);
+                ESP_LOGI(TAG, "    MIC2: +%.1f dB", reg_0x11 * 1.5);
+                ESP_LOGI(TAG, "    MIC3: +%.1f dB", reg_0x12 * 1.5);
+                ESP_LOGI(TAG, "    MIC4: +%.1f dB", reg_0x13 * 1.5);
             }
             
             ESP_LOGI(TAG, "");
@@ -502,6 +529,15 @@ DualI2sAudioCodec::DualI2sAudioCodec(
             uint8_t verify_0x08 = read_reg(0x08, "PWR_CTRL1/ADC使能");
             uint8_t verify_0x07 = read_reg(0x07, "PWR_CTRL2/MICBIAS");
             uint8_t verify_0x09 = read_reg(0x09, "MIC_EN");
+            
+            // 验证 PGA 增益寄存器
+            ESP_LOGI(TAG, "");
+            ESP_LOGI(TAG, "  验证 PGA 增益寄存器:");
+            for (uint8_t mic = 0; mic < 4; mic++) {
+                uint8_t verify_gain = read_reg(0x10 + mic, "");
+                ESP_LOGI(TAG, "    MIC%d (0x%02X) = 0x%02X (+%.1f dB)", 
+                         mic + 1, 0x10 + mic, verify_gain, verify_gain * 1.5);
+            }
             
             ESP_LOGI(TAG, "");
             bool config_ok = true;
