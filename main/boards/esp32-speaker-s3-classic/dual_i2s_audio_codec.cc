@@ -815,13 +815,11 @@ int DualI2sAudioCodec::Read(int16_t* dest, int samples) {
     
     std::lock_guard<std::mutex> lock(data_if_mutex_);
     
-    // ⚠️ 双麦克风 TDM 模式：读取的数据是交错格式
-    // 交错格式：CH0, CH1, CH0, CH1, CH0, CH1, ...
-    // 我们需要读取 2*samples 个数据，然后混合为 samples 个单声道数据
-    static std::vector<int16_t> tdm_buffer;
-    tdm_buffer.resize(samples * 2);  // 2个通道的数据
-    
-    esp_err_t ret = esp_codec_dev_read(input_dev_, tdm_buffer.data(), samples * 2 * sizeof(int16_t));
+    // ⚠️ 单麦克风 TDM 模式：只读取 SLOT1 (MIC2) 的数据
+    // 配置：channel_mask = 0x2 (只用 SLOT1)
+    // ESP-ADF 会只提取 SLOT1 的数据，返回单声道 PCM
+    // 直接读取 samples 个数据，无需平均！
+    esp_err_t ret = esp_codec_dev_read(input_dev_, dest, samples * sizeof(int16_t));
     
     if (ret != ESP_OK) {
         // 只有在真正出错时才记录
@@ -831,100 +829,71 @@ int DualI2sAudioCodec::Read(int16_t* dest, int samples) {
         return 0;
     }
     
-    // 将2通道数据混合为单声道：(CH0 + CH1) / 2
-    // TDM 交错格式：tdm_buffer[0]=CH0, tdm_buffer[1]=CH1, tdm_buffer[2]=CH0, tdm_buffer[3]=CH1, ...
-    for (int i = 0; i < samples; i++) {
-        int ch0 = tdm_buffer[i * 2];      // 通道0 (MIC1)
-        int ch1 = tdm_buffer[i * 2 + 1];  // 通道1 (MIC2)
-        dest[i] = (ch0 + ch1) / 2;        // 混合平均
-    }
-    
-    // 🔍 诊断：每隔一段时间打印双麦克风数据
+    // 🔍 诊断：每隔一段时间打印单麦克风数据
     static int read_count = 0;
     if (++read_count % 200 == 0) {  // 每200次打印一次
         ESP_LOGI(TAG, "");
         ESP_LOGI(TAG, "╔════════════════════════════════════════╗");
-        ESP_LOGI(TAG, "║   🎤 双麦克风 TDM 数据诊断            ║");
+        ESP_LOGI(TAG, "║   🎤 单麦克风 (MIC2) 数据诊断         ║");
         ESP_LOGI(TAG, "╚════════════════════════════════════════╝");
         
-        // 显示 TDM 原始交错数据（前8个：CH0, CH1, CH0, CH1, ...）
-        ESP_LOGI(TAG, "📊 TDM 原始数据（交错格式 CH0/CH1）:");
-        ESP_LOGI(TAG, "   [%d, %d] [%d, %d] [%d, %d] [%d, %d]",
-                 tdm_buffer[0], tdm_buffer[1],    // 第1组
-                 tdm_buffer[2], tdm_buffer[3],    // 第2组
-                 tdm_buffer[4], tdm_buffer[5],    // 第3组
-                 tdm_buffer[6], tdm_buffer[7]);   // 第4组
-        
-        // 显示混合后的单声道数据
-        ESP_LOGI(TAG, "📊 混合输出（单声道）:");
+        // 显示单声道数据（前8个样本）
+        ESP_LOGI(TAG, "📊 MIC2 单声道数据（SLOT1）:");
         ESP_LOGI(TAG, "   %d, %d, %d, %d, %d, %d, %d, %d",
                  dest[0], dest[1], dest[2], dest[3],
                  dest[4], dest[5], dest[6], dest[7]);
         
-        // 分别计算2个通道的能量
-        int64_t sum_ch0 = 0, sum_ch1 = 0, sum_mixed = 0;
-        int max_ch0 = 0, max_ch1 = 0, max_mixed = 0;
+        // 计算音频能量
+        int64_t sum = 0;
+        int max_val = 0;
         
         for (int i = 0; i < samples; i++) {
-            int ch0_val = abs(tdm_buffer[i * 2]);
-            int ch1_val = abs(tdm_buffer[i * 2 + 1]);
-            int mixed_val = abs(dest[i]);
-            
-            sum_ch0 += ch0_val;
-            sum_ch1 += ch1_val;
-            sum_mixed += mixed_val;
-            
-            if (ch0_val > max_ch0) max_ch0 = ch0_val;
-            if (ch1_val > max_ch1) max_ch1 = ch1_val;
-            if (mixed_val > max_mixed) max_mixed = mixed_val;
+            int val = abs(dest[i]);
+            sum += val;
+            if (val > max_val) max_val = val;
         }
         
-        int avg_ch0 = samples > 0 ? sum_ch0 / samples : 0;
-        int avg_ch1 = samples > 0 ? sum_ch1 / samples : 0;
-        int avg_mixed = samples > 0 ? sum_mixed / samples : 0;
+        int avg = samples > 0 ? sum / samples : 0;
         
         ESP_LOGI(TAG, "");
-        ESP_LOGI(TAG, "📊 各通道音频能量:");
-        ESP_LOGI(TAG, "   通道0 (MIC1): 平均=%d, 最大=%d %s",
-                 avg_ch0, max_ch0, max_ch0 < 10 ? "❌ 无信号" : "✅");
-        ESP_LOGI(TAG, "   通道1 (MIC2): 平均=%d, 最大=%d %s",
-                 avg_ch1, max_ch1, max_ch1 < 10 ? "❌ 无信号" : "✅");
-        ESP_LOGI(TAG, "   混合输出:     平均=%d, 最大=%d",
-                 avg_mixed, max_mixed);
+        ESP_LOGI(TAG, "📊 MIC2 音频能量:");
+        ESP_LOGI(TAG, "   平均: %d", avg);
+        ESP_LOGI(TAG, "   最大: %d", max_val);
+        ESP_LOGI(TAG, "   样本数: %d", samples);
         
-        ESP_LOGI(TAG, "");
-        
-        // 判断麦克风状态
-        bool mic1_active = max_ch0 > 10;
-        bool mic2_active = max_ch1 > 10;
-        
-        if (!mic1_active && !mic2_active) {
-            ESP_LOGW(TAG, "⚠️ 两个麦克风都无信号！");
+        // 判断信号质量
+        if (max_val < 10) {
+            ESP_LOGW(TAG, "");
+            ESP_LOGW(TAG, "⚠️ MIC2 无信号！");
             ESP_LOGW(TAG, "╔════════════════════════════════════════╗");
             ESP_LOGW(TAG, "║   ❌ 硬件检查清单                      ║");
             ESP_LOGW(TAG, "╚════════════════════════════════════════╝");
             ESP_LOGW(TAG, "1. 确认 MIC2 (MIC2N/MIC2P) 已焊接");
             ESP_LOGW(TAG, "2. 检查麦克风供电（VCC 3.3V）");
             ESP_LOGW(TAG, "3. 检查 ES7210 供电 (VDD/DVDD)");
-            ESP_LOGW(TAG, "4. 检查 I2S 数据线 GPIO 11");
+            ESP_LOGW(TAG, "4. 检查 I2S 数据线 GPIO 11 (DIN)");
             ESP_LOGW(TAG, "5. 用示波器检查 BCLK/WS/DOUT 信号");
-        } else if (!mic1_active && mic2_active) {
-            ESP_LOGI(TAG, "✅ 单麦克风模式运行正常");
-            ESP_LOGI(TAG, "   • MIC1 (通道0): 未焊接（预期）");
-            ESP_LOGI(TAG, "   • MIC2 (通道1): 工作正常 ✅");
-        } else if (mic1_active && !mic2_active) {
-            ESP_LOGW(TAG, "⚠️ 意外：MIC1有信号，MIC2无信号");
-            ESP_LOGW(TAG, "   请检查硬件连接是否正确");
+            ESP_LOGW(TAG, "6. 确认 ES7210 寄存器配置（0x08=0x10, 0x09=0xFF）");
+        } else if (avg < 100) {
+            ESP_LOGW(TAG, "");
+            ESP_LOGW(TAG, "⚠️ MIC2 信号很弱（avg=%d < 100）", avg);
+            ESP_LOGW(TAG, "建议：");
+            ESP_LOGW(TAG, "1. 对着麦克风说话测试");
+            ESP_LOGW(TAG, "2. 检查 PGA 增益是否设置正确（应为 48dB）");
+            ESP_LOGW(TAG, "3. 检查环境是否太安静");
+        } else if (avg >= 800) {
+            ESP_LOGI(TAG, "");
+            ESP_LOGI(TAG, "✅ MIC2 信号强度优秀！");
+            ESP_LOGI(TAG, "   平均值 %d >= 800，满足语音唤醒要求 ✅", avg);
         } else {
-            ESP_LOGI(TAG, "✅ 双麦克风模式运行正常");
-            ESP_LOGI(TAG, "   • MIC1 (通道0): 工作正常 ✅");
-            ESP_LOGI(TAG, "   • MIC2 (通道1): 工作正常 ✅");
-            ESP_LOGI(TAG, "   • 混合输出: 双麦克风降噪效果");
+            ESP_LOGI(TAG, "");
+            ESP_LOGI(TAG, "✅ MIC2 信号正常（avg=%d）", avg);
+            ESP_LOGI(TAG, "   提示：大声说话可提高信号强度");
         }
         ESP_LOGI(TAG, "");
     }
     
-    // TDM 模式：成功读取，返回采样数
+    // 单麦克风模式：成功读取，返回采样数
     return samples;
 }
 
