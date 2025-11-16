@@ -32,6 +32,9 @@ private:
     
     std::mutex data_if_mutex_;
     
+    // I2C 总线句柄（用于直接寄存器操作）
+    void* i2c_master_handle_ = nullptr;
+    
     // I2S 通道句柄
     i2s_chan_handle_t tx_handle_i2s0_ = nullptr;  // ES8311 输出
     i2s_chan_handle_t rx_handle_i2s1_ = nullptr;  // ES7210 输入

@@ -31,6 +31,9 @@ DualI2sAudioCodec::DualI2sAudioCodec(
     uint8_t es8311_addr, 
     uint8_t es7210_addr
 ) {
+    // 保存 I2C 句柄，以便在其他成员函数中使用
+    i2c_master_handle_ = i2c_master_handle;
+    
     duplex_ = true;
     input_reference_ = false;  // 单麦克风，无回声消除
     input_channels_ = 1;
@@ -503,9 +506,11 @@ DualI2sAudioCodec::DualI2sAudioCodec(
             ESP_LOGI(TAG, "           如果 PGA 增益为 0，数字 ADC 输出会非常微弱或全 0");
             
             // 设置合理的 PGA 增益值
-            // 0x14 = 20 * 1.5dB = 30dB（推荐起始值）
-            // 可根据实际麦克风灵敏度调整：0x00~0x2E (0~46.5dB)
-            uint8_t pga_gain = 0x14;  // 30dB
+            // 0x14 = 20 * 1.5dB = 30dB
+            // 0x20 = 32 * 1.5dB = 48dB（最大安全值）
+            // 0x2E = 46 * 1.5dB = 69dB（最大值，但可能过饱和）
+            // 可根据实际麦克风灵敏度调整：0x00~0x2E (0~69dB)
+            uint8_t pga_gain = 0x20;  // 48dB（从 30dB 提高，对抗 ESP-ADF 降低）
             
             for (uint8_t mic = 0; mic < 4; mic++) {
                 uint8_t reg_addr = 0x10 + mic;  // 0x10, 0x11, 0x12, 0x13
@@ -1008,7 +1013,7 @@ void DualI2sAudioCodec::EnableInput(bool enable) {
                     };
                     
                     i2c_master_dev_handle_t dev_handle;
-                    esp_err_t ret = i2c_master_bus_add_device((i2c_master_bus_handle_t)i2c_master_handle, &dev_cfg, &dev_handle);
+                    esp_err_t ret = i2c_master_bus_add_device((i2c_master_bus_handle_t)i2c_master_handle_, &dev_cfg, &dev_handle);
                     
                     if (ret == ESP_OK) {
                         // 读取当前 PGA 值
@@ -1030,8 +1035,9 @@ void DualI2sAudioCodec::EnableInput(bool enable) {
                                  pga3_before, pga3_before * 1.5,
                                  pga4_before, pga4_before * 1.5);
                         
-                        // 强制写入 PGA 增益值 0x14 = +30dB
-                        uint8_t pga_gain = 0x14;  // +30dB
+                        // 强制写入 PGA 增益值 0x20 = +48dB
+                        // 提高到 48dB 以对抗 ESP-ADF 的降低（预期被降到 ~35-40dB）
+                        uint8_t pga_gain = 0x20;  // +48dB
                         ESP_LOGI(TAG, "  强制写入 PGA 增益 0x%02X (%.1fdB) 到所有通道...", pga_gain, pga_gain * 1.5);
                         
                         for (uint8_t mic = 0; mic < 4; mic++) {
