@@ -194,18 +194,77 @@ DualI2sAudioCodec::DualI2sAudioCodec(
         }
         
         // 等待 ES7210 芯片稳定（需要 MCLK 才能工作）
-        // ⚠️ 进一步增加等待时间：50ms → 200ms → 1000ms
-        ESP_LOGI(TAG, "⏳ 等待 ES7210 芯片稳定（1000ms）...");
-        ESP_LOGI(TAG, "💡 说明：200ms 仍不足，尝试 1000ms 长延时");
-        vTaskDelay(pdMS_TO_TICKS(1000));  // 等待 1000ms（极长稳定时间）
-        ESP_LOGI(TAG, "✅ ES7210 稳定时间已完成");
+        // ⚠️ 首次上电需要更长时间：1000ms → 2000ms，并验证 CHIP_ID
+        ESP_LOGI(TAG, "⏳ 等待 ES7210 芯片稳定并验证 CHIP_ID...");
+        ESP_LOGI(TAG, "💡 说明：首次上电 CHIP_ID 可能读取不正确（0x32），需要延迟和重试");
+        
+        // 创建 I2C 设备句柄用于验证
+        i2c_device_config_t dev_cfg = {
+            .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+            .device_address = es7210_addr,
+            .scl_speed_hz = 100000,  // 使用较低速度测试
+        };
+        
+        i2c_master_dev_handle_t dev_handle;
+        esp_err_t ret = i2c_master_bus_add_device((i2c_master_bus_handle_t)i2c_master_handle, &dev_cfg, &dev_handle);
+        
+        bool chip_id_valid = false;
+        uint8_t chip_id = 0;
+        const uint8_t expected_chip_id = 0x41;  // ES7210 标准 CHIP_ID
+        
+        if (ret == ESP_OK) {
+            // 尝试最多 5 次读取，每次间隔递增
+            for (int attempt = 1; attempt <= 5; attempt++) {
+                // 第一次尝试前等待，之后每次等待时间递增
+                uint32_t delay_ms = 500 * attempt;  // 500ms, 1000ms, 1500ms, 2000ms, 2500ms
+                ESP_LOGI(TAG, "  尝试 %d/5: 等待 %lu ms...", attempt, delay_ms);
+                vTaskDelay(pdMS_TO_TICKS(delay_ms));
+                
+                uint8_t reg_addr = 0x00;
+                ret = i2c_master_transmit_receive(dev_handle, &reg_addr, 1, &chip_id, 1, 1000);
+                
+                if (ret == ESP_OK) {
+                    ESP_LOGI(TAG, "  尝试 %d/5: CHIP_ID = 0x%02X", attempt, chip_id);
+                    
+                    if (chip_id == expected_chip_id) {
+                        ESP_LOGI(TAG, "  ✅ CHIP_ID 验证成功！(0x%02X = ES7210 标准 ID)", chip_id);
+                        chip_id_valid = true;
+                        break;
+                    } else if (chip_id == 0x32) {
+                        ESP_LOGW(TAG, "  ⚠️  CHIP_ID = 0x32 (错误值，芯片可能还在初始化)");
+                    } else {
+                        ESP_LOGW(TAG, "  ⚠️  CHIP_ID = 0x%02X (非预期值)", chip_id);
+                    }
+                } else {
+                    ESP_LOGW(TAG, "  ⚠️  尝试 %d/5: I2C 读取失败: %s", attempt, esp_err_to_name(ret));
+                }
+            }
+            
+            if (!chip_id_valid) {
+                ESP_LOGW(TAG, "");
+                ESP_LOGW(TAG, "❌ ES7210 CHIP_ID 验证失败！");
+                ESP_LOGW(TAG, "   期望: 0x%02X, 实际: 0x%02X", expected_chip_id, chip_id);
+                ESP_LOGW(TAG, "   可能原因:");
+                ESP_LOGW(TAG, "   1. 芯片初始化时间不足（已尝试 2.5 秒延迟）");
+                ESP_LOGW(TAG, "   2. MCLK 信号异常");
+                ESP_LOGW(TAG, "   3. 芯片硬件故障");
+                ESP_LOGW(TAG, "   4. 兼容芯片（非原装 ES7210）");
+                ESP_LOGW(TAG, "");
+            } else {
+                ESP_LOGI(TAG, "✅ ES7210 芯片稳定并验证完成！");
+            }
+            
+            i2c_master_bus_rm_device(dev_handle);
+        } else {
+            ESP_LOGW(TAG, "⚠️ 无法创建 I2C 设备句柄: %s", esp_err_to_name(ret));
+        }
     }
 
     // ========== 手动 I2C 测试 ==========
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "🔬 进行 ES7210 I2C 读写测试...");
     
-    // 测试 1：尝试读取芯片 ID （寄存器 0x00）
+    // 测试 1：再次读取芯片 ID 确认
     {
         uint8_t chip_id = 0;
         uint8_t reg_addr = 0x00;
@@ -417,13 +476,17 @@ DualI2sAudioCodec::DualI2sAudioCodec(
             ESP_LOGI(TAG, "─────────────────────────────────────────");
             
             // 分析 0x08 (最关键！)
-            if (reg_0x08 == 0xFF) {
-                ESP_LOGW(TAG, "  ⚠️  寄存器 0x08 = 0xFF: 所有 ADC 已关断！");
-                ESP_LOGW(TAG, "      这会导致麦克风数据全为 0");
-            } else if (reg_0x08 == 0x00) {
-                ESP_LOGI(TAG, "  ✅ 寄存器 0x08 = 0x00: 所有 ADC 已使能");
+            // ⚠️ 重要：bit 4 (0x10) 控制 ADC 电源
+            //   - 0x00 = ADC 断电 ❌
+            //   - 0x10 = ADC 上电 ✅
+            if (reg_0x08 == 0x00) {
+                ESP_LOGW(TAG, "  ⚠️  寄存器 0x08 = 0x00: ADC 断电！");
+                ESP_LOGW(TAG, "      这是导致麦克风数据全为 0 的根本原因！");
+                ESP_LOGW(TAG, "      必须设置为 0x10 才能启动 ADC");
+            } else if ((reg_0x08 & 0x10) == 0x10) {
+                ESP_LOGI(TAG, "  ✅ 寄存器 0x08 = 0x%02X: ADC 已上电 (bit 4 = 1)", reg_0x08);
             } else {
-                ESP_LOGW(TAG, "  ⚠️  寄存器 0x08 = 0x%02X: 部分 ADC 关断", reg_0x08);
+                ESP_LOGW(TAG, "  ⚠️  寄存器 0x08 = 0x%02X: ADC 断电 (bit 4 = 0)", reg_0x08);
             }
             
             // 分析 0x07
@@ -466,12 +529,16 @@ DualI2sAudioCodec::DualI2sAudioCodec(
             ESP_LOGI(TAG, "─────────────────────────────────────────");
             
             // 🔧 关键修复：强制配置寄存器 0x08 以确保 ADC 上电
+            // ⚠️ 重要：0x08 寄存器的 bit 4 控制 ADC 电源
+            //   - 0x00 = ADC 断电 ❌
+            //   - 0x10 = ADC 上电 ✅ (bit 4 = 1)
             ESP_LOGI(TAG, "");
             ESP_LOGI(TAG, "  🔧 配置寄存器 0x08 (PWR_CTRL1): ADC 电源控制");
-            uint8_t reg_0x08_data[2] = {0x08, 0x00};  // 0x00 = 所有 ADC 正常工作
+            ESP_LOGI(TAG, "     说明: bit 4 = 1 (0x10) 才能启动 ADC");
+            uint8_t reg_0x08_data[2] = {0x08, 0x10};  // 0x10 = ADC 上电 (bit 4 = 1)
             ret = i2c_master_transmit(dev_handle, reg_0x08_data, 2, 1000);
             if (ret == ESP_OK) {
-                ESP_LOGI(TAG, "     ✅ 写入成功: 0x08 = 0x00 (所有 ADC 上电)");
+                ESP_LOGI(TAG, "     ✅ 写入成功: 0x08 = 0x10 (ADC 已上电)");
             } else {
                 ESP_LOGE(TAG, "     ❌ 写入失败: %s", esp_err_to_name(ret));
             }
@@ -523,7 +590,7 @@ DualI2sAudioCodec::DualI2sAudioCodec(
                 uint8_t reg_data[2] = {reg_addr, pga_gain};
                 
                 ret = i2c_master_transmit(dev_handle, reg_data, 2, 1000);
-                if (ret == ESP_OK) {
+            if (ret == ESP_OK) {
                     ESP_LOGI(TAG, "     ✅ MIC%d (0x%02X) = 0x%02X (+%.1f dB)", 
                              mic + 1, reg_addr, pga_gain, pga_gain * 1.5);
                 } else {
@@ -553,11 +620,11 @@ DualI2sAudioCodec::DualI2sAudioCodec(
             ESP_LOGI(TAG, "");
             bool config_ok = true;
             
-            if (verify_0x08 != 0x00) {
-                ESP_LOGW(TAG, "  ⚠️  寄存器 0x08 验证失败: 期望 0x00, 实际 0x%02X", verify_0x08);
+            if (verify_0x08 != 0x10) {
+                ESP_LOGW(TAG, "  ⚠️  寄存器 0x08 验证失败: 期望 0x10, 实际 0x%02X", verify_0x08);
                 config_ok = false;
             } else {
-                ESP_LOGI(TAG, "  ✅ 寄存器 0x08 验证成功: 0x00 (ADC 已上电)");
+                ESP_LOGI(TAG, "  ✅ 寄存器 0x08 验证成功: 0x10 (ADC 已上电)");
             }
             
             if (verify_0x07 != 0x00) {
