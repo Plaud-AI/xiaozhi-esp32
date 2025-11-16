@@ -961,30 +961,32 @@ void DualI2sAudioCodec::EnableInput(bool enable) {
         if (enable) {
             ESP_LOGI(TAG, "📝 配置采样参数:");
             ESP_LOGI(TAG, "   - bits_per_sample: 16");
-            ESP_LOGI(TAG, "   - channel: 4 (TDM 模式，对应 4 个时间槽)");
-            ESP_LOGI(TAG, "   - channel_mask: 0x3 (使用 SLOT0 + SLOT1，即 MIC1 + MIC2)");
+            ESP_LOGI(TAG, "   - channel: 1 (单声道模式)");
+            ESP_LOGI(TAG, "   - channel_mask: 0x2 (只使用 SLOT1，即 MIC2)");
             ESP_LOGI(TAG, "   - sample_rate: %d", input_sample_rate_);
             
-            // ⚠️ 双麦克风配置：读取 MIC1 (通道0) + MIC2 (通道1)
+            // ⚠️ 单麦克风配置：只读取 MIC2 (通道1/SLOT1)
+            // 原因：MIC1 信号太弱（avg=1-24），拖累整体性能
+            // MIC2 信号已足够（avg=800-3370），满足语音唤醒要求
             // 硬件连接：
-            //   - MIC1: MIC1N/MIC1P (通道0/SLOT0) - 将来焊接
+            //   - MIC1: 未使用（信号太弱，avg < 50）
             //   - MIC2: MIC2N/MIC2P (通道1/SLOT1) - 已焊接 ✅
-            // 数据处理：2个通道混合平均为单声道，自动适应单/双麦克风场景
             esp_codec_dev_sample_info_t fs = {
                 .bits_per_sample = 16,
-                .channel = 4,  // TDM 模式：4 个时间槽
-                // 读取通道0 (MIC1) + 通道1 (MIC2)
-                .channel_mask = ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0) | ESP_CODEC_DEV_MAKE_CHANNEL_MASK(1),
+                .channel = 1,  // 单声道模式
+                // 只读取通道1 (MIC2) - 信号强度足够，避免被 MIC1 拉低
+                .channel_mask = ESP_CODEC_DEV_MAKE_CHANNEL_MASK(1),
                 .sample_rate = (uint32_t)input_sample_rate_,
                 .mclk_multiple = 0,
             };
             ESP_LOGI(TAG, "");
             ESP_LOGI(TAG, "╔════════════════════════════════════════╗");
-            ESP_LOGI(TAG, "║   🎤 双麦克风模式                      ║");
+            ESP_LOGI(TAG, "║   🎤 单麦克风模式（仅 MIC2）          ║");
             ESP_LOGI(TAG, "╚════════════════════════════════════════╝");
-            ESP_LOGI(TAG, "💡 MIC1 (SLOT0/通道0): 将来焊接");
-            ESP_LOGI(TAG, "💡 MIC2 (SLOT1/通道1): 已焊接 ✅");
-            ESP_LOGI(TAG, "💡 数据混合：2通道平均为单声道输出");
+            ESP_LOGI(TAG, "💡 MIC2 (SLOT1/通道1): 主麦克风 ✅");
+            ESP_LOGI(TAG, "💡 MIC1 (SLOT0/通道0): 未使用（信号太弱）");
+            ESP_LOGI(TAG, "💡 数据输出：MIC2 单声道直接输出");
+            ESP_LOGI(TAG, "💡 预期信号强度：avg=800-3000（语音唤醒要求）");
             ESP_LOGI(TAG, "");
             
             ESP_LOGI(TAG, "🔧 调用 esp_codec_dev_open()...");
