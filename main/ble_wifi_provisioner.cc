@@ -450,10 +450,9 @@ void BLEWiFiProvisioner::HandleWiFiConfigCommand(const std::string& ssid,
             provision_success_callback_(ssid, password);
         }
 
-        // 延迟后重启设备
-        ESP_LOGI(TAG, "将在2秒后重启设备...");
-        vTaskDelay(pdMS_TO_TICKS(2000));
-        esp_restart();
+        // 注意：是否重启由回调函数决定
+        // 在配网模式下，回调会调用 esp_restart()
+        // 在正常模式下，回调只记录信息，不重启
         
     } else {
         ESP_LOGE(TAG, "========================================");
