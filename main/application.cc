@@ -184,6 +184,12 @@ void Application::CheckNewVersion(Ota& ota) {
         display->SetStatus(Lang::Strings::ACTIVATION);
         // Activation code is shown to the user and waiting for the user to input
         if (ota.HasActivationCode()) {
+            ESP_LOGI(TAG, "╔════════════════════════════════════════╗");
+            ESP_LOGI(TAG, "║   📱 设备需要激活                     ║");
+            ESP_LOGI(TAG, "╠════════════════════════════════════════╣");
+            ESP_LOGI(TAG, "║   激活码: %s                ║", ota.GetActivationCode().c_str());
+            ESP_LOGI(TAG, "║   消息: %s", ota.GetActivationMessage().c_str());
+            ESP_LOGI(TAG, "╚════════════════════════════════════════╝");
             ShowActivationCode(ota.GetActivationCode(), ota.GetActivationMessage());
         }
 
