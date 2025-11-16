@@ -1075,6 +1075,33 @@ void DualI2sAudioCodec::EnableInput(bool enable) {
                             ESP_LOGW(TAG, "  ⚠️ PGA 配置后值仍然异常，可能被 ESP-ADF 持续覆盖");
                         }
                         
+                        // 🔧 关键修复：重新配置 MIC_EN (0x09) 寄存器
+                        // ESP-ADF 的 esp_codec_dev_open() 会重新初始化 ES7210，把 MIC_EN 改回默认值
+                        ESP_LOGI(TAG, "");
+                        ESP_LOGI(TAG, "  🔧 强制重新配置 MIC_EN (0x09) 寄存器");
+                        uint8_t mic_en_before = read_reg(0x09);
+                        ESP_LOGI(TAG, "    读取当前值: 0x09 = 0x%02X", mic_en_before);
+                        
+                        // 写入 0xFF = 所有 MIC 使能
+                        uint8_t reg_0x09_data[2] = {0x09, 0xFF};
+                        ret = i2c_master_transmit(dev_handle, reg_0x09_data, 2, 1000);
+                        if (ret == ESP_OK) {
+                            ESP_LOGI(TAG, "    ✅ MIC_EN 写入成功: 0x09 = 0xFF");
+                        } else {
+                            ESP_LOGE(TAG, "    ❌ MIC_EN 写入失败: %s", esp_err_to_name(ret));
+                        }
+                        
+                        // 等待并验证
+                        vTaskDelay(pdMS_TO_TICKS(10));
+                        uint8_t mic_en_after = read_reg(0x09);
+                        ESP_LOGI(TAG, "    验证: 0x09 = 0x%02X", mic_en_after);
+                        
+                        if (mic_en_after == 0xFF) {
+                            ESP_LOGI(TAG, "  ✅ MIC_EN 配置成功！所有麦克风已启用！");
+                        } else {
+                            ESP_LOGW(TAG, "  ⚠️ MIC_EN 配置失败！期望 0xFF，实际 0x%02X", mic_en_after);
+                        }
+                        
                         i2c_master_bus_rm_device(dev_handle);
                     } else {
                         ESP_LOGE(TAG, "  ❌ 无法创建 I2C 设备句柄: %s", esp_err_to_name(ret));
