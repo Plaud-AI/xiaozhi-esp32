@@ -486,13 +486,15 @@ DualI2sAudioCodec::DualI2sAudioCodec(
                 ESP_LOGE(TAG, "     ❌ 写入失败: %s", esp_err_to_name(ret));
             }
             
-            // 寄存器 0x09 (MIC_EN): 0x00 = 四路缓冲器全开
+            // 寄存器 0x09 (MIC_EN): 0xFF = 所有 MIC 使能
+            // 每个 MIC 占 2 bits: 11=使能, 00=禁用
+            // MIC4[7:6] | MIC3[5:4] | MIC2[3:2] | MIC1[1:0]
             ESP_LOGI(TAG, "");
             ESP_LOGI(TAG, "  🔧 配置寄存器 0x09 (MIC_EN): MIC 通道使能");
-            uint8_t reg_0x09_data[2] = {0x09, 0x00};  // 0x00 = 所有通道使能
+            uint8_t reg_0x09_data[2] = {0x09, 0xFF};  // 0xFF = 所有通道使能
             ret = i2c_master_transmit(dev_handle, reg_0x09_data, 2, 1000);
             if (ret == ESP_OK) {
-                ESP_LOGI(TAG, "     ✅ 写入成功: 0x09 = 0x00 (所有 MIC 通道使能)");
+                ESP_LOGI(TAG, "     ✅ 写入成功: 0x09 = 0xFF (所有 MIC 通道使能)");
             } else {
                 ESP_LOGE(TAG, "     ❌ 写入失败: %s", esp_err_to_name(ret));
             }
