@@ -363,8 +363,8 @@ DualI2sAudioCodec::DualI2sAudioCodec(
     ESP_LOGI(TAG, "╔════════════════════════════════════════╗");
     ESP_LOGI(TAG, "║   🔧 配置 ES7210 MICBIAS 寄存器       ║");
     ESP_LOGI(TAG, "╚════════════════════════════════════════╝");
-    ESP_LOGI(TAG, "💡 硬件说明：麦克风使用外部 3.3V 供电");
-    ESP_LOGI(TAG, "💡 需要关闭 ES7210 内部 MICBIAS 检测");
+    ESP_LOGI(TAG, "💡 硬件说明：驻极体麦克风需要MICBIAS偏置电压");
+    ESP_LOGI(TAG, "💡 启用 ES7210 内部 MICBIAS (2.5V)");
     ESP_LOGI(TAG, "");
     
     // 创建 I2C 设备句柄用于写入寄存器
@@ -430,12 +430,12 @@ DualI2sAudioCodec::DualI2sAudioCodec(
             }
             
             // 分析 0x07
-            if ((reg_0x07 & 0x01) == 0x00) {
-                ESP_LOGI(TAG, "  ✅ 寄存器 0x07.bit0 = 0: 内部 MICBIAS 已禁用（正确）");
-                ESP_LOGI(TAG, "      麦克风使用外部 3.3V 供电");
+            if ((reg_0x07 & 0x01) == 0x01) {
+                ESP_LOGI(TAG, "  ✅ 寄存器 0x07.bit0 = 1: 内部 MICBIAS 已启用（正确）");
+                ESP_LOGI(TAG, "      驻极体麦克风需要MICBIAS偏置电压");
             } else {
-                ESP_LOGW(TAG, "  ⚠️  寄存器 0x07.bit0 = 1: 内部 MICBIAS 已启用（错误）");
-                ESP_LOGW(TAG, "      麦克风使用外部 3.3V 供电时，应禁用内部 MICBIAS");
+                ESP_LOGW(TAG, "  ⚠️  寄存器 0x07.bit0 = 0: 内部 MICBIAS 已禁用（错误）");
+                ESP_LOGW(TAG, "      驻极体麦克风需要MICBIAS才能正常工作");
             }
             
             // 分析 0x09
@@ -493,13 +493,16 @@ DualI2sAudioCodec::DualI2sAudioCodec(
             // 寄存器 0x07 (PWR_CTRL2): bit0 控制 MICBIAS
             // bit0=0: MICBIAS 禁用（使用外部 3.3V 供电）
             // bit0=1: MICBIAS 使能（使用内部 BIAS）
+            // 
+            // ⚠️ 重要修复：驻极体麦克风需要MICBIAS偏置电压才能工作！
+            // 即使VCC独立供电，麦克风内部FET仍需要MICBIAS提供偏置
             ESP_LOGI(TAG, "");
             ESP_LOGI(TAG, "  🔧 配置寄存器 0x07 (PWR_CTRL2): MICBIAS 控制");
-            ESP_LOGI(TAG, "     说明: 麦克风使用外部 3.3V 独立供电，禁用内部 MICBIAS");
-            uint8_t reg_0x07_data[2] = {0x07, 0x00};  // bit0=0 禁用内部 MICBIAS
+            ESP_LOGI(TAG, "     说明: 启用内部 MICBIAS 为驻极体麦克风提供偏置电压");
+            uint8_t reg_0x07_data[2] = {0x07, 0x21};  // bit0=1 启用 MICBIAS, bit5=1 设置2.5V偏置
             ret = i2c_master_transmit(dev_handle, reg_0x07_data, 2, 1000);
             if (ret == ESP_OK) {
-                ESP_LOGI(TAG, "     ✅ 写入成功: 0x07 = 0x00 (内部 MICBIAS 已禁用，使用外部供电)");
+                ESP_LOGI(TAG, "     ✅ 写入成功: 0x07 = 0x21 (内部 MICBIAS 已启用，2.5V偏置)");
             } else {
                 ESP_LOGE(TAG, "     ❌ 写入失败: %s", esp_err_to_name(ret));
             }
@@ -578,11 +581,11 @@ DualI2sAudioCodec::DualI2sAudioCodec(
                 ESP_LOGI(TAG, "  ✅ 寄存器 0x08 验证成功: 0x10 (ADC 已上电)");
             }
             
-            if (verify_0x07 != 0x00) {
-                ESP_LOGW(TAG, "  ⚠️  寄存器 0x07 验证失败: 期望 0x00, 实际 0x%02X", verify_0x07);
+            if (verify_0x07 != 0x21) {
+                ESP_LOGW(TAG, "  ⚠️  寄存器 0x07 验证失败: 期望 0x21, 实际 0x%02X", verify_0x07);
                 config_ok = false;
             } else {
-                ESP_LOGI(TAG, "  ✅ 寄存器 0x07 验证成功: 0x00 (MICBIAS 已禁用，使用外部供电)");
+                ESP_LOGI(TAG, "  ✅ 寄存器 0x07 验证成功: 0x21 (MICBIAS 已启用，2.5V偏置)");
             }
             
             if (verify_0x09 != 0x0C) {
@@ -596,7 +599,7 @@ DualI2sAudioCodec::DualI2sAudioCodec(
             
             ESP_LOGI(TAG, "");
             if (config_ok) {
-                ESP_LOGI(TAG, "✅ ES7210 寄存器配置完成（针对外部 3.3V 供电麦克风）");
+                ESP_LOGI(TAG, "✅ ES7210 寄存器配置完成（MICBIAS已启用，支持驻极体麦克风）");
                 ESP_LOGI(TAG, "💡 现在应该可以正常采集麦克风信号了");
             } else {
                 ESP_LOGW(TAG, "⚠️  ES7210 寄存器配置存在异常，请检查上述警告");
