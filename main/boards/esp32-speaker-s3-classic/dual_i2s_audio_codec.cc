@@ -363,8 +363,8 @@ DualI2sAudioCodec::DualI2sAudioCodec(
     ESP_LOGI(TAG, "╔════════════════════════════════════════╗");
     ESP_LOGI(TAG, "║   🔧 配置 ES7210 MICBIAS 寄存器       ║");
     ESP_LOGI(TAG, "╚════════════════════════════════════════╝");
-    ESP_LOGI(TAG, "💡 硬件说明：驻极体麦克风需要MICBIAS偏置电压");
-    ESP_LOGI(TAG, "💡 启用 ES7210 内部 MICBIAS (2.5V)");
+    ESP_LOGI(TAG, "💡 硬件说明：AP2718AT MEMS 麦克风");
+    ESP_LOGI(TAG, "💡 MEMS 自带内部偏置，禁用 ES7210 MICBIAS");
     ESP_LOGI(TAG, "");
     
     // 创建 I2C 设备句柄用于写入寄存器
@@ -430,12 +430,12 @@ DualI2sAudioCodec::DualI2sAudioCodec(
             }
             
             // 分析 0x07
-            if ((reg_0x07 & 0x01) == 0x01) {
-                ESP_LOGI(TAG, "  ✅ 寄存器 0x07.bit0 = 1: 内部 MICBIAS 已启用（正确）");
-                ESP_LOGI(TAG, "      驻极体麦克风需要MICBIAS偏置电压");
+            if ((reg_0x07 & 0x01) == 0x00) {
+                ESP_LOGI(TAG, "  ✅ 寄存器 0x07.bit0 = 0: 内部 MICBIAS 已禁用（正确）");
+                ESP_LOGI(TAG, "      AP2718AT MEMS 麦克风自带内部偏置，不需要 MICBIAS");
             } else {
-                ESP_LOGW(TAG, "  ⚠️  寄存器 0x07.bit0 = 0: 内部 MICBIAS 已禁用（错误）");
-                ESP_LOGW(TAG, "      驻极体麦克风需要MICBIAS才能正常工作");
+                ESP_LOGW(TAG, "  ⚠️  寄存器 0x07.bit0 = 1: 内部 MICBIAS 已启用（不需要）");
+                ESP_LOGW(TAG, "      MEMS 麦克风通常不需要外部 MICBIAS");
             }
             
             // 分析 0x09
@@ -494,15 +494,15 @@ DualI2sAudioCodec::DualI2sAudioCodec(
             // bit0=0: MICBIAS 禁用（使用外部 3.3V 供电）
             // bit0=1: MICBIAS 使能（使用内部 BIAS）
             // 
-            // ⚠️ 重要修复：驻极体麦克风需要MICBIAS偏置电压才能工作！
-            // 即使VCC独立供电，麦克风内部FET仍需要MICBIAS提供偏置
+            // ⚠️ AP2718AT 是 MEMS 麦克风，内部已有偏置电路，不需要外部 MICBIAS
+            // 规格：1.6V-3.6V 独立供电，-42dBV/Pa，57dB SNR
             ESP_LOGI(TAG, "");
             ESP_LOGI(TAG, "  🔧 配置寄存器 0x07 (PWR_CTRL2): MICBIAS 控制");
-            ESP_LOGI(TAG, "     说明: 启用内部 MICBIAS 为驻极体麦克风提供偏置电压");
-            uint8_t reg_0x07_data[2] = {0x07, 0x21};  // bit0=1 启用 MICBIAS, bit5=1 设置2.5V偏置
+            ESP_LOGI(TAG, "     说明: AP2718AT MEMS 麦克风不需要 MICBIAS（内部自带偏置）");
+            uint8_t reg_0x07_data[2] = {0x07, 0x00};  // bit0=0 禁用 MICBIAS
             ret = i2c_master_transmit(dev_handle, reg_0x07_data, 2, 1000);
             if (ret == ESP_OK) {
-                ESP_LOGI(TAG, "     ✅ 写入成功: 0x07 = 0x21 (内部 MICBIAS 已启用，2.5V偏置)");
+                ESP_LOGI(TAG, "     ✅ 写入成功: 0x07 = 0x00 (MICBIAS 已禁用，MEMS 独立供电)");
             } else {
                 ESP_LOGE(TAG, "     ❌ 写入失败: %s", esp_err_to_name(ret));
             }
@@ -581,11 +581,11 @@ DualI2sAudioCodec::DualI2sAudioCodec(
                 ESP_LOGI(TAG, "  ✅ 寄存器 0x08 验证成功: 0x10 (ADC 已上电)");
             }
             
-            if (verify_0x07 != 0x21) {
-                ESP_LOGW(TAG, "  ⚠️  寄存器 0x07 验证失败: 期望 0x21, 实际 0x%02X", verify_0x07);
+            if (verify_0x07 != 0x00) {
+                ESP_LOGW(TAG, "  ⚠️  寄存器 0x07 验证失败: 期望 0x00, 实际 0x%02X", verify_0x07);
                 config_ok = false;
             } else {
-                ESP_LOGI(TAG, "  ✅ 寄存器 0x07 验证成功: 0x21 (MICBIAS 已启用，2.5V偏置)");
+                ESP_LOGI(TAG, "  ✅ 寄存器 0x07 验证成功: 0x00 (MICBIAS 已禁用，MEMS 独立供电)");
             }
             
             if (verify_0x09 != 0x0C) {
@@ -599,7 +599,7 @@ DualI2sAudioCodec::DualI2sAudioCodec(
             
             ESP_LOGI(TAG, "");
             if (config_ok) {
-                ESP_LOGI(TAG, "✅ ES7210 寄存器配置完成（MICBIAS已启用，支持驻极体麦克风）");
+                ESP_LOGI(TAG, "✅ ES7210 寄存器配置完成（针对 AP2718AT MEMS 麦克风）");
                 ESP_LOGI(TAG, "💡 现在应该可以正常采集麦克风信号了");
             } else {
                 ESP_LOGW(TAG, "⚠️  ES7210 寄存器配置存在异常，请检查上述警告");
