@@ -90,29 +90,26 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // MultiNet Only Mode: 直接使用 MultiNet 作为唤醒模型
-    // 参考: /Users/xionghao/Documents/plaud/GitHub/esp-sr-multinet
+    // MultiNet6 使用 Grapheme（字形）格式，推荐全大写
+    // 参考: https://docs.espressif.com/projects/esp-sr/en/latest/esp32/speech_command_recognition/README.html
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     if (models_list == nullptr) {
         models_ = esp_srmodel_init("model");
-        language_ = "en";  // 使用英文模型（与参考项目一致）
-        threshold_ = 0.15;  // 进一步降低阈值，最大敏感度测试（推荐 0.5）
+        language_ = "en";  // 使用英文模型
+        threshold_ = 0.5;  // 推荐阈值 0.5（0.15 太敏感容易误触发）
         duration_ = 5000;  // 超时时间 5 秒
         
-        // 添加固定的唤醒词（使用 MultiNet 支持的简化格式）
-        // 规则：1) 不使用数字后缀  2) 不使用空格分隔  3) 使用自然拼写或简化音素
-        ESP_LOGI(TAG, "Loading built-in wake words (MultiNet compatible format), threshold=%.2f", threshold_);
+        // 添加固定的唤醒词（MultiNet6 格式：全大写标准拼写）
+        ESP_LOGI(TAG, "Loading built-in wake words (MultiNet6 format), threshold=%.2f", threshold_);
 
-        // "hi plaud" 唤醒词变体
-        // commands_.push_back({"hi PLAA1D", "hi plaud", "wake"});  // ❌ 包含数字后缀，MultiNet 不支持
-        commands_.push_back({"hi plaud", "hi plaud", "wake"});      // ✅ 标准拼写（推荐）
-        commands_.push_back({"hi PLaD", "hi plaud", "wake"});       // ✅ 音素变体 1
-        commands_.push_back({"hi PLeD", "hi plaud", "wake"});       // ✅ 音素变体 2
-        // commands_.push_back({"P L AA1 D", "hi plaud", "wake"});  // ❌ 空格分隔，MultiNet 不支持
-
-        // "hi nicebuild" 唤醒词变体
-        // commands_.push_back({"HH AY1 N AY1 S B IH0 L D", "hi nicebuild", "wake"}); // ❌ ARPAbet 格式，MultiNet 不支持
-        commands_.push_back({"hi nicebuild", "hi nicebuild", "wake"}); // ✅ 标准拼写（推荐）
-        commands_.push_back({"hi NgSgBcLD", "hi nicebuild", "wake"});  // ✅ 音素变体
+        // MultiNet6 正确格式：全大写字母，标准英文拼写
+        commands_.push_back({"HI PLAUD", "hi plaud", "wake"});
+        commands_.push_back({"HELLO PLAUD", "hello plaud", "wake"});
+        commands_.push_back({"HEY PLAUD", "hey plaud", "wake"});
+        
+        commands_.push_back({"HI NICEBUILD", "hi nicebuild", "wake"});
+        commands_.push_back({"HELLO NICEBUILD", "hello nicebuild", "wake"});
+        commands_.push_back({"HEY NICEBUILD", "hey nicebuild", "wake"});
 
     } else {
         models_ = models_list;
@@ -120,15 +117,17 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
         // 不从 assets 读取，确保行为一致
         ESP_LOGI(TAG, "Using built-in wake words (ignoring assets config)");
         language_ = "en";
-        threshold_ = 0.15;  // 进一步降低阈值，最大敏感度测试
+        threshold_ = 0.5;  // 推荐阈值
         duration_ = 5000;
-        commands_.push_back({"hi PLAA1D", "hi plaud", "wake"});
-        commands_.push_back({"hi PLaD", "hi plaud", "wake"});
-        commands_.push_back({"hi PLeD", "hi plaud", "wake"});
-        commands_.push_back({"P L AA1 D", "hi plaud", "wake"});
-
-        commands_.push_back({"HH AY1 N AY1 S B IH0 L D", "hi nicebuild", "wake"}); //
-        commands_.push_back({"hi NgSgBcLD", "hi nicebuild", "wake"});
+        
+        // MultiNet6 正确格式：全大写字母，标准英文拼写
+        commands_.push_back({"HI PLAUD", "hi plaud", "wake"});
+        commands_.push_back({"HELLO PLAUD", "hello plaud", "wake"});
+        commands_.push_back({"HEY PLAUD", "hey plaud", "wake"});
+        
+        commands_.push_back({"HI NICEBUILD", "hi nicebuild", "wake"});
+        commands_.push_back({"HELLO NICEBUILD", "hello nicebuild", "wake"});
+        commands_.push_back({"HEY NICEBUILD", "hey nicebuild", "wake"});
     }
 
     if (models_ == nullptr || models_->num == -1) {
@@ -168,22 +167,23 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
     ESP_LOGI(TAG, "MultiNet threshold set to: %.2f", threshold_);
     
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 添加唤醒命令（使用 esp_mn_commands_add）
-    // 参考: esp-sr-multinet/main/blink_example_main.c: 202-218
+    // 添加唤醒命令（MultiNet6 使用 Grapheme 格式）
+    // MultiNet6 格式：全大写标准英文拼写，无需音素转换
+    // 参考: https://docs.espressif.com/projects/esp-sr/en/latest/esp32/speech_command_recognition/README.html#multinet6-customize-speech-commands
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     esp_mn_commands_clear();
     
-    ESP_LOGI(TAG, "Adding %d wake word commands:", commands_.size());
+    ESP_LOGI(TAG, "Adding %d wake word commands (MultiNet6 format):", commands_.size());
     for (int i = 0; i < commands_.size(); i++) {
         ESP_LOGI(TAG, "  [%d] command=\"%s\", text=\"%s\", action=\"%s\"", 
-                 i, 
+                 i + 1,  // MultiNet command ID 从 1 开始（0 保留）
                  commands_[i].command.c_str(),
                  commands_[i].text.c_str(), 
                  commands_[i].action.c_str());
         
-        // 添加命令（使用音素格式，例如: "hi PLeD"）
-        // 注意: command ID 从 0 开始（与参考项目一致）
-        esp_mn_commands_add(i, commands_[i].command.c_str());
+        // MultiNet6: 添加命令（Grapheme 格式，全大写）
+        // 注意: command ID 从 1 开始（0 保留给系统）
+        esp_mn_commands_add(i + 1, commands_[i].command.c_str());
     }
     
     // 更新命令到模型
@@ -200,7 +200,7 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
     }
 
     // 打印已添加的命令
-    ESP_LOGI(TAG, "✓ Successfully added %d commands to MultiNet", commands_.size());
+    ESP_LOGI(TAG, "✓ Successfully added %d commands to MultiNet6", commands_.size());
     esp_mn_commands_print();
     
     ESP_LOGI(TAG, "CustomWakeWord initialized successfully (MultiNet only mode)");
@@ -298,8 +298,10 @@ void CustomWakeWord::Feed(const std::vector<int16_t>& data) {
                      command_id, mn_result->prob[command_id]);
             
             // 检查命令 ID 是否有效
-            if (command_id >= 0 && command_id < commands_.size()) {
-                auto& command = commands_[command_id];
+            // 注意：MultiNet command ID 从 1 开始，我们的数组从 0 开始
+            int array_index = command_id - 1;
+            if (array_index >= 0 && array_index < commands_.size()) {
+                auto& command = commands_[array_index];
                 
                 ESP_LOGI(TAG, "  Command: %s, Text: %s, Action: %s",
                          command.command.c_str(),
@@ -319,8 +321,8 @@ void CustomWakeWord::Feed(const std::vector<int16_t>& data) {
                     }
                 }
             } else {
-                ESP_LOGW(TAG, "Invalid command ID: %d (total commands: %d)", 
-                         command_id, commands_.size());
+                ESP_LOGW(TAG, "Invalid command ID: %d (array index: %d, total commands: %d)", 
+                         command_id, array_index, commands_.size());
             }
         }
         
@@ -456,12 +458,13 @@ bool CustomWakeWord::UpdateCommands() {
     ESP_LOGI(TAG, "Adding %d wake word commands:", commands_.size());
     for (int i = 0; i < commands_.size(); i++) {
         ESP_LOGI(TAG, "  [%d] command=\"%s\", text=\"%s\", action=\"%s\"", 
-                 i, 
+                 i + 1,  // MultiNet command ID 从 1 开始
                  commands_[i].command.c_str(),
                  commands_[i].text.c_str(), 
                  commands_[i].action.c_str());
         
-        esp_mn_commands_add(i, commands_[i].command.c_str());
+        // MultiNet command ID 从 1 开始
+        esp_mn_commands_add(i + 1, commands_[i].command.c_str());
     }
     
     // 3. 更新命令到模型（运行时生效！）
