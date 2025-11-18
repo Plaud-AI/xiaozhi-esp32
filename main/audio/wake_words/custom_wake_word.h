@@ -44,7 +44,7 @@ private:
     model_iface_data_t* multinet_model_data_ = nullptr;
     srmodel_list_t *models_ = nullptr;
     char* mn_name_ = nullptr;
-    std::string language_ = "cn";
+    std::string language_ = "en";
     int duration_ = 3000;
     float threshold_ = 0.2;
     std::deque<Command> commands_;
