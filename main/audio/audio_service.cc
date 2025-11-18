@@ -479,8 +479,12 @@ void AudioService::EnableWakeWordDetection(bool enable) {
         xEventGroupSetBits(event_group_, AS_EVENT_WAKE_WORD_RUNNING);
         ESP_LOGI(TAG, "Wake word detection started, event bit set");
     } else {
-        wake_word_->Stop();
+        // 先清除事件位，让 AudioInputTask 停止 feed
         xEventGroupClearBits(event_group_, AS_EVENT_WAKE_WORD_RUNNING);
+        // 等待一小段时间，让 AudioInputTask 处理完最后的数据
+        vTaskDelay(pdMS_TO_TICKS(20));
+        // 再停止唤醒词检测（会清空 ringbuffer）
+        wake_word_->Stop();
         ESP_LOGI(TAG, "Wake word detection stopped");
     }
 }
