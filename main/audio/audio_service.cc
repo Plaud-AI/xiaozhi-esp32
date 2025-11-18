@@ -1,4 +1,5 @@
 #include "audio_service.h"
+#include "wake_word_manager.h"
 #include <esp_log.h>
 #include <cstring>
 
@@ -690,6 +691,23 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
     if (esp_srmodel_filter(models_list_, ESP_MN_PREFIX, NULL) != nullptr) {
         ESP_LOGI(TAG, "Creating CustomWakeWord (MN prefix found)");
         wake_word_ = std::make_unique<CustomWakeWord>();
+        
+        // 加载唤醒词配置并应用
+        auto& manager = WakeWordManager::GetInstance();
+        if (manager.LoadFromNVS()) {
+            ESP_LOGI(TAG, "Loaded %d wake words from NVS", manager.GetCount());
+            CustomWakeWord* custom_wake_word = dynamic_cast<CustomWakeWord*>(wake_word_.get());
+            if (custom_wake_word) {
+                manager.ApplyToCustomWakeWord(custom_wake_word);
+            }
+        } else {
+            ESP_LOGW(TAG, "No saved wake words, using defaults");
+            manager.ResetToDefault();
+            CustomWakeWord* custom_wake_word = dynamic_cast<CustomWakeWord*>(wake_word_.get());
+            if (custom_wake_word) {
+                manager.ApplyToCustomWakeWord(custom_wake_word);
+            }
+        }
     } else {
         ESP_LOGW(TAG, "MultiNet model not found in models list!");
         wake_word_ = nullptr;

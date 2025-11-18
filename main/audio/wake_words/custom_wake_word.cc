@@ -405,3 +405,43 @@ bool CustomWakeWord::GetWakeWordOpus(std::vector<uint8_t>& opus) {
     return true;
 }
 
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 动态命令管理接口实现
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+void CustomWakeWord::ClearCommands() {
+    commands_.clear();
+    ESP_LOGI(TAG, "Cleared all wake word commands");
+    
+    // 注意：MultiNet 命令在 Initialize() 时批量设置
+    // 清空命令后需要重新初始化才能生效
+    if (multinet_model_data_ != nullptr) {
+        ESP_LOGW(TAG, "Commands cleared, need to restart device to take effect");
+    }
+}
+
+void CustomWakeWord::AddCommand(const std::string& phoneme, 
+                                const std::string& text, 
+                                const std::string& action) {
+    commands_.push_back({phoneme, text, action});
+    ESP_LOGI(TAG, "Added command: phoneme='%s', text='%s', action='%s'", 
+             phoneme.c_str(), text.c_str(), action.c_str());
+    
+    // 注意：命令需要在 Initialize() 时通过 esp_mn_commands_add() 设置
+    // 运行时添加的命令需要重新初始化才能生效
+    if (multinet_model_data_ != nullptr) {
+        ESP_LOGW(TAG, "MultiNet already initialized, new command will take effect after restart");
+    }
+}
+
+void CustomWakeWord::SetThreshold(float threshold) {
+    threshold_ = threshold;
+    ESP_LOGI(TAG, "Set detection threshold to %.2f", threshold_);
+    
+    // 阈值可以立即更新（运行时生效）
+    if (multinet_ != nullptr && multinet_model_data_ != nullptr) {
+        multinet_->set_det_threshold(multinet_model_data_, threshold_);
+        ESP_LOGI(TAG, "Applied new threshold to MultiNet");
+    }
+}
+

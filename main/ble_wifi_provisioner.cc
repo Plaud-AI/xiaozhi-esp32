@@ -3,6 +3,7 @@
 #include "system_info.h"
 #include "settings.h"
 #include "clear_wifi_helper.h"
+#include "wake_word_manager.h"
 
 #include <esp_log.h>
 #include <esp_wifi.h>
@@ -224,6 +225,22 @@ void BLEWiFiProvisioner::HandleReceivedData(const std::string& data) {
         ESP_LOGI(TAG, "➜ 执行: 清除所有WiFi配置命令");
         std::string response = HandleClearWiFiCommand();
         SendResponse(response);
+    }
+    else if (cmd == "set_wake_words") {
+        ESP_LOGI(TAG, "➜ 执行: 设置唤醒词命令");
+        HandleSetWakeWordsCommand(root);
+    }
+    else if (cmd == "get_wake_words") {
+        ESP_LOGI(TAG, "➜ 执行: 获取唤醒词列表命令");
+        HandleGetWakeWordsCommand();
+    }
+    else if (cmd == "delete_wake_word") {
+        ESP_LOGI(TAG, "➜ 执行: 删除唤醒词命令");
+        HandleDeleteWakeWordCommand(root);
+    }
+    else if (cmd == "reset_wake_words") {
+        ESP_LOGI(TAG, "➜ 执行: 重置唤醒词命令");
+        HandleResetWakeWordsCommand();
     }
     else {
         ESP_LOGW(TAG, "⚠️  未知命令: %s", cmd.c_str());
@@ -856,5 +873,244 @@ void BLEWiFiProvisioner::SetProvisionFailureCallback(
     std::function<void(const std::string&)> callback) {
     provision_failure_callback_ = callback;
     ESP_LOGI(TAG, "✓ 配网失败回调已设置");
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 唤醒词管理命令处理
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+void BLEWiFiProvisioner::HandleSetWakeWordsCommand(cJSON* root) {
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "开始设置唤醒词");
+    
+    cJSON* data_item = cJSON_GetObjectItem(root, "data");
+    if (!data_item || !cJSON_IsObject(data_item)) {
+        ESP_LOGE(TAG, "❌ data 字段缺失或格式错误");
+        SendErrorResponse("set_wake_words", ERROR_JSON_PARSE_FAILED, "data字段缺失");
+        return;
+    }
+    
+    // 解析唤醒词列表
+    cJSON* words_array = cJSON_GetObjectItem(data_item, "words");
+    if (!words_array || !cJSON_IsArray(words_array)) {
+        ESP_LOGE(TAG, "❌ words 字段缺失或格式错误");
+        SendErrorResponse("set_wake_words", ERROR_JSON_PARSE_FAILED, "words字段缺失");
+        return;
+    }
+    
+    // 读取阈值（可选，默认 0.15）
+    float threshold = 0.15f;
+    cJSON* threshold_item = cJSON_GetObjectItem(data_item, "threshold");
+    if (threshold_item && cJSON_IsNumber(threshold_item)) {
+        threshold = threshold_item->valuedouble;
+    }
+    
+    // 读取替换标志（可选，默认 true）
+    bool replace = true;
+    cJSON* replace_item = cJSON_GetObjectItem(data_item, "replace");
+    if (replace_item && cJSON_IsBool(replace_item)) {
+        replace = cJSON_IsTrue(replace_item);
+    }
+    
+    // 解析每个唤醒词
+    std::vector<WakeWordConfig> wake_words;
+    cJSON* word_item = nullptr;
+    cJSON_ArrayForEach(word_item, words_array) {
+        if (!cJSON_IsObject(word_item)) {
+            ESP_LOGW(TAG, "⚠️  跳过无效的唤醒词条目（非对象）");
+            continue;
+        }
+        
+        cJSON* text = cJSON_GetObjectItem(word_item, "text");
+        cJSON* display = cJSON_GetObjectItem(word_item, "display");
+        cJSON* phonemes = cJSON_GetObjectItem(word_item, "phonemes");
+        
+        if (!text || !cJSON_IsString(text) || 
+            !phonemes || !cJSON_IsArray(phonemes)) {
+            ESP_LOGW(TAG, "⚠️  跳过无效的唤醒词条目（缺少必要字段）");
+            continue;
+        }
+        
+        WakeWordConfig config;
+        config.text = text->valuestring;
+        config.display = (display && cJSON_IsString(display)) ? 
+                         display->valuestring : config.text;
+        
+        // 解析音素数组
+        cJSON* phoneme_item = nullptr;
+        cJSON_ArrayForEach(phoneme_item, phonemes) {
+            if (cJSON_IsString(phoneme_item)) {
+                config.phonemes.push_back(phoneme_item->valuestring);
+            }
+        }
+        
+        if (config.phonemes.empty()) {
+            ESP_LOGW(TAG, "⚠️  跳过唤醒词 '%s'（音素列表为空）", config.text.c_str());
+            continue;
+        }
+        
+        wake_words.push_back(config);
+        ESP_LOGI(TAG, "✓ 解析唤醒词: %s (%d 个音素变体)", 
+                 config.text.c_str(), config.phonemes.size());
+    }
+    
+    // 应用配置
+    if (wake_words.empty()) {
+        ESP_LOGE(TAG, "❌ 没有有效的唤醒词");
+        SendErrorResponse("set_wake_words", -2, "音素列表为空");
+        return;
+    }
+    
+    auto& manager = WakeWordManager::GetInstance();
+    bool success = manager.SetWakeWords(wake_words, threshold, replace);
+    
+    if (success) {
+        ESP_LOGI(TAG, "✓ 唤醒词配置成功，共 %d 个", wake_words.size());
+        
+        // 构建响应
+        cJSON* response = cJSON_CreateObject();
+        cJSON_AddStringToObject(response, "cmd", "set_wake_words");
+        cJSON_AddStringToObject(response, "status", "success");
+        
+        cJSON* response_data = cJSON_CreateObject();
+        cJSON_AddStringToObject(response_data, "message", "唤醒词配置成功");
+        cJSON_AddNumberToObject(response_data, "count", wake_words.size());
+        cJSON_AddItemToObject(response, "data", response_data);
+        
+        char* json_str = cJSON_PrintUnformatted(response);
+        SendResponse(std::string(json_str));
+        free(json_str);
+        cJSON_Delete(response);
+    } else {
+        ESP_LOGE(TAG, "❌ 唤醒词配置失败");
+        SendErrorResponse("set_wake_words", -3, "NVS存储失败");
+    }
+    
+    ESP_LOGI(TAG, "========================================");
+}
+
+void BLEWiFiProvisioner::HandleGetWakeWordsCommand() {
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "获取唤醒词列表");
+    
+    auto& manager = WakeWordManager::GetInstance();
+    auto wake_words = manager.GetWakeWords();
+    
+    ESP_LOGI(TAG, "当前唤醒词数量: %d", wake_words.size());
+    
+    // 构建响应
+    cJSON* response = cJSON_CreateObject();
+    cJSON_AddStringToObject(response, "cmd", "get_wake_words");
+    cJSON_AddStringToObject(response, "status", "success");
+    
+    cJSON* response_data = cJSON_CreateObject();
+    
+    // 构建唤醒词数组
+    cJSON* words_array = cJSON_CreateArray();
+    for (const auto& word : wake_words) {
+        cJSON* word_obj = cJSON_CreateObject();
+        cJSON_AddStringToObject(word_obj, "text", word.text.c_str());
+        cJSON_AddStringToObject(word_obj, "display", word.display.c_str());
+        
+        cJSON* phonemes_array = cJSON_CreateArray();
+        for (const auto& phoneme : word.phonemes) {
+            cJSON_AddItemToArray(phonemes_array, cJSON_CreateString(phoneme.c_str()));
+        }
+        cJSON_AddItemToObject(word_obj, "phonemes", phonemes_array);
+        
+        cJSON_AddItemToArray(words_array, word_obj);
+    }
+    
+    cJSON_AddItemToObject(response_data, "words", words_array);
+    cJSON_AddNumberToObject(response_data, "threshold", manager.GetThreshold());
+    cJSON_AddNumberToObject(response_data, "count", wake_words.size());
+    
+    cJSON_AddItemToObject(response, "data", response_data);
+    
+    char* json_str = cJSON_PrintUnformatted(response);
+    SendResponse(std::string(json_str));
+    free(json_str);
+    cJSON_Delete(response);
+    
+    ESP_LOGI(TAG, "✓ 已发送唤醒词列表");
+    ESP_LOGI(TAG, "========================================");
+}
+
+void BLEWiFiProvisioner::HandleDeleteWakeWordCommand(cJSON* root) {
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "删除唤醒词");
+    
+    cJSON* data_item = cJSON_GetObjectItem(root, "data");
+    if (!data_item || !cJSON_IsObject(data_item)) {
+        ESP_LOGE(TAG, "❌ data 字段缺失或格式错误");
+        SendErrorResponse("delete_wake_word", ERROR_JSON_PARSE_FAILED, "data字段缺失");
+        return;
+    }
+    
+    cJSON* text_item = cJSON_GetObjectItem(data_item, "text");
+    if (!text_item || !cJSON_IsString(text_item)) {
+        ESP_LOGE(TAG, "❌ text 字段缺失或格式错误");
+        SendErrorResponse("delete_wake_word", ERROR_JSON_PARSE_FAILED, "text字段缺失");
+        return;
+    }
+    
+    std::string text = text_item->valuestring;
+    ESP_LOGI(TAG, "删除唤醒词: %s", text.c_str());
+    
+    auto& manager = WakeWordManager::GetInstance();
+    bool success = manager.DeleteWakeWord(text);
+    
+    if (success) {
+        ESP_LOGI(TAG, "✓ 唤醒词删除成功");
+        
+        cJSON* response = cJSON_CreateObject();
+        cJSON_AddStringToObject(response, "cmd", "delete_wake_word");
+        cJSON_AddStringToObject(response, "status", "success");
+        
+        cJSON* response_data = cJSON_CreateObject();
+        cJSON_AddStringToObject(response_data, "message", "唤醒词删除成功");
+        cJSON_AddItemToObject(response, "data", response_data);
+        
+        char* json_str = cJSON_PrintUnformatted(response);
+        SendResponse(std::string(json_str));
+        free(json_str);
+        cJSON_Delete(response);
+    } else {
+        ESP_LOGE(TAG, "❌ 唤醒词删除失败");
+        SendErrorResponse("delete_wake_word", -1, "唤醒词不存在");
+    }
+    
+    ESP_LOGI(TAG, "========================================");
+}
+
+void BLEWiFiProvisioner::HandleResetWakeWordsCommand() {
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "重置唤醒词为默认值");
+    
+    auto& manager = WakeWordManager::GetInstance();
+    bool success = manager.ResetToDefault();
+    
+    if (success) {
+        ESP_LOGI(TAG, "✓ 唤醒词重置成功");
+        
+        cJSON* response = cJSON_CreateObject();
+        cJSON_AddStringToObject(response, "cmd", "reset_wake_words");
+        cJSON_AddStringToObject(response, "status", "success");
+        
+        cJSON* response_data = cJSON_CreateObject();
+        cJSON_AddStringToObject(response_data, "message", "已恢复默认唤醒词");
+        cJSON_AddNumberToObject(response_data, "count", manager.GetCount());
+        cJSON_AddItemToObject(response, "data", response_data);
+        
+        char* json_str = cJSON_PrintUnformatted(response);
+        SendResponse(std::string(json_str));
+        free(json_str);
+        cJSON_Delete(response);
+    } else {
+        ESP_LOGE(TAG, "❌ 唤醒词重置失败");
+        SendErrorResponse("reset_wake_words", -3, "NVS存储失败");
+    }
+    
+    ESP_LOGI(TAG, "========================================");
 }
 

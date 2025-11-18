@@ -32,6 +32,12 @@ public:
     bool GetWakeWordOpus(std::vector<uint8_t>& opus);
     const std::string& GetLastDetectedWakeWord() const { return last_detected_wake_word_; }
 
+    // 动态命令管理接口（用于蓝牙配置）
+    void ClearCommands();
+    void AddCommand(const std::string& phoneme, const std::string& text, const std::string& action);
+    void SetThreshold(float threshold);
+    int GetCommandCount() const { return commands_.size(); }
+
 private:
     struct Command {
         std::string command;

@@ -6,6 +6,9 @@
 #include <vector>
 #include "bluetooth_service.h"
 
+// 前向声明
+struct cJSON;
+
 /**
  * @brief BLE WiFi 配网处理器
  * 
@@ -111,6 +114,26 @@ private:
      * @brief 处理断开WiFi连接命令
      */
     void HandleDisconnectWiFiCommand();
+
+    /**
+     * @brief 处理设置唤醒词命令
+     */
+    void HandleSetWakeWordsCommand(cJSON* root);
+
+    /**
+     * @brief 处理获取唤醒词列表命令
+     */
+    void HandleGetWakeWordsCommand();
+
+    /**
+     * @brief 处理删除唤醒词命令
+     */
+    void HandleDeleteWakeWordCommand(cJSON* root);
+
+    /**
+     * @brief 处理重置唤醒词命令
+     */
+    void HandleResetWakeWordsCommand();
 
     /**
      * @brief 发送响应数据到手机
