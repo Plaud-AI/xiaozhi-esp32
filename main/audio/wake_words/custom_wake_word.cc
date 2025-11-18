@@ -98,16 +98,21 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
         threshold_ = 0.15;  // 进一步降低阈值，最大敏感度测试（推荐 0.5）
         duration_ = 5000;  // 超时时间 5 秒
         
-        // 添加固定的唤醒词（英文音素格式，与 esp-sr-multinet 项目相同）
-        ESP_LOGI(TAG, "Loading built-in wake words (English phoneme format), threshold=%.2f", threshold_);
+        // 添加固定的唤醒词（使用 MultiNet 支持的简化格式）
+        // 规则：1) 不使用数字后缀  2) 不使用空格分隔  3) 使用自然拼写或简化音素
+        ESP_LOGI(TAG, "Loading built-in wake words (MultiNet compatible format), threshold=%.2f", threshold_);
 
-        commands_.push_back({"hi PLAA1D", "hi plaud", "wake"});
-        commands_.push_back({"hi PLaD", "hi plaud", "wake"});
-        commands_.push_back({"hi PLeD", "hi plaud", "wake"});
-        commands_.push_back({"P L AA1 D", "hi plaud", "wake"});
+        // "hi plaud" 唤醒词变体
+        // commands_.push_back({"hi PLAA1D", "hi plaud", "wake"});  // ❌ 包含数字后缀，MultiNet 不支持
+        commands_.push_back({"hi plaud", "hi plaud", "wake"});      // ✅ 标准拼写（推荐）
+        commands_.push_back({"hi PLaD", "hi plaud", "wake"});       // ✅ 音素变体 1
+        commands_.push_back({"hi PLeD", "hi plaud", "wake"});       // ✅ 音素变体 2
+        // commands_.push_back({"P L AA1 D", "hi plaud", "wake"});  // ❌ 空格分隔，MultiNet 不支持
 
-        commands_.push_back({"HH AY1 N AY1 S B IH0 L D", "hi nicebuild", "wake"}); //
-        commands_.push_back({"hi NgSgBcLD", "hi nicebuild", "wake"});
+        // "hi nicebuild" 唤醒词变体
+        // commands_.push_back({"HH AY1 N AY1 S B IH0 L D", "hi nicebuild", "wake"}); // ❌ ARPAbet 格式，MultiNet 不支持
+        commands_.push_back({"hi nicebuild", "hi nicebuild", "wake"}); // ✅ 标准拼写（推荐）
+        commands_.push_back({"hi NgSgBcLD", "hi nicebuild", "wake"});  // ✅ 音素变体
 
     } else {
         models_ = models_list;
