@@ -1,0 +1,23 @@
+{
+  "template_id": "farewell_sad",
+  "version": "1.0",
+  "description": "伤心的告别动作",
+  "doll_id": "*",
+  "sequence": [
+    {
+      "type": "motion",
+      "name": "goodbye"
+    },
+    {
+      "type": "tts",
+      "text": "再见，主人，记得想我哦~",
+      "sync_led": true
+    },
+    {
+      "type": "led",
+      "effect": "fade_out",
+      "duration": 1000
+    }
+  ]
+}
+

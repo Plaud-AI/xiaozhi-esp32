@@ -1,5 +1,19 @@
 menu "Xiaozhi Assistant"
 
+config ENABLE_DOLL_INTERACTION
+    bool "Enable Doll Interaction Features"
+    default n
+    help
+        Enable hand-figure/doll interaction features including:
+        - NFC reader support
+        - Pressure sensor for doll detection
+        - Touch sensor support
+        - Motor controller for motions
+        - Motion engine and template system
+        
+        This feature is experimental and requires additional hardware.
+        If you don't have the hardware, keep this disabled.
+
 config OTA_URL
     string "Default OTA URL"
     default "http://34.221.190.98:8002/xiaozhi/ota/"

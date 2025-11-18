@@ -12,6 +12,12 @@
 #include "wake_word_manager.h"
 #include "audio/wake_words/custom_wake_word.h"
 
+#ifdef CONFIG_ENABLE_DOLL_INTERACTION
+#include "doll/doll_interaction_manager.h"
+#include "doll/doll_mcp_tools.h"
+#include "motor/motor_controller.h"
+#endif
+
 #include <cstring>
 #include <esp_log.h>
 #include <cJSON.h>
@@ -421,6 +427,12 @@ void Application::Start() {
     mcp_server.AddCommonTools();
     mcp_server.AddUserOnlyTools();
 
+#ifdef CONFIG_ENABLE_DOLL_INTERACTION
+    // Register doll interaction MCP tools
+    RegisterDollMcpTools();
+    ESP_LOGI(TAG, "Doll interaction MCP tools registered");
+#endif
+
     if (ota.HasMqttConfig()) {
         protocol_ = std::make_unique<MqttProtocol>();
     } else if (ota.HasWebsocketConfig()) {
@@ -548,6 +560,21 @@ void Application::Start() {
         }
     });
     bool protocol_started = protocol_->Start();
+
+#ifdef CONFIG_ENABLE_DOLL_INTERACTION
+    // Initialize and start doll interaction system
+    ESP_LOGI(TAG, "Initializing doll interaction system...");
+    
+    // Initialize motor controller first
+    MotorController::GetInstance().Initialize();
+    MotorController::GetInstance().Start();
+    
+    // Initialize doll interaction manager
+    DollInteractionManager::GetInstance().Initialize();
+    DollInteractionManager::GetInstance().Start();
+    
+    ESP_LOGI(TAG, "Doll interaction system started successfully");
+#endif
 
     SystemInfo::PrintHeapStats();
     SetDeviceState(kDeviceStateIdle);

@@ -48,6 +48,31 @@ file(GLOB BOARD_COMMON_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/boards/common/*.cc)
 list(APPEND SOURCES ${BOARD_COMMON_SOURCES})
 list(APPEND INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/boards/common)
 
+# Add doll interaction modules if enabled
+if(CONFIG_ENABLE_DOLL_INTERACTION)
+    list(APPEND SOURCES
+        "doll/doll_service.cc"
+        "doll/nfc_reader.cc"
+        "doll/pressure_sensor.cc"
+        "doll/touch_sensor.cc"
+        "doll/doll_interaction_manager.cc"
+        "doll/doll_mcp_tools.cc"
+        "motor/motor_controller.cc"
+        "motor/motor.cc"
+        "motion/motion_engine.cc"
+        "template/template_manager.cc"
+        "template/template_parser.cc"
+        "template/template_executor.cc"
+    )
+    list(APPEND INCLUDE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}/doll
+        ${CMAKE_CURRENT_SOURCE_DIR}/motor
+        ${CMAKE_CURRENT_SOURCE_DIR}/motion
+        ${CMAKE_CURRENT_SOURCE_DIR}/template
+    )
+    message(STATUS "Doll interaction features enabled")
+endif()
+
 idf_build_get_property(build_components BUILD_COMPONENTS)
 # Function to find component dynamically by pattern
 function(find_component_by_pattern PATTERN COMPONENT_VAR PATH_VAR)
