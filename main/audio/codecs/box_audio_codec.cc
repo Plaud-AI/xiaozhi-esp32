@@ -3,6 +3,7 @@
 #include <esp_log.h>
 #include <driver/i2c_master.h>
 #include <driver/i2s_tdm.h>
+#include <cstring>
 
 #define TAG "BoxAudioCodec"
 
@@ -76,6 +77,11 @@ BoxAudioCodec::BoxAudioCodec(void* i2c_master_handle, int input_sample_rate, int
     dev_cfg.codec_if = in_codec_if_;
     input_dev_ = esp_codec_dev_new(&dev_cfg);
     assert(input_dev_ != NULL);
+
+    // 关键修复：在双工模式下，input_dev 和 output_dev 共享同一个 data_if_
+    // 防止 close 一个设备时禁用底层的 I2S 通道，影响另一个设备
+    esp_codec_set_disable_when_closed(output_dev_, false);
+    esp_codec_set_disable_when_closed(input_dev_, false);
 
     ESP_LOGI(TAG, "BoxAudioDevice initialized");
 }
@@ -244,15 +250,33 @@ void BoxAudioCodec::EnableOutput(bool enable) {
 }
 
 int BoxAudioCodec::Read(int16_t* dest, int samples) {
-    if (input_enabled_) {
-        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_read(input_dev_, (void*)dest, samples * sizeof(int16_t)));
+    std::lock_guard<std::mutex> lock(data_if_mutex_);
+    if (!input_enabled_) {
+        // 输入未启用，返回静音数据
+        memset(dest, 0, samples * sizeof(int16_t));
+        return samples;
+    }
+    
+    esp_err_t ret = esp_codec_dev_read(input_dev_, (void*)dest, samples * sizeof(int16_t));
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Read failed: %s (0x%x), input_enabled=%d", 
+                 esp_err_to_name(ret), ret, input_enabled_);
+        memset(dest, 0, samples * sizeof(int16_t));
     }
     return samples;
 }
 
 int BoxAudioCodec::Write(const int16_t* data, int samples) {
-    if (output_enabled_) {
-        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_write(output_dev_, (void*)data, samples * sizeof(int16_t)));
+    std::lock_guard<std::mutex> lock(data_if_mutex_);
+    if (!output_enabled_) {
+        // 输出未启用，静默丢弃数据
+        return samples;
+    }
+    
+    esp_err_t ret = esp_codec_dev_write(output_dev_, (void*)data, samples * sizeof(int16_t));
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Write failed: %s (0x%x), output_enabled=%d", 
+                 esp_err_to_name(ret), ret, output_enabled_);
     }
     return samples;
 }
