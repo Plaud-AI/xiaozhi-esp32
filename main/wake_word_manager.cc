@@ -299,12 +299,13 @@ bool WakeWordManager::ApplyToCustomWakeWord(CustomWakeWord* wake_word) {
         return false;
     }
     
+    ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "Applying %d wake words to CustomWakeWord", wake_words_.size());
     
-    // 清除现有命令
+    // 1. 清除现有命令
     wake_word->ClearCommands();
     
-    // 添加新命令
+    // 2. 添加新命令
     int total_phonemes = 0;
     for (const auto& word : wake_words_) {
         for (const auto& phoneme : word.phonemes) {
@@ -313,13 +314,20 @@ bool WakeWordManager::ApplyToCustomWakeWord(CustomWakeWord* wake_word) {
         }
     }
     
-    // 设置阈值
+    // 3. 设置阈值
     wake_word->SetThreshold(threshold_);
     
-    ESP_LOGI(TAG, "Applied %d phoneme variants (threshold=%.2f)", 
-             total_phonemes, threshold_);
+    // 4. 更新命令到 MultiNet（运行时生效！）
+    bool success = wake_word->UpdateCommands();
+    if (success) {
+        ESP_LOGI(TAG, "✓ Applied %d phoneme variants (threshold=%.2f) - RUNTIME UPDATE SUCCESS!", 
+                 total_phonemes, threshold_);
+    } else {
+        ESP_LOGW(TAG, "⚠️  Commands added but MultiNet update failed, will apply on next Initialize()");
+    }
+    ESP_LOGI(TAG, "========================================");
     
-    return true;
+    return success;
 }
 
 bool WakeWordManager::ValidateConfig(const WakeWordConfig& config) {

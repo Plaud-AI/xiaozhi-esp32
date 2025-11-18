@@ -9,6 +9,8 @@
 #include "mcp_server.h"
 #include "assets.h"
 #include "settings.h"
+#include "wake_word_manager.h"
+#include "audio/wake_words/custom_wake_word.h"
 
 #include <cstring>
 #include <esp_log.h>
@@ -895,4 +897,39 @@ void Application::SetAecMode(AecMode mode) {
 
 void Application::PlaySound(const std::string_view& sound) {
     audio_service_.PlaySound(sound);
+}
+
+bool Application::ApplyWakeWordConfig() {
+    ESP_LOGI(TAG, "Applying wake word configuration at runtime...");
+    
+    // 获取 CustomWakeWord 指针
+    auto* wake_word = audio_service_.GetWakeWord();
+    if (!wake_word) {
+        ESP_LOGW(TAG, "Wake word object is NULL");
+        return false;
+    }
+    
+    // 尝试转换为 CustomWakeWord
+    CustomWakeWord* custom_wake_word = dynamic_cast<CustomWakeWord*>(wake_word);
+    if (!custom_wake_word) {
+        ESP_LOGW(TAG, "Wake word is not CustomWakeWord type, runtime update not supported");
+        return false;
+    }
+    
+    // 加载配置并应用
+    auto& manager = WakeWordManager::GetInstance();
+    if (manager.LoadFromNVS()) {
+        ESP_LOGI(TAG, "Loaded %d wake words from NVS", manager.GetCount());
+        bool success = manager.ApplyToCustomWakeWord(custom_wake_word);
+        if (success) {
+            ESP_LOGI(TAG, "✓ Wake word configuration applied successfully at runtime!");
+            return true;
+        } else {
+            ESP_LOGE(TAG, "Failed to apply wake word configuration");
+            return false;
+        }
+    } else {
+        ESP_LOGW(TAG, "No saved wake words in NVS");
+        return false;
+    }
 }

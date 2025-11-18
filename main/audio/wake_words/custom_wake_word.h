@@ -36,6 +36,7 @@ public:
     void ClearCommands();
     void AddCommand(const std::string& phoneme, const std::string& text, const std::string& action);
     void SetThreshold(float threshold);
+    bool UpdateCommands();  // 批量更新命令到 MultiNet（运行时生效）
     int GetCommandCount() const { return commands_.size(); }
 
 private:

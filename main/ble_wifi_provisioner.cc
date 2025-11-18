@@ -4,6 +4,7 @@
 #include "settings.h"
 #include "clear_wifi_helper.h"
 #include "wake_word_manager.h"
+#include "application.h"
 
 #include <esp_log.h>
 #include <esp_wifi.h>
@@ -967,13 +968,24 @@ void BLEWiFiProvisioner::HandleSetWakeWordsCommand(cJSON* root) {
     if (success) {
         ESP_LOGI(TAG, "✓ 唤醒词配置成功，共 %d 个", wake_words.size());
         
+        // 立即应用配置（运行时生效，无需重启！）
+        bool applied = Application::GetInstance().ApplyWakeWordConfig();
+        
         // 构建响应
         cJSON* response = cJSON_CreateObject();
         cJSON_AddStringToObject(response, "cmd", "set_wake_words");
         cJSON_AddStringToObject(response, "status", "success");
         
         cJSON* response_data = cJSON_CreateObject();
-        cJSON_AddStringToObject(response_data, "message", "唤醒词配置成功");
+        if (applied) {
+            cJSON_AddStringToObject(response_data, "message", "唤醒词配置成功并已立即生效");
+            cJSON_AddBoolToObject(response_data, "runtime_applied", true);
+            ESP_LOGI(TAG, "✓✓✓ 唤醒词已立即生效，无需重启！");
+        } else {
+            cJSON_AddStringToObject(response_data, "message", "唤醒词配置成功，重启后生效");
+            cJSON_AddBoolToObject(response_data, "runtime_applied", false);
+            ESP_LOGW(TAG, "⚠️  唤醒词已保存，但运行时应用失败，请重启设备");
+        }
         cJSON_AddNumberToObject(response_data, "count", wake_words.size());
         cJSON_AddItemToObject(response, "data", response_data);
         
