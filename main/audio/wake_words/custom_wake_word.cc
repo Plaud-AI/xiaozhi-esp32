@@ -874,16 +874,22 @@ void CustomWakeWord::AudioDetectionTask() {
                     
                     if (command.action == "wake") {
                         last_detected_wake_word_ = command.text;
-                        running_ = false;
                         
                         ESP_LOGI(TAG, "✓✓✓ Wake word: \"%s\" (prob: %.3f, WITH AFE) ✓✓✓",
                                  last_detected_wake_word_.c_str(), best_prob);
                         ESP_LOGI(TAG, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
                         
-                        // 🔧 [关键修复] 清空 AFE Ringbuffer，防止重复触发
+                        // 🔧 [关键修复] 参考 AfeWakeWord：停止检测并清空所有状态
+                        // 必须先 Stop() 再回调，确保不会有新数据进入 buffer
+                        running_ = false;  // 设置标志（让循环停止处理新数据）
+                        
+                        // 立即清除事件位和清空 buffer（与 Stop() 相同的逻辑）
+                        if (event_group_) {
+                            xEventGroupClearBits(event_group_, 0x01);
+                        }
                         if (afe_iface_ && afe_data_) {
                             afe_iface_->reset_buffer(afe_data_);
-                            ESP_LOGI(TAG, "🔄 AFE buffer reset after wake word detection");
+                            ESP_LOGI(TAG, "🔄 AFE buffer reset after detection");
                         }
                         
                         if (wake_word_detected_callback_) {
