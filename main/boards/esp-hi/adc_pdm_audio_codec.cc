@@ -95,7 +95,7 @@ AdcPdmAudioCodec::AdcPdmAudioCodec(int input_sample_rate, int output_sample_rate
     codec_dev_cfg.data_if = i2s_data_if;
     output_dev_ = esp_codec_dev_new(&codec_dev_cfg);
 
-    output_volume_ = 100;
+    output_volume_ = 60;  // 默认音量 60%
     if(pa_ctl != GPIO_NUM_NC) {
         pa_ctrl_pin_ = pa_ctl;
         gpio_config_t io_conf = {};

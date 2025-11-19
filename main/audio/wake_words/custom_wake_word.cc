@@ -63,7 +63,7 @@ void CustomWakeWord::ParseWakenetModelConfig() {
             duration_ = duration->valueint;
         }
         if (cJSON_IsNumber(threshold)) {
-            threshold_ = threshold->valuedouble;
+            app_threshold_ = threshold->valuedouble;  // 从配置读取应用层阈值
         }
         if (cJSON_IsArray(commands)) {
             for (int i = 0; i < cJSON_GetArraySize(commands); i++) {
@@ -94,40 +94,58 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
     // 参考: https://docs.espressif.com/projects/esp-sr/en/latest/esp32/speech_command_recognition/README.html
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     if (models_list == nullptr) {
+        ESP_LOGI(TAG, "CustomWakeWord::Initialize1");
         models_ = esp_srmodel_init("model");
         language_ = "en";  // 使用英文模型
-        threshold_ = 0.30;  // 减少误触发（0.15 太低导致"你好"被识别为"hello"）
+        multinet_threshold_ = 0.05;  // MultiNet 内部阈值（低阈值让它总是返回结果）
+        app_threshold_ = 0.35;  // 应用层阈值（降低适应非标准发音，标准词可达0.6-0.8）
         duration_ = 5000;  // 超时时间 5 秒
-        
+
+        /*
         // 添加固定的唤醒词（MultiNet6 格式：全大写标准拼写）
-        ESP_LOGI(TAG, "Loading built-in wake words (MultiNet6 format), threshold=%.2f", threshold_);
+        ESP_LOGI(TAG, "Loading built-in wake words (MultiNet6 format)");
+        ESP_LOGI(TAG, "  MultiNet threshold=%.2f (internal, low to get all results)", multinet_threshold_);
+        ESP_LOGI(TAG, "  App threshold=%.2f (application layer filtering)", app_threshold_);
 
         // MultiNet6 正确格式：全大写字母，标准英文拼写
         commands_.push_back({"HI PLAUD", "hi plaud", "wake"});
         commands_.push_back({"HELLO PLAUD", "hello plaud", "wake"});
         commands_.push_back({"HEY PLAUD", "hey plaud", "wake"});
+     */
+
+        // ⚠️ 避免使用太多 "HI + 名字" 的相似模式，会导致混淆
+        // ⚠️ Tom/Jack/Lily/Lucy 音素相似，MultiNet6 很难区分
         
-        commands_.push_back({"HI NICEBUILD", "hi nicebuild", "wake"});
-        commands_.push_back({"HELLO NICEBUILD", "hello nicebuild", "wake"});
-        commands_.push_back({"HEY NICEBUILD", "hey nicebuild", "wake"});
+        // ✅ 推荐：使用差异明显的标准英文词
+       // commands_.push_back({"HELLO", "hello", "wake"});              // 单个标准词
+        //commands_.push_back({"WAKE UP", "wake up", "wake"});          // 标准短语  
+        //commands_.push_back({"OK READY", "ok ready", "wake"});        // 不同开头
+        
+        // 如果一定要用人名，只保留一个最常用的
+        // commands_.push_back({"HI LILY", "hi lily", "wake"});       // 单个名字
 
     } else {
+        ESP_LOGI(TAG, "CustomWakeWord::Initialize2  hit!!!!");
         models_ = models_list;
         // MultiNet Only 模式：始终使用代码中定义的默认唤醒词
         // 不从 assets 读取，确保行为一致
         ESP_LOGI(TAG, "Using built-in wake words (ignoring assets config)");
         language_ = "en";
-        threshold_ = 0.30;  // 减少误触发（0.15 太低导致"你好"被识别为"hello"）
+        multinet_threshold_ = 0.05;  // MultiNet 内部阈值（低阈值让它总是返回结果）
+        app_threshold_ = 0.35;  // 应用层阈值（机器标准发音测试：0.301-0.576，平均0.43）
         duration_ = 5000;
+       
+        // ⚠️ 避免使用太多 "HI + 名字" 的相似模式，会导致混淆
+        // ⚠️ Tom/Jack/Lily/Lucy 音素相似，MultiNet6 很难区分
         
-        // MultiNet6 正确格式：全大写字母，标准英文拼写
-        commands_.push_back({"HI PLAUD", "hi plaud", "wake"});
-        commands_.push_back({"HELLO PLAUD", "hello plaud", "wake"});
-        commands_.push_back({"HEY PLAUD", "hey plaud", "wake"});
+        // ✅ 推荐：使用差异明显的标准英文词
+        commands_.push_back({"HELLO", "hello", "wake"});              // 机器测试 prob=0.30-0.58
+        commands_.push_back({"WAKE UP", "wake up", "wake"});          // 标准短语，预期类似  
+        commands_.push_back({"OK READY", "ok ready", "wake"});        // 不同开头，增加选择
+        //commands_.push_back({"HI JACK", "hi jack", "wake"});         // 人名，识别率低 0.176
         
-        commands_.push_back({"HI NICEBUILD", "hi nicebuild", "wake"});
-        commands_.push_back({"HELLO NICEBUILD", "hello nicebuild", "wake"});
-        commands_.push_back({"HEY NICEBUILD", "hey nicebuild", "wake"});
+        // 如果一定要用人名，只保留一个最常用的
+        // commands_.push_back({"HI LILY", "hi lily", "wake"});       // 单个名字
     }
 
     if (models_ == nullptr || models_->num == -1) {
@@ -181,9 +199,10 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
     int sample_rate = multinet_->get_samp_rate(multinet_model_data_);
     ESP_LOGI(TAG, "MultiNet parameters: chunk_size=%d, sample_rate=%d", chunk_size, sample_rate);
     
-    // 设置检测阈值
-    multinet_->set_det_threshold(multinet_model_data_, threshold_);
-    ESP_LOGI(TAG, "MultiNet detection threshold set to: %.2f", threshold_);
+    // 设置 MultiNet 内部检测阈值（设置得很低，让它总是返回结果）
+    multinet_->set_det_threshold(multinet_model_data_, multinet_threshold_);
+    ESP_LOGI(TAG, "MultiNet internal threshold set to: %.2f", multinet_threshold_);
+    ESP_LOGI(TAG, "Application layer threshold: %.2f (for filtering)", app_threshold_);
     
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // 添加唤醒命令（MultiNet6 使用 Grapheme 格式）
@@ -308,7 +327,7 @@ void CustomWakeWord::Feed(const std::vector<int16_t>& data) {
         return;
     } 
     else if (mn_state == ESP_MN_STATE_DETECTED) {
-        // ✓ 检测到命令！
+        // ✓ MultiNet 返回了检测结果（但可能低于应用层阈值）
         esp_mn_results_t* mn_result = multinet_->get_results(multinet_model_data_);
         
         if (mn_result != NULL && mn_result->num > 0) {
@@ -316,8 +335,9 @@ void CustomWakeWord::Feed(const std::vector<int16_t>& data) {
             int command_id = mn_result->phrase_id[0];
             float best_prob = mn_result->prob[0];  // prob[0] 对应 phrase_id[0]
             
-            // 显示所有检测结果（按概率从大到小排列）
-            ESP_LOGI(TAG, "✓ MultiNet detection result (num=%d):", mn_result->num);
+            // 总是显示所有检测结果（方便调试阈值）
+            ESP_LOGI(TAG, "begin━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            ESP_LOGI(TAG, "📊 MultiNet detection result (num=%d):", mn_result->num);
             for (int i = 0; i < mn_result->num && i < 5; i++) {
                 int result_cmd_id = mn_result->phrase_id[i];
                 float result_prob = mn_result->prob[i];
@@ -334,9 +354,20 @@ void CustomWakeWord::Feed(const std::vector<int16_t>& data) {
                              i, result_cmd_id, result_prob);
                 }
             }
+            ESP_LOGI(TAG, "end━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
             
-            ESP_LOGI(TAG, "✓ Best match - Command ID: %d, Probability: %.3f", 
-                     command_id, best_prob);
+            // 应用层阈值过滤
+            if (best_prob < app_threshold_) {
+                ESP_LOGW(TAG, "⚠️  Probability %.3f < threshold %.2f, ignoring detection", 
+                         best_prob, app_threshold_);
+                ESP_LOGI(TAG, " 应用层过滤结束━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                multinet_->clean(multinet_model_data_);
+                return;
+            }
+            
+            ESP_LOGI(TAG, "✓ Best match - Command ID: %d, Probability: %.3f (>= %.2f)", 
+                     command_id, best_prob, app_threshold_);
             
             // 检查命令 ID 是否有效
             // 注意：MultiNet command ID 从 1 开始，我们的数组从 0 开始
@@ -356,6 +387,7 @@ void CustomWakeWord::Feed(const std::vector<int16_t>& data) {
                     
                     ESP_LOGI(TAG, "✓✓✓ Wake word detected: \"%s\" (probability: %.3f) ✓✓✓", 
                              last_detected_wake_word_.c_str(), best_prob);
+                    ESP_LOGI(TAG, "唤醒命中━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
                     
                     // 触发回调
                     if (wake_word_detected_callback_) {
@@ -475,14 +507,12 @@ void CustomWakeWord::AddCommand(const std::string& phoneme,
 }
 
 void CustomWakeWord::SetThreshold(float threshold) {
-    threshold_ = threshold;
-    ESP_LOGI(TAG, "Set detection threshold to %.2f", threshold_);
+    app_threshold_ = threshold;  // 设置应用层阈值
+    ESP_LOGI(TAG, "Set application layer threshold to %.2f", app_threshold_);
+    ESP_LOGI(TAG, "Note: MultiNet internal threshold remains at %.2f (low value to get all results)", multinet_threshold_);
     
-    // 阈值可以立即更新（运行时生效）
-    if (multinet_ != nullptr && multinet_model_data_ != nullptr) {
-        multinet_->set_det_threshold(multinet_model_data_, threshold_);
-        ESP_LOGI(TAG, "✓ Threshold applied to MultiNet immediately");
-    }
+    // 应用层阈值不需要更新到 MultiNet（我们在应用层过滤）
+    // MultiNet 内部阈值保持低值以获取所有检测结果
 }
 
 bool CustomWakeWord::UpdateCommands() {
