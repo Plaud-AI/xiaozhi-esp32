@@ -414,10 +414,13 @@ void CustomWakeWord::Stop() {
 }
 
 void CustomWakeWord::Feed(const std::vector<int16_t>& data) {
-    if (multinet_model_data_ == nullptr || !running_) {
-        return;
-    }
-
+    // 🔧 [优化] AFE 模式下不检查 running_
+    // 理由：
+    // 1. AFE 内部有 ringbuffer，可以随时接收数据
+    // 2. AudioDetectionTask 通过事件位和 running_ 控制消费
+    // 3. Stop() 会清空 buffer，不会积压数据
+    // 4. 参考 AfeWakeWord：Feed() 不检查任何状态
+    
     // 添加调试日志，证明 Feed 被调用
     static int feed_count = 0;
     if (++feed_count % 100 == 0) {
@@ -435,15 +438,17 @@ void CustomWakeWord::Feed(const std::vector<int16_t>& data) {
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 如果启用了 AFE，将数据送入 AFE 进行预处理
+    // AFE 模式：将数据送入 AFE 进行预处理
     // AFE 会在后台任务中处理，然后送给 MultiNet
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     if (use_afe_ && afe_data_ != nullptr && afe_iface_ != nullptr) {
         afe_iface_->feed(afe_data_, data.data());
-        return;  // AFE 模式下，不直接调用 MultiNet
+        return;
     }
 
-
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 非 AFE 模式（当前已禁用，保留代码框架）
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     return;
     ///////////////
 
