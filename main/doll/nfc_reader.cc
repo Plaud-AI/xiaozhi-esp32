@@ -6,6 +6,10 @@
 
 #define TAG "NfcReader"
 
+NfcReader::~NfcReader() {
+    // 默认析构函数
+}
+
 bool NfcReader::Initialize() {
     ESP_LOGI(TAG, "Initializing NFC Reader (simulation mode)");
 

@@ -14,7 +14,7 @@
 class NfcReader {
 public:
     NfcReader() = default;
-    virtual ~NfcReader() = default;
+    virtual ~NfcReader();
 
     // 初始化 NFC 硬件
     virtual bool Initialize();

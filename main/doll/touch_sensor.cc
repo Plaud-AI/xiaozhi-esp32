@@ -6,6 +6,10 @@
 
 #define TAG "TouchSensor"
 
+TouchSensor::~TouchSensor() {
+    // 默认析构函数
+}
+
 bool TouchSensor::Initialize() {
     ESP_LOGI(TAG, "Initializing Touch Sensor (simulation mode)");
 

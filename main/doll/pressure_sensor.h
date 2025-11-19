@@ -12,7 +12,7 @@
 class PressureSensor {
 public:
     PressureSensor() = default;
-    virtual ~PressureSensor() = default;
+    virtual ~PressureSensor();
 
     // 初始化传感器
     virtual bool Initialize();

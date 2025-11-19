@@ -31,6 +31,11 @@ void DollInteractionManager::Initialize() {
     // 加载手办配置
     LoadDollConfigs();
 
+    // 初始化所有依赖的服务（必须在 Start() 之前调用）
+    DollService::GetInstance().Initialize();
+    MotionEngine::GetInstance().Initialize();
+    TemplateManager::GetInstance().Initialize();
+
     // 设置 DollService 回调
     DollEventCallbacks callbacks;
     callbacks.on_doll_placed = [this](const std::string& doll_id) {
@@ -58,7 +63,7 @@ void DollInteractionManager::Start() {
     ESP_LOGI(TAG, "Starting DollInteractionManager...");
     running_ = true;
 
-    // 启动依赖的服务
+    // 启动依赖的服务（前提：所有服务已在 Initialize() 中初始化）
     DollService::GetInstance().Start();
     MotionEngine::GetInstance().Start();
     TemplateManager::GetInstance().Start();

@@ -6,6 +6,10 @@
 
 #define TAG "PressureSensor"
 
+PressureSensor::~PressureSensor() {
+    // 默认析构函数
+}
+
 bool PressureSensor::Initialize() {
     ESP_LOGI(TAG, "Initializing Pressure Sensor (simulation mode)");
 

@@ -14,7 +14,7 @@
 class TouchSensor {
 public:
     TouchSensor() = default;
-    virtual ~TouchSensor() = default;
+    virtual ~TouchSensor();
 
     // 初始化传感器
     virtual bool Initialize();
