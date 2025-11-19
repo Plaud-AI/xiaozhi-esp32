@@ -443,6 +443,10 @@ void CustomWakeWord::Feed(const std::vector<int16_t>& data) {
         return;  // AFE 模式下，不直接调用 MultiNet
     }
 
+
+    return;
+    ///////////////
+
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // 非 AFE 模式：直接使用 MultiNet 检测（原有逻辑）
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -887,18 +891,19 @@ void CustomWakeWord::AudioDetectionTask() {
                         if (event_group_) {
                             xEventGroupClearBits(event_group_, 0x01);
                         }
-                        if (afe_iface_ && afe_data_) {
-                            afe_iface_->reset_buffer(afe_data_);
-                            ESP_LOGI(TAG, "🔄 AFE buffer reset after detection");
-                        }
-                        
+                       
                         if (wake_word_detected_callback_) {
                             wake_word_detected_callback_(last_detected_wake_word_);
                         }
                     }
                 }
             }
+
             multinet_->clean(multinet_model_data_);
+            if (afe_iface_ && afe_data_) {
+                    afe_iface_->reset_buffer(afe_data_);
+                    ESP_LOGI(TAG, "🔄 AFE buffer reset after detection");
+            }
         }
         else if (mn_state == ESP_MN_STATE_TIMEOUT) {
             multinet_->clean(multinet_model_data_);
