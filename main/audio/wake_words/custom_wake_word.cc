@@ -156,16 +156,19 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
         //commands_.push_back({"HELLO FRIEND", "hello friend", "wake"}); // 双词：HELLO + 朋友
 
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        // ⚠️ 重要：注册多个唤醒词以降低误触发率
-        // 原理：Softmax 归一化会将概率分散到多个词，噪声匹配单个词的概率降低
-        // 例如：5 个词时，噪声匹配任意词的概率 ≈ 0.05-0.10（而不是 0.2-0.3）
+        // ⚠️ 重要：唤醒词数量的权衡
+        // - 1 个词：噪声概率高（0.2-0.3），容易误触发 ❌
+        // - 2-3 个词：平衡点，噪声概率降低（0.1-0.15），真实语音仍可识别 ✅
+        // - 5+ 个词：噪声概率很低（0.05-0.08），但真实语音概率也降低（0.2-0.3）❌
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         
         commands_.push_back({"HI COMPUTER", "hi computer", "wake"});     // 主唤醒词
         commands_.push_back({"HELLO ASSISTANT", "hello assistant", "wake"}); // 备用
-        commands_.push_back({"WAKE UP", "wake up", "wake"});             // 备用
-        commands_.push_back({"HEY DEVICE", "hey device", "wake"});       // 备用
-        commands_.push_back({"OK READY", "ok ready", "wake"});           // 备用  
+        commands_.push_back({"HEY DEVICE", "hey device", "wake"});       // 备用（用于测试）
+        
+        // 更多备选（如果需要进一步降低误触发率，可启用更多词）
+        //commands_.push_back({"WAKE UP", "wake up", "wake"});
+        //commands_.push_back({"OK READY", "ok ready", "wake"});  
         
         // 备选唤醒词（可根据需要启用）
         // commands_.push_back({"ASSISTANT", "assistant", "wake"});   // 单词：助手
@@ -825,7 +828,9 @@ void CustomWakeWord::AudioDetectionTask() {
                 
                 // 显示所有检测结果
                 ESP_LOGI(TAG, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-                ESP_LOGI(TAG, "📊 MultiNet result (WITH AFE): num=%d", mn_result->num);
+                ESP_LOGI(TAG, "📊 MultiNet result: num=%d, total_commands=%d", 
+                         mn_result->num, commands_.size());
+                
                 for (int i = 0; i < mn_result->num && i < 5; i++) {
                     int result_cmd_id = mn_result->phrase_id[i];
                     float result_prob = mn_result->prob[i];
@@ -838,6 +843,12 @@ void CustomWakeWord::AudioDetectionTask() {
                                  result_prob,
                                  (i == 0) ? "← BEST" : "");
                     }
+                }
+                
+                // 警告：如果返回结果少于注册词，说明其他词概率太低被 MultiNet 过滤
+                if (mn_result->num < commands_.size()) {
+                    ESP_LOGW(TAG, "  ⚠️ %d 个唤醒词被 MultiNet 过滤（概率太低 < MultiNet内部阈值）", 
+                             commands_.size() - mn_result->num);
                 }
                 
                 // 应用层阈值过滤
