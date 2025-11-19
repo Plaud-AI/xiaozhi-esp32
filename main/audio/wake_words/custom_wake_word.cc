@@ -161,12 +161,14 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
         // 测试策略：先用单个唤醒词测试，确认识别率后再添加其他词
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         
-        // 方案 A：只用一个唤醒词测试（推荐，排除混淆问题）
-        commands_.push_back({"HI DEVICE", "hi device", "wake"});         // 改为 HI（用户实际发音）
+        // 🔧 [测试] 使用 MultiNet 支持更好的唤醒词
+        // "COMPUTER" 是代码注释推荐的标准词，识别率应该更高
+        commands_.push_back({"COMPUTER", "computer", "wake"});           // 单词，MultiNet 支持好
         
-        // 方案 B：如果需要多个，选择音素差异大的（测试时取消注释）
-        // commands_.push_back({"OK SYSTEM", "ok system", "wake"});      // OK vs HEY 差异大
-        // commands_.push_back({"WAKE UP", "wake up", "wake"});          // 完全不同的模式
+        // 备选方案（如果 COMPUTER 效果好，可以取消注释测试其他词）
+        // commands_.push_back({"HI DEVICE", "hi device", "wake"});      // 之前测试的词（识别率低）
+        // commands_.push_back({"OK SYSTEM", "ok system", "wake"});
+        // commands_.push_back({"WAKE UP", "wake up", "wake"});
         
         // 原配置（导致"hi device"被识别成"hi computer"，已禁用）
         // commands_.push_back({"HI COMPUTER", "hi computer", "wake"});
@@ -857,6 +859,11 @@ void CustomWakeWord::AudioDetectionTask() {
                     ESP_LOGW(TAG, "⚠️ Probability %.3f < threshold %.2f", best_prob, app_threshold_);
                     ESP_LOGI(TAG, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
                     multinet_->clean(multinet_model_data_);
+                    // 🔧 [关键修复] 清空 AFE Ringbuffer，防止处理旧数据
+                    if (afe_iface_ && afe_data_) {
+                        afe_iface_->reset_buffer(afe_data_);
+                        ESP_LOGI(TAG, "🔄 AFE buffer reset to prevent stale data");
+                    }
                     continue;
                 }
                 
@@ -873,6 +880,12 @@ void CustomWakeWord::AudioDetectionTask() {
                                  last_detected_wake_word_.c_str(), best_prob);
                         ESP_LOGI(TAG, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
                         
+                        // 🔧 [关键修复] 清空 AFE Ringbuffer，防止重复触发
+                        if (afe_iface_ && afe_data_) {
+                            afe_iface_->reset_buffer(afe_data_);
+                            ESP_LOGI(TAG, "🔄 AFE buffer reset after wake word detection");
+                        }
+                        
                         if (wake_word_detected_callback_) {
                             wake_word_detected_callback_(last_detected_wake_word_);
                         }
@@ -883,6 +896,10 @@ void CustomWakeWord::AudioDetectionTask() {
         }
         else if (mn_state == ESP_MN_STATE_TIMEOUT) {
             multinet_->clean(multinet_model_data_);
+            // 🔧 [优化] 超时时也清空 AFE buffer，避免积压
+            if (afe_iface_ && afe_data_) {
+                afe_iface_->reset_buffer(afe_data_);
+            }
         }
     }
 }
