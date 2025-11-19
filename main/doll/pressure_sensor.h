@@ -1,6 +1,8 @@
 #ifndef PRESSURE_SENSOR_H
 #define PRESSURE_SENSOR_H
 
+#include <sdkconfig.h>
+
 #ifdef CONFIG_ENABLE_DOLL_INTERACTION
 
 /**
@@ -12,19 +14,19 @@
 class PressureSensor {
 public:
     PressureSensor() = default;
-    virtual ~PressureSensor();
+    ~PressureSensor() = default;
 
     // 初始化传感器
-    virtual bool Initialize();
+    bool Initialize();
 
     // 检测是否有压力（手办放置）
-    virtual bool IsPressed();
+    bool IsPressed();
 
     // 获取压力值（可选，用于调试和标定）
-    virtual int GetPressureValue();
+    int GetPressureValue();
 
     // 设置触发阈值
-    virtual void SetThreshold(int threshold);
+    void SetThreshold(int threshold);
 
 private:
     int threshold_ = 500; // 默认阈值
