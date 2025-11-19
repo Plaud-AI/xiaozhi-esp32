@@ -18,7 +18,7 @@ BoxAudioCodec::BoxAudioCodec(void* i2c_master_handle, int input_sample_rate, int
     input_channels_ = input_reference_ ? 2 : 1; // 输入通道数
     input_sample_rate_ = input_sample_rate;
     output_sample_rate_ = output_sample_rate;
-    input_gain_ = 42;  // 增加麦克风增益从 30 到 42（范围 0-47）
+    input_gain_ = 45;  // 进一步增加麦克风增益（范围 0-47，适用于远场识别）
     
     ESP_LOGI(TAG, "BoxAudioCodec constructor: input_sample_rate=%d, output_sample_rate=%d, input_reference=%d, input_channels=%d, input_gain=%d",
              input_sample_rate_, output_sample_rate_, input_reference_, input_channels_, input_gain_);

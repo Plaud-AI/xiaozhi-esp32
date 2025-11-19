@@ -4,7 +4,10 @@
 #include <esp_attr.h>
 #include <esp_mn_iface.h>
 #include <esp_mn_models.h>
+#include <esp_afe_sr_models.h>
 #include <model_path.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/event_groups.h>
 
 #include <deque>
 #include <string>
@@ -46,6 +49,12 @@ private:
         std::string action;
     };
 
+    // AFE (Audio Front-End) 相关成员 - 用于降噪、波束成形、AEC
+    esp_afe_sr_iface_t* afe_iface_ = nullptr;
+    esp_afe_sr_data_t* afe_data_ = nullptr;
+    EventGroupHandle_t event_group_ = nullptr;
+    bool use_afe_ = true;  // 是否使用 AFE 预处理（默认启用）
+
     // multinet 相关成员变量
     esp_mn_iface_t* multinet_ = nullptr;
     model_iface_data_t* multinet_model_data_ = nullptr;
@@ -72,6 +81,7 @@ private:
 
     void StoreWakeWordData(const std::vector<int16_t>& data);
     void ParseWakenetModelConfig();
+    void AudioDetectionTask();  // AFE + MultiNet 检测任务
 };
 
 #endif

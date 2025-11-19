@@ -15,9 +15,21 @@
 
 CustomWakeWord::CustomWakeWord()
     : wake_word_pcm_(), wake_word_opus_() {
+    event_group_ = xEventGroupCreate();
 }
 
 CustomWakeWord::~CustomWakeWord() {
+    // 清理 AFE
+    if (afe_data_ != nullptr && afe_iface_ != nullptr) {
+        afe_iface_->destroy(afe_data_);
+        afe_data_ = nullptr;
+    }
+    
+    if (event_group_ != nullptr) {
+        vEventGroupDelete(event_group_);
+    }
+    
+    // 清理 MultiNet
     if (multinet_model_data_ != nullptr && multinet_ != nullptr) {
         multinet_->destroy(multinet_model_data_);
         multinet_model_data_ = nullptr;
@@ -140,8 +152,20 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
         // ⚠️ Tom/Jack/Lily/Lucy 音素相似，MultiNet6 很难区分
         
         // ✅ 推荐：标准英文唤醒词（音素清晰，好发音，不易误触发）
-        //commands_.push_back({"HI ASSISTANT", "hi assistant", "wake"});        // 单词：常用词，3音节
-        commands_.push_back({"HI JASON", "hello jason", "wake"}); // 双词：HELLO + 朋友
+        //commands_.push_back({"COMPUTER", "computer", "wake"});        // 单词：常用词，3音节
+        //commands_.push_back({"HELLO FRIEND", "hello friend", "wake"}); // 双词：HELLO + 朋友
+
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        // ⚠️ 重要：注册多个唤醒词以降低误触发率
+        // 原理：Softmax 归一化会将概率分散到多个词，噪声匹配单个词的概率降低
+        // 例如：5 个词时，噪声匹配任意词的概率 ≈ 0.05-0.10（而不是 0.2-0.3）
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        
+        commands_.push_back({"HI COMPUTER", "hi computer", "wake"});     // 主唤醒词
+        commands_.push_back({"HELLO ASSISTANT", "hello assistant", "wake"}); // 备用
+        commands_.push_back({"WAKE UP", "wake up", "wake"});             // 备用
+        commands_.push_back({"HEY DEVICE", "hey device", "wake"});       // 备用
+        commands_.push_back({"OK READY", "ok ready", "wake"});           // 备用  
         
         // 备选唤醒词（可根据需要启用）
         // commands_.push_back({"ASSISTANT", "assistant", "wake"});   // 单词：助手
@@ -246,7 +270,113 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
     esp_mn_commands_print();
     ESP_LOGI(TAG, "========================================");
     
-    ESP_LOGI(TAG, "CustomWakeWord initialized successfully (MultiNet only mode)");
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 初始化 AFE (Audio Front-End) 用于降噪、波束成形、AEC
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    if (use_afe_) {
+        ESP_LOGI(TAG, "Initializing AFE for audio preprocessing...");
+        
+        int ref_num = codec_->input_reference() ? 1 : 0;
+        ESP_LOGI(TAG, "AFE config: input_channels=%d, ref_num=%d, input_reference=%d",
+                 codec_->input_channels(), ref_num, codec_->input_reference());
+        
+        // 构建输入格式字符串：M=麦克风，R=回放参考
+        std::string input_format;
+        for (int i = 0; i < codec_->input_channels() - ref_num; i++) {
+            input_format.push_back('M');
+        }
+        for (int i = 0; i < ref_num; i++) {
+            input_format.push_back('R');
+        }
+        ESP_LOGI(TAG, "AFE input format: \"%s\"", input_format.c_str());
+        
+        // 创建 AFE 配置（类型为 SR - 语音识别）
+        // ⚠️ 重要：传入 models_ 以便 AFE 加载 NS（降噪）等模型
+        afe_config_t* afe_config = afe_config_init(input_format.c_str(), models_, AFE_TYPE_SR, AFE_MODE_HIGH_PERF);
+        if (afe_config == nullptr) {
+            ESP_LOGE(TAG, "❌ Failed to init AFE config!");
+            return false;
+        }
+        
+        // 配置 AFE 参数
+        afe_config->aec_init = codec_->input_reference();  // 如果有回放参考，启用 AEC
+        afe_config->aec_mode = AEC_MODE_SR_HIGH_PERF;
+        afe_config->vad_init = true;   // 启用 VAD
+        afe_config->vad_mode = VAD_MODE_0;
+        afe_config->vad_min_noise_ms = 100;
+        
+        // 尝试从 models 中过滤 NS 和 VAD 模型（参考 AfeAudioProcessor）
+        char* ns_model_name = esp_srmodel_filter(models_, ESP_NSNET_PREFIX, NULL);
+        char* vad_model_name = esp_srmodel_filter(models_, ESP_VADN_PREFIX, NULL);
+        
+        if (ns_model_name != nullptr) {
+            ESP_LOGI(TAG, "Found NS model: %s", ns_model_name);
+            afe_config->ns_init = true;
+            afe_config->ns_model_name = ns_model_name;
+            afe_config->afe_ns_mode = AFE_NS_MODE_NET;  // 使用神经网络降噪
+        } else {
+            ESP_LOGI(TAG, "NS model not found, disabling NS");
+            afe_config->ns_init = false;  // 如果没有 NS 模型，禁用降噪
+        }
+        
+        if (vad_model_name != nullptr) {
+            ESP_LOGI(TAG, "Found VAD model: %s", vad_model_name);
+            afe_config->vad_model_name = vad_model_name;
+        }
+        
+        afe_config->agc_init = false;  // 不启用 AGC（音频增益已在 codec 层设置）
+        afe_config->afe_perferred_core = 1;
+        afe_config->afe_perferred_priority = 1;
+        afe_config->memory_alloc_mode = AFE_MEMORY_ALLOC_MORE_PSRAM;
+        
+        ESP_LOGI(TAG, "AFE features: AEC=%d, VAD=%d, NS=%d", 
+                 afe_config->aec_init, afe_config->vad_init, afe_config->ns_init);
+        
+        // 创建 AFE 接口
+        afe_iface_ = esp_afe_handle_from_config(afe_config);
+        if (afe_iface_ == nullptr) {
+            ESP_LOGE(TAG, "❌ Failed to get AFE interface handle!");
+            return false;
+        }
+        
+        // 创建 AFE 数据实例
+        afe_data_ = afe_iface_->create_from_config(afe_config);
+        if (afe_data_ == nullptr) {
+            ESP_LOGE(TAG, "❌ Failed to create AFE data from config!");
+            return false;
+        }
+        
+        ESP_LOGI(TAG, "✓ AFE initialized: feed_size=%d, fetch_size=%d", 
+                 afe_iface_->get_feed_chunksize(afe_data_),
+                 afe_iface_->get_fetch_chunksize(afe_data_));
+        
+        // 创建音频检测任务（AFE + MultiNet）
+        // 使用 xTaskCreatePinnedToCore 指定核心 1（AFE 也在核心 1）
+        BaseType_t task_created = xTaskCreatePinnedToCore(
+            [](void* arg) {
+                auto this_ = (CustomWakeWord*)arg;
+                this_->AudioDetectionTask();
+                vTaskDelete(NULL);
+            }, 
+            "wake_det",     // 任务名（缩短以节省内存）
+            4096,           // 栈大小 4KB（足够了，AFE fetch 不需要太多栈）
+            this,           // 参数
+            5,              // 优先级（与 AFE 任务相同）
+            nullptr,        // 任务句柄
+            1               // 核心 1（与 AFE 在同一核心）
+        );
+        
+        if (task_created != pdPASS) {
+            ESP_LOGE(TAG, "❌ Failed to create audio detection task! (out of memory?)");
+            ESP_LOGI(TAG, "Available heap: %d bytes", esp_get_free_heap_size());
+            return false;
+        }
+        ESP_LOGI(TAG, "✓ Audio detection task created on core 1");
+    } else {
+        ESP_LOGI(TAG, "AFE disabled, using raw audio input");
+    }
+    
+    ESP_LOGI(TAG, "CustomWakeWord initialized successfully");
     return true;
 }
 
@@ -256,10 +386,19 @@ void CustomWakeWord::OnWakeWordDetected(std::function<void(const std::string& wa
 
 void CustomWakeWord::Start() {
     running_ = true;
+    if (use_afe_ && event_group_ != nullptr) {
+        xEventGroupSetBits(event_group_, 0x01);  // 启动 AFE 检测任务
+    }
 }
 
 void CustomWakeWord::Stop() {
     running_ = false;
+    if (use_afe_ && event_group_ != nullptr) {
+        xEventGroupClearBits(event_group_, 0x01);  // 停止 AFE 检测任务
+        if (afe_data_ != nullptr && afe_iface_ != nullptr) {
+            afe_iface_->reset_buffer(afe_data_);  // 重置 AFE 缓冲区
+        }
+    }
 }
 
 void CustomWakeWord::Feed(const std::vector<int16_t>& data) {
@@ -284,8 +423,16 @@ void CustomWakeWord::Feed(const std::vector<int16_t>& data) {
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // MultiNet Only Mode: 直接使用 MultiNet 检测（不依赖 WakeNet）
-    // 参考: esp-sr-multinet/main/blink_example_main.c: 114-143
+    // 如果启用了 AFE，将数据送入 AFE 进行预处理
+    // AFE 会在后台任务中处理，然后送给 MultiNet
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    if (use_afe_ && afe_data_ != nullptr && afe_iface_ != nullptr) {
+        afe_iface_->feed(afe_data_, data.data());
+        return;  // AFE 模式下，不直接调用 MultiNet
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 非 AFE 模式：直接使用 MultiNet 检测（原有逻辑）
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     esp_mn_state_t mn_state;
     
@@ -415,6 +562,12 @@ void CustomWakeWord::Feed(const std::vector<int16_t>& data) {
 }
 
 size_t CustomWakeWord::GetFeedSize() {
+    // 如果启用了 AFE，返回 AFE 的 feed size
+    if (use_afe_ && afe_data_ != nullptr && afe_iface_ != nullptr) {
+        return afe_iface_->get_feed_chunksize(afe_data_);
+    }
+    
+    // 否则返回 MultiNet 的 chunk size
     if (multinet_model_data_ == nullptr) {
         return 0;
     }
@@ -561,5 +714,164 @@ bool CustomWakeWord::UpdateCommands() {
     ESP_LOGI(TAG, "========================================");
     
     return true;
+}
+
+
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// AudioDetectionTask: AFE + MultiNet 集成检测任务
+// 从 AFE 获取处理后的干净音频，然后送给 MultiNet 进行唤醒词检测
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+void CustomWakeWord::AudioDetectionTask() {
+    ESP_LOGI(TAG, "AudioDetectionTask started (AFE + MultiNet mode)");
+    
+    if (afe_iface_ == nullptr || afe_data_ == nullptr) {
+        ESP_LOGE(TAG, "AFE not initialized, task exiting!");
+        return;
+    }
+    
+    auto fetch_size = afe_iface_->get_fetch_chunksize(afe_data_);
+    auto feed_size = afe_iface_->get_feed_chunksize(afe_data_);
+    ESP_LOGI(TAG, "AFE parameters: feed_size=%d, fetch_size=%d", feed_size, fetch_size);
+    
+    int loop_count = 0;
+    while (true) {
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        // 等待检测启用信号（避免在未启用时持续 fetch 导致 ringbuffer empty）
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        EventBits_t bits = xEventGroupWaitBits(
+            event_group_, 
+            0x01,          // 等待 bit 0
+            pdFALSE,       // 不清除 bit
+            pdTRUE,        // 所有 bit 都满足
+            portMAX_DELAY  // 无限等待
+        );
+        
+        // 检查是否真正启用（double check）
+        if (!running_.load() || (bits & 0x01) == 0) {
+            vTaskDelay(pdMS_TO_TICKS(100));  // 短暂延迟后重试
+            continue;
+        }
+        
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        // 从 AFE 获取处理后的音频
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        afe_fetch_result_t* res = afe_iface_->fetch(afe_data_);
+        if (res == nullptr || res->ret_value == ESP_FAIL) {
+            ESP_LOGW(TAG, "AFE fetch failed (ringbuffer empty?), pausing detection...");
+            // AFE 数据不可用，清除 event bit 并重新等待
+            xEventGroupClearBits(event_group_, 0x01);
+            continue;
+        }
+        
+        // 每 100 次循环打印一次状态（调试用）
+        loop_count++;
+        if (loop_count % 100 == 0) {
+            bool is_running = running_.load();
+            ESP_LOGI(TAG, "AFE fetch loop %d: data_size=%d, vad_state=%d, running=%d",
+                     loop_count, res->data_size, res->vad_state, is_running);
+        }
+        
+        // 再次检查是否启用（可能在 fetch 期间被停止）
+        if (!running_.load()) {
+            continue;  // 丢弃数据并返回等待
+        }
+        
+        // 存储唤醒词数据（用于后续编码发送）
+        if (res->data && res->data_size > 0) {
+            std::vector<int16_t> audio_data(res->data, res->data + res->data_size / sizeof(int16_t));
+            StoreWakeWordData(audio_data);
+        }
+        
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        // VAD 过滤：如果 AFE 判断无语音，跳过 MultiNet 检测
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        if (res->vad_state == VAD_SILENCE) {
+            // VAD 判断为静音/噪声，跳过 MultiNet 检测以节省 CPU 和降低误触发
+            continue;
+        }
+        
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        // 将 AFE 处理后的音频送给 MultiNet 检测
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        if (multinet_ == nullptr || multinet_model_data_ == nullptr) {
+            continue;
+        }
+        
+        esp_mn_state_t mn_state = multinet_->detect(multinet_model_data_, res->data);
+        
+        // 调试：每 100 次显示一次状态
+        static int state_count = 0;
+        if (++state_count % 100 == 0) {
+            ESP_LOGI(TAG, "MultiNet state: %d (0=DETECTING, 1=DETECTED, 2=TIMEOUT), running=%d",
+                     mn_state, running_ ? 1 : 0);
+        }
+        
+        if (mn_state != ESP_MN_STATE_DETECTING) {
+            ESP_LOGI(TAG, "⚠️ MultiNet state changed to: %d (0=DETECTING, 1=DETECTED, 2=TIMEOUT)",
+                     mn_state);
+        }
+        
+        if (mn_state == ESP_MN_STATE_DETECTING) {
+            continue;  // 正在检测中
+        }
+        else if (mn_state == ESP_MN_STATE_DETECTED) {
+            // ✓ MultiNet 检测到命令
+            esp_mn_results_t* mn_result = multinet_->get_results(multinet_model_data_);
+            
+            if (mn_result != NULL && mn_result->num > 0) {
+                int command_id = mn_result->phrase_id[0];
+                float best_prob = mn_result->prob[0];
+                
+                // 显示所有检测结果
+                ESP_LOGI(TAG, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                ESP_LOGI(TAG, "📊 MultiNet result (WITH AFE): num=%d", mn_result->num);
+                for (int i = 0; i < mn_result->num && i < 5; i++) {
+                    int result_cmd_id = mn_result->phrase_id[i];
+                    float result_prob = mn_result->prob[i];
+                    int result_array_index = result_cmd_id - 1;
+                    
+                    if (result_array_index >= 0 && result_array_index < commands_.size()) {
+                        ESP_LOGI(TAG, "  [%d] ID=%d (%s): prob=%.3f %s",
+                                 i, result_cmd_id,
+                                 commands_[result_array_index].text.c_str(),
+                                 result_prob,
+                                 (i == 0) ? "← BEST" : "");
+                    }
+                }
+                
+                // 应用层阈值过滤
+                if (best_prob < app_threshold_) {
+                    ESP_LOGW(TAG, "⚠️ Probability %.3f < threshold %.2f", best_prob, app_threshold_);
+                    ESP_LOGI(TAG, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                    multinet_->clean(multinet_model_data_);
+                    continue;
+                }
+                
+                // 检查命令 ID 是否有效
+                int array_index = command_id - 1;
+                if (array_index >= 0 && array_index < commands_.size()) {
+                    auto& command = commands_[array_index];
+                    
+                    if (command.action == "wake") {
+                        last_detected_wake_word_ = command.text;
+                        running_ = false;
+                        
+                        ESP_LOGI(TAG, "✓✓✓ Wake word: \"%s\" (prob: %.3f, WITH AFE) ✓✓✓",
+                                 last_detected_wake_word_.c_str(), best_prob);
+                        ESP_LOGI(TAG, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                        
+                        if (wake_word_detected_callback_) {
+                            wake_word_detected_callback_(last_detected_wake_word_);
+                        }
+                    }
+                }
+            }
+            multinet_->clean(multinet_model_data_);
+        }
+        else if (mn_state == ESP_MN_STATE_TIMEOUT) {
+            multinet_->clean(multinet_model_data_);
+        }
+    }
 }
 
