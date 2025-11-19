@@ -398,13 +398,29 @@ void CustomWakeWord::Start() {
 }
 
 void CustomWakeWord::Stop() {
+    ESP_LOGI(TAG, "Stopping CustomWakeWord...");
     running_ = false;
+    
     if (use_afe_ && event_group_ != nullptr) {
-        xEventGroupClearBits(event_group_, 0x01);  // 停止 AFE 检测任务
+        // 1. 先清除事件位，通知 AudioDetectionTask 停止
+        xEventGroupClearBits(event_group_, 0x01);
+        
+        // 2. 重置 AFE 缓冲区，中断可能阻塞的 fetch()
         if (afe_data_ != nullptr && afe_iface_ != nullptr) {
-            afe_iface_->reset_buffer(afe_data_);  // 重置 AFE 缓冲区
+            afe_iface_->reset_buffer(afe_data_);
+        }
+        
+        // 3. 等待一小段时间，让 AudioDetectionTask 真正停止
+        //    确保它不再阻塞在 fetch() 中
+        vTaskDelay(pdMS_TO_TICKS(50));
+        
+        // 4. 再次重置缓冲区（以防万一）
+        if (afe_data_ != nullptr && afe_iface_ != nullptr) {
+            afe_iface_->reset_buffer(afe_data_);
         }
     }
+    
+    ESP_LOGI(TAG, "CustomWakeWord stopped");
 }
 
 void CustomWakeWord::Feed(const std::vector<int16_t>& data) {
@@ -760,13 +776,12 @@ void CustomWakeWord::AudioDetectionTask() {
         }
         
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        // 从 AFE 获取处理后的音频
+        // 从 AFE 获取处理后的音频（使用超时，避免永久阻塞）
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        afe_fetch_result_t* res = afe_iface_->fetch(afe_data_);
+        afe_fetch_result_t* res = afe_iface_->fetch_with_delay(afe_data_, pdMS_TO_TICKS(100));
         if (res == nullptr || res->ret_value == ESP_FAIL) {
-            ESP_LOGW(TAG, "AFE fetch failed (ringbuffer empty?), pausing detection...");
-            // AFE 数据不可用，清除 event bit 并重新等待
-            xEventGroupClearBits(event_group_, 0x01);
+            // AFE 数据不可用（可能已经 Stop 或 ringbuffer 空）
+            // 不打印日志（避免日志刷屏），直接继续等待
             continue;
         }
         
