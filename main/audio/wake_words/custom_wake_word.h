@@ -54,7 +54,7 @@ private:
     std::string language_ = "en";
     int duration_ = 3000;
     float multinet_threshold_ = 0.05;  // MultiNet 内部阈值（低阈值获取所有结果）
-    float app_threshold_ = 0.35;       // 应用层阈值（实际触发控制）
+    float app_threshold_ = 0.30;       // 应用层阈值（实际触发控制）
     std::deque<Command> commands_;
  
     std::function<void(const std::string& wake_word)> wake_word_detected_callback_;

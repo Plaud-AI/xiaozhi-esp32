@@ -98,7 +98,7 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
         models_ = esp_srmodel_init("model");
         language_ = "en";  // 使用英文模型
         multinet_threshold_ = 0.05;  // MultiNet 内部阈值（低阈值让它总是返回结果）
-        app_threshold_ = 0.35;  // 应用层阈值（降低适应非标准发音，标准词可达0.6-0.8）
+        app_threshold_ = 0.30;  // 应用层阈值（降低适应非标准发音，标准词可达0.6-0.8）
         duration_ = 5000;  // 超时时间 5 秒
 
         /*
@@ -116,13 +116,14 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
         // ⚠️ 避免使用太多 "HI + 名字" 的相似模式，会导致混淆
         // ⚠️ Tom/Jack/Lily/Lucy 音素相似，MultiNet6 很难区分
         
-        // ✅ 推荐：使用差异明显的标准英文词
-       // commands_.push_back({"HELLO", "hello", "wake"});              // 单个标准词
-        //commands_.push_back({"WAKE UP", "wake up", "wake"});          // 标准短语  
-        //commands_.push_back({"OK READY", "ok ready", "wake"});        // 不同开头
+        // ✅ 推荐：标准英文唤醒词（音素清晰，好发音，不易误触发）
+        commands_.push_back({"COMPUTER", "computer", "wake"});        // 单词：常用词，3音节
+        commands_.push_back({"HELLO FRIEND", "hello friend", "wake"}); // 双词：HELLO + 朋友
         
-        // 如果一定要用人名，只保留一个最常用的
-        // commands_.push_back({"HI LILY", "hi lily", "wake"});       // 单个名字
+        // 备选唤醒词（可根据需要启用）
+        // commands_.push_back({"ASSISTANT", "assistant", "wake"});   // 单词：助手
+        // commands_.push_back({"HELLO ROBOT", "hello robot", "wake"}); // HELLO + 机器人
+        // commands_.push_back({"HELLO SYSTEM", "hello system", "wake"}); // HELLO + 系统
 
     } else {
         ESP_LOGI(TAG, "CustomWakeWord::Initialize2  hit!!!!");
@@ -132,20 +133,20 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
         ESP_LOGI(TAG, "Using built-in wake words (ignoring assets config)");
         language_ = "en";
         multinet_threshold_ = 0.05;  // MultiNet 内部阈值（低阈值让它总是返回结果）
-        app_threshold_ = 0.35;  // 应用层阈值（机器标准发音测试：0.301-0.576，平均0.43）
+        app_threshold_ = 0.30;  // 应用层阈值（机器标准发音测试：0.301-0.576，平均0.43）
         duration_ = 5000;
        
         // ⚠️ 避免使用太多 "HI + 名字" 的相似模式，会导致混淆
         // ⚠️ Tom/Jack/Lily/Lucy 音素相似，MultiNet6 很难区分
         
-        // ✅ 推荐：使用差异明显的标准英文词
-        commands_.push_back({"HELLO", "hello", "wake"});              // 机器测试 prob=0.30-0.58
-        commands_.push_back({"WAKE UP", "wake up", "wake"});          // 标准短语，预期类似  
-        commands_.push_back({"OK READY", "ok ready", "wake"});        // 不同开头，增加选择
-        //commands_.push_back({"HI JACK", "hi jack", "wake"});         // 人名，识别率低 0.176
+        // ✅ 推荐：标准英文唤醒词（音素清晰，好发音，不易误触发）
+        //commands_.push_back({"HI ASSISTANT", "hi assistant", "wake"});        // 单词：常用词，3音节
+        commands_.push_back({"HI JASON", "hello jason", "wake"}); // 双词：HELLO + 朋友
         
-        // 如果一定要用人名，只保留一个最常用的
-        // commands_.push_back({"HI LILY", "hi lily", "wake"});       // 单个名字
+        // 备选唤醒词（可根据需要启用）
+        // commands_.push_back({"ASSISTANT", "assistant", "wake"});   // 单词：助手
+        // commands_.push_back({"HELLO ROBOT", "hello robot", "wake"}); // HELLO + 机器人
+        // commands_.push_back({"HELLO SYSTEM", "hello system", "wake"}); // HELLO + 系统
     }
 
     if (models_ == nullptr || models_->num == -1) {
