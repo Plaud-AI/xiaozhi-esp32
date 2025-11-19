@@ -293,9 +293,16 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
         }
         ESP_LOGI(TAG, "AFE input format: \"%s\"", input_format.c_str());
         
-        // 创建 AFE 配置（类型为 SR - 语音识别）
-        // ⚠️ 重要：传入 models_ 以便 AFE 加载 NS（降噪）等模型
-        afe_config_t* afe_config = afe_config_init(input_format.c_str(), models_, AFE_TYPE_SR, AFE_MODE_HIGH_PERF);
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        // AFE 配置：不传入 WakeNet，只配置 NS（降噪）
+        // CustomWakeWord 使用 MultiNet，不需要 WakeNet
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        
+        // 先从 models_ 中过滤出 NS 模型
+        char* ns_model_name = esp_srmodel_filter(models_, ESP_NSNET_PREFIX, NULL);
+        
+        // 创建 AFE 配置（不传入 models_，避免加载 WakeNet）
+        afe_config_t* afe_config = afe_config_init(input_format.c_str(), NULL, AFE_TYPE_SR, AFE_MODE_HIGH_PERF);
         if (afe_config == nullptr) {
             ESP_LOGE(TAG, "❌ Failed to init AFE config!");
             return false;
@@ -304,27 +311,23 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
         // 配置 AFE 参数
         afe_config->aec_init = codec_->input_reference();  // 如果有回放参考，启用 AEC
         afe_config->aec_mode = AEC_MODE_SR_HIGH_PERF;
-        afe_config->vad_init = true;   // 启用 VAD
-        afe_config->vad_mode = VAD_MODE_0;
-        afe_config->vad_min_noise_ms = 100;
+        afe_config->vad_init = false;  // VAD 已禁用（节省 1-2% CPU + 20KB RAM）
+
+        afe_config->wakenet_init = false;
         
-        // 尝试从 models 中过滤 NS 和 VAD 模型（参考 AfeAudioProcessor）
-        char* ns_model_name = esp_srmodel_filter(models_, ESP_NSNET_PREFIX, NULL);
-        char* vad_model_name = esp_srmodel_filter(models_, ESP_VADN_PREFIX, NULL);
-        
+        // 手动配置 NS（降噪）
         if (ns_model_name != nullptr) {
-            ESP_LOGI(TAG, "Found NS model: %s", ns_model_name);
+            ESP_LOGI(TAG, "✓ Found NSNet model: %s", ns_model_name);
             afe_config->ns_init = true;
             afe_config->ns_model_name = ns_model_name;
-            afe_config->afe_ns_mode = AFE_NS_MODE_NET;  // 使用神经网络降噪
+            afe_config->afe_ns_mode = AFE_NS_MODE_NET;  // 使用神经网络降噪（NSNet2）
+            ESP_LOGI(TAG, "✓ NSNet2 降噪已启用 (强力降噪)");
         } else {
-            ESP_LOGI(TAG, "NS model not found, disabling NS");
-            afe_config->ns_init = false;  // 如果没有 NS 模型，禁用降噪
-        }
-        
-        if (vad_model_name != nullptr) {
-            ESP_LOGI(TAG, "Found VAD model: %s", vad_model_name);
-            afe_config->vad_model_name = vad_model_name;
+            // ❌ 没有 NSNet 模型，禁用 NS（WebRTC NS 可能导致崩溃）
+            ESP_LOGW(TAG, "NSNet model not found, NS disabled");
+            ESP_LOGW(TAG, "  → 降噪效果会降低，建议重新编译以包含 NSNet2");
+            afe_config->ns_init = false;
+            afe_config->ns_model_name = nullptr;
         }
         
         afe_config->agc_init = false;  // 不启用 AGC（音频增益已在 codec 层设置）
@@ -332,8 +335,8 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
         afe_config->afe_perferred_priority = 1;
         afe_config->memory_alloc_mode = AFE_MEMORY_ALLOC_MORE_PSRAM;
         
-        ESP_LOGI(TAG, "AFE features: AEC=%d, VAD=%d, NS=%d", 
-                 afe_config->aec_init, afe_config->vad_init, afe_config->ns_init);
+        ESP_LOGI(TAG, "AFE features: AEC=%d, NS=%d", 
+                 afe_config->aec_init, afe_config->ns_init);
         
         // 创建 AFE 接口
         afe_iface_ = esp_afe_handle_from_config(afe_config);
@@ -771,8 +774,8 @@ void CustomWakeWord::AudioDetectionTask() {
         loop_count++;
         if (loop_count % 100 == 0) {
             bool is_running = running_.load();
-            ESP_LOGI(TAG, "AFE fetch loop %d: data_size=%d, vad_state=%d, running=%d",
-                     loop_count, res->data_size, res->vad_state, is_running);
+            ESP_LOGI(TAG, "AFE fetch loop %d: data_size=%d, running=%d",
+                     loop_count, res->data_size, is_running);
         }
         
         // 再次检查是否启用（可能在 fetch 期间被停止）
@@ -787,15 +790,10 @@ void CustomWakeWord::AudioDetectionTask() {
         }
         
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        // VAD 过滤：如果 AFE 判断无语音，跳过 MultiNet 检测
-        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        if (res->vad_state == VAD_SILENCE) {
-            // VAD 判断为静音/噪声，跳过 MultiNet 检测以节省 CPU 和降低误触发
-            continue;
-        }
-        
-        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         // 将 AFE 处理后的音频送给 MultiNet 检测
+        // 注意：不使用 VAD 过滤！
+        // 原因：VAD 误判会导致唤醒词被丢弃，造成严重延迟或无法唤醒
+        // 降低误触发的策略：依赖多唤醒词 + 阈值过滤
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         if (multinet_ == nullptr || multinet_model_data_ == nullptr) {
             continue;
