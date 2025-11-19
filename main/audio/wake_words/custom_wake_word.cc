@@ -145,7 +145,7 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
         ESP_LOGI(TAG, "Using built-in wake words (ignoring assets config)");
         language_ = "en";
         multinet_threshold_ = 0.05;  // MultiNet 内部阈值（低阈值让它总是返回结果）
-        app_threshold_ = 0.30;  // 应用层阈值（机器标准发音测试：0.301-0.576，平均0.43）
+        app_threshold_ = 0.35;  // 🔧 [优化] 降低阈值：0.45→0.35（适配真实唤醒词置信度0.31-0.38）
         duration_ = 5000;
        
         // ⚠️ 避免使用太多 "HI + 名字" 的相似模式，会导致混淆
@@ -156,19 +156,22 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
         //commands_.push_back({"HELLO FRIEND", "hello friend", "wake"}); // 双词：HELLO + 朋友
 
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        // ⚠️ 重要：唤醒词数量的权衡
-        // - 1 个词：噪声概率高（0.2-0.3），容易误触发 ❌
-        // - 2-3 个词：平衡点，噪声概率降低（0.1-0.15），真实语音仍可识别 ✅
-        // - 5+ 个词：噪声概率很低（0.05-0.08），但真实语音概率也降低（0.2-0.3）❌
+        // 🔧 [优化] 唤醒词优化：减少相似模式，降低混淆率
+        // 问题诊断：HI/HEY/HELLO + COMPUTER/DEVICE/ASSISTANT 太相似，导致混淆
+        // 测试策略：先用单个唤醒词测试，确认识别率后再添加其他词
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         
-        commands_.push_back({"HI COMPUTER", "hi computer", "wake"});     // 主唤醒词
-        commands_.push_back({"HELLO ASSISTANT", "hello assistant", "wake"}); // 备用
-        commands_.push_back({"HEY DEVICE", "hey device", "wake"});       // 备用（用于测试）
+        // 方案 A：只用一个唤醒词测试（推荐，排除混淆问题）
+        commands_.push_back({"HI DEVICE", "hi device", "wake"});         // 改为 HI（用户实际发音）
         
-        // 更多备选（如果需要进一步降低误触发率，可启用更多词）
-        //commands_.push_back({"WAKE UP", "wake up", "wake"});
-        //commands_.push_back({"OK READY", "ok ready", "wake"});  
+        // 方案 B：如果需要多个，选择音素差异大的（测试时取消注释）
+        // commands_.push_back({"OK SYSTEM", "ok system", "wake"});      // OK vs HEY 差异大
+        // commands_.push_back({"WAKE UP", "wake up", "wake"});          // 完全不同的模式
+        
+        // 原配置（导致"hi device"被识别成"hi computer"，已禁用）
+        // commands_.push_back({"HI COMPUTER", "hi computer", "wake"});
+        // commands_.push_back({"HELLO ASSISTANT", "hello assistant", "wake"});
+        // commands_.push_back({"HEY DEVICE", "hey device", "wake"});  
         
         // 备选唤醒词（可根据需要启用）
         // commands_.push_back({"ASSISTANT", "assistant", "wake"});   // 单词：助手
@@ -294,49 +297,34 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
         ESP_LOGI(TAG, "AFE input format: \"%s\"", input_format.c_str());
         
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        // AFE 配置：不传入 WakeNet，只配置 NS（降噪）
-        // CustomWakeWord 使用 MultiNet，不需要 WakeNet
+        // 🔧 [重要修复] 使用与 AfeWakeWord 相同的初始化方式
+        // 问题：之前传入 NULL 导致 AFE 内部状态不完整
+        // 解决：传入 models_，让 AFE 自动配置（然后禁用不需要的功能）
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         
-        // 先从 models_ 中过滤出 NS 模型
-        char* ns_model_name = esp_srmodel_filter(models_, ESP_NSNET_PREFIX, NULL);
-        
-        // 创建 AFE 配置（不传入 models_，避免加载 WakeNet）
-        afe_config_t* afe_config = afe_config_init(input_format.c_str(), NULL, AFE_TYPE_SR, AFE_MODE_HIGH_PERF);
+        // 传入 models_ 让 AFE 自动初始化（与 AfeWakeWord 一致）
+        afe_config_t* afe_config = afe_config_init(input_format.c_str(), models_, AFE_TYPE_SR, AFE_MODE_HIGH_PERF);
         if (afe_config == nullptr) {
             ESP_LOGE(TAG, "❌ Failed to init AFE config!");
             return false;
         }
         
-        // 配置 AFE 参数
-        afe_config->aec_init = codec_->input_reference();  // 如果有回放参考，启用 AEC
+        // 🔧 [关键修复] 完全模仿 AfeWakeWord 的配置方式
+        // 只覆盖必要参数，其他让 AFE 根据 models_ 自动配置
+        afe_config->aec_init = codec_->input_reference();
         afe_config->aec_mode = AEC_MODE_SR_HIGH_PERF;
-        afe_config->vad_init = false;  // VAD 已禁用（节省 1-2% CPU + 20KB RAM）
-
-        afe_config->wakenet_init = false;
-        
-        // 手动配置 NS（降噪）
-        if (ns_model_name != nullptr) {
-            ESP_LOGI(TAG, "✓ Found NSNet model: %s", ns_model_name);
-            afe_config->ns_init = true;
-            afe_config->ns_model_name = ns_model_name;
-            afe_config->afe_ns_mode = AFE_NS_MODE_NET;  // 使用神经网络降噪（NSNet2）
-            ESP_LOGI(TAG, "✓ NSNet2 降噪已启用 (强力降噪)");
-        } else {
-            // ❌ 没有 NSNet 模型，禁用 NS（WebRTC NS 可能导致崩溃）
-            ESP_LOGW(TAG, "NSNet model not found, NS disabled");
-            ESP_LOGW(TAG, "  → 降噪效果会降低，建议重新编译以包含 NSNet2");
-            afe_config->ns_init = false;
-            afe_config->ns_model_name = nullptr;
-        }
-        
-        afe_config->agc_init = false;  // 不启用 AGC（音频增益已在 codec 层设置）
         afe_config->afe_perferred_core = 1;
         afe_config->afe_perferred_priority = 1;
         afe_config->memory_alloc_mode = AFE_MEMORY_ALLOC_MORE_PSRAM;
         
-        ESP_LOGI(TAG, "AFE features: AEC=%d, NS=%d", 
-                 afe_config->aec_init, afe_config->ns_init);
+        // 🔧 禁用 WakeNet（因为我们使用 MultiNet）
+        afe_config->wakenet_init = false;
+        
+        // 📝 不显式设置 ns_init、vad_init、agc_init
+        // 让 AFE 根据 models_ 自动决定（与 AfeWakeWord 一致）
+        
+        ESP_LOGI(TAG, "AFE config: aec_init=%d, aec_mode=%d", 
+                 afe_config->aec_init, afe_config->aec_mode);
         
         // 创建 AFE 接口
         afe_iface_ = esp_afe_handle_from_config(afe_config);
