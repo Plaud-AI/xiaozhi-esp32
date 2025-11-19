@@ -96,7 +96,7 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
     if (models_list == nullptr) {
         models_ = esp_srmodel_init("model");
         language_ = "en";  // 使用英文模型
-        threshold_ = 0.5;  // 推荐阈值 0.5（0.15 太敏感容易误触发）
+        threshold_ = 0.30;  // 减少误触发（0.15 太低导致"你好"被识别为"hello"）
         duration_ = 5000;  // 超时时间 5 秒
         
         // 添加固定的唤醒词（MultiNet6 格式：全大写标准拼写）
@@ -117,7 +117,7 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
         // 不从 assets 读取，确保行为一致
         ESP_LOGI(TAG, "Using built-in wake words (ignoring assets config)");
         language_ = "en";
-        threshold_ = 0.5;  // 推荐阈值
+        threshold_ = 0.30;  // 减少误触发（0.15 太低导致"你好"被识别为"hello"）
         duration_ = 5000;
         
         // MultiNet6 正确格式：全大写字母，标准英文拼写
@@ -147,7 +147,21 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
         return false;
     }
 
+    ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "Found MultiNet model: %s (language: %s)", mn_name_, language_.c_str());
+    ESP_LOGI(TAG, "========================================");
+    
+    // 确认使用的模型版本
+    if (strstr(mn_name_, "mn6") != nullptr) {
+        ESP_LOGI(TAG, "✓ Confirmed using MultiNet6 - Grapheme format required");
+    } else if (strstr(mn_name_, "mn5") != nullptr) {
+        ESP_LOGW(TAG, "⚠️ Using MultiNet5 - Phoneme format required, but code is configured for MultiNet6!");
+        ESP_LOGW(TAG, "⚠️ Please update sdkconfig to use CONFIG_SR_MN_EN_MULTINET6_QUANT=y");
+    } else if (strstr(mn_name_, "mn7") != nullptr) {
+        ESP_LOGI(TAG, "✓ Using MultiNet7 - Grapheme format with optional phoneme column");
+    } else {
+        ESP_LOGW(TAG, "⚠️ Unknown MultiNet version: %s", mn_name_);
+    }
 
     multinet_ = esp_mn_handle_from_name(mn_name_);
     if (multinet_ == nullptr) {
@@ -162,9 +176,14 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
         return false;
     }
     
+    // 获取 MultiNet 参数信息
+    int chunk_size = multinet_->get_samp_chunksize(multinet_model_data_);
+    int sample_rate = multinet_->get_samp_rate(multinet_model_data_);
+    ESP_LOGI(TAG, "MultiNet parameters: chunk_size=%d, sample_rate=%d", chunk_size, sample_rate);
+    
     // 设置检测阈值
     multinet_->set_det_threshold(multinet_model_data_, threshold_);
-    ESP_LOGI(TAG, "MultiNet threshold set to: %.2f", threshold_);
+    ESP_LOGI(TAG, "MultiNet detection threshold set to: %.2f", threshold_);
     
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // 添加唤醒命令（MultiNet6 使用 Grapheme 格式）
@@ -187,11 +206,12 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
     }
     
     // 更新命令到模型
+    ESP_LOGI(TAG, "Calling esp_mn_commands_update()...");
     esp_mn_error_t* err = esp_mn_commands_update();
     if (err) {
-        ESP_LOGE(TAG, "Failed to update commands, %d errors:", err->num);
+        ESP_LOGE(TAG, "❌ Failed to update commands, %d errors:", err->num);
         for (int i = 0; i < err->num; i++) {
-            ESP_LOGE(TAG, "  Error command ID: %d, content: %s", 
+            ESP_LOGE(TAG, "  Error command ID: %d, content: '%s'", 
                      err->phrases[i]->command_id, 
                      err->phrases[i]->string);
         }
@@ -201,7 +221,10 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
 
     // 打印已添加的命令
     ESP_LOGI(TAG, "✓ Successfully added %d commands to MultiNet6", commands_.size());
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "Active MultiNet6 commands:");
     esp_mn_commands_print();
+    ESP_LOGI(TAG, "========================================");
     
     ESP_LOGI(TAG, "CustomWakeWord initialized successfully (MultiNet only mode)");
     return true;
@@ -267,10 +290,17 @@ void CustomWakeWord::Feed(const std::vector<int16_t>& data) {
     // 处理检测结果
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     
-    // 调试：每 50 次 Feed 显示一次状态
+    // 调试：每 100 次 Feed 显示一次检测状态
     static int state_count = 0;
-    if (++state_count % 50 == 0) {
-        ESP_LOGD(TAG, "MultiNet state: %d (0=detecting, 1=detected, 2=timeout)", mn_state);
+    if (++state_count % 100 == 0) {
+        ESP_LOGI(TAG, "MultiNet state: %d (0=DETECTING, 1=DETECTED, 2=TIMEOUT), running=%d", 
+                 mn_state, running_ ? 1 : 0);
+    }
+    
+    // 重要：记录非 DETECTING 状态
+    if (mn_state != ESP_MN_STATE_DETECTING) {
+        ESP_LOGI(TAG, "⚠️ MultiNet state changed to: %d (0=DETECTING, 1=DETECTED, 2=TIMEOUT)", 
+                 mn_state);
     }
     
     if (mn_state == ESP_MN_STATE_DETECTING) {
@@ -282,20 +312,31 @@ void CustomWakeWord::Feed(const std::vector<int16_t>& data) {
         esp_mn_results_t* mn_result = multinet_->get_results(multinet_model_data_);
         
         if (mn_result != NULL && mn_result->num > 0) {
-            // 获取第一个检测到的命令 ID
+            // 获取第一个检测到的命令 ID（概率最高的）
             int command_id = mn_result->phrase_id[0];
+            float best_prob = mn_result->prob[0];  // prob[0] 对应 phrase_id[0]
             
-            // 显示所有命令的概率（调试用）
-            ESP_LOGI(TAG, "✓ MultiNet detection result:");
-            for (int i = 0; i < commands_.size() && i < 10; i++) {
-                ESP_LOGI(TAG, "  Command %d (%s): prob=%.2f %s", 
-                         i, commands_[i].text.c_str(), 
-                         mn_result->prob[i],
-                         (i == command_id) ? "← BEST" : "");
+            // 显示所有检测结果（按概率从大到小排列）
+            ESP_LOGI(TAG, "✓ MultiNet detection result (num=%d):", mn_result->num);
+            for (int i = 0; i < mn_result->num && i < 5; i++) {
+                int result_cmd_id = mn_result->phrase_id[i];
+                float result_prob = mn_result->prob[i];
+                int result_array_index = result_cmd_id - 1;
+                
+                if (result_array_index >= 0 && result_array_index < commands_.size()) {
+                    ESP_LOGI(TAG, "  [%d] ID=%d (%s): prob=%.3f %s", 
+                             i, result_cmd_id, 
+                             commands_[result_array_index].text.c_str(),
+                             result_prob,
+                             (i == 0) ? "← BEST" : "");
+                } else {
+                    ESP_LOGI(TAG, "  [%d] ID=%d (unknown): prob=%.3f", 
+                             i, result_cmd_id, result_prob);
+                }
             }
             
-            ESP_LOGI(TAG, "✓ Detected command ID: %d, prob: %.2f", 
-                     command_id, mn_result->prob[command_id]);
+            ESP_LOGI(TAG, "✓ Best match - Command ID: %d, Probability: %.3f", 
+                     command_id, best_prob);
             
             // 检查命令 ID 是否有效
             // 注意：MultiNet command ID 从 1 开始，我们的数组从 0 开始
@@ -303,7 +344,7 @@ void CustomWakeWord::Feed(const std::vector<int16_t>& data) {
             if (array_index >= 0 && array_index < commands_.size()) {
                 auto& command = commands_[array_index];
                 
-                ESP_LOGI(TAG, "  Command: %s, Text: %s, Action: %s",
+                ESP_LOGI(TAG, "  → Command: \"%s\", Text: \"%s\", Action: \"%s\"",
                          command.command.c_str(),
                          command.text.c_str(),
                          command.action.c_str());
@@ -313,7 +354,8 @@ void CustomWakeWord::Feed(const std::vector<int16_t>& data) {
                     last_detected_wake_word_ = command.text;  // 例如: "hi plaud"
                     running_ = false;  // 停止检测
                     
-                    ESP_LOGI(TAG, "✓ Wake word detected: %s", last_detected_wake_word_.c_str());
+                    ESP_LOGI(TAG, "✓✓✓ Wake word detected: \"%s\" (probability: %.3f) ✓✓✓", 
+                             last_detected_wake_word_.c_str(), best_prob);
                     
                     // 触发回调
                     if (wake_word_detected_callback_) {
@@ -324,6 +366,9 @@ void CustomWakeWord::Feed(const std::vector<int16_t>& data) {
                 ESP_LOGW(TAG, "Invalid command ID: %d (array index: %d, total commands: %d)", 
                          command_id, array_index, commands_.size());
             }
+        } else {
+            ESP_LOGW(TAG, "MultiNet detected but no results (mn_result=%p, num=%d)", 
+                     mn_result, mn_result ? mn_result->num : -1);
         }
         
         // 清理 MultiNet 状态
