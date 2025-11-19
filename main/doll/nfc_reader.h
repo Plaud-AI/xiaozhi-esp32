@@ -2,6 +2,7 @@
 #define NFC_READER_H
 
 #include <string>
+#include <sdkconfig.h>
 
 #ifdef CONFIG_ENABLE_DOLL_INTERACTION
 
@@ -14,18 +15,18 @@
 class NfcReader {
 public:
     NfcReader() = default;
-    virtual ~NfcReader();
+    ~NfcReader() = default;
 
     // 初始化 NFC 硬件
-    virtual bool Initialize();
+    bool Initialize();
 
     // 读取 NFC 标签（返回 UID 或自定义 ID）
     // @param[out] tag_id 读取到的标签 ID
     // @return true 成功，false 失败
-    virtual bool ReadTag(std::string& tag_id);
+    bool ReadTag(std::string& tag_id);
 
     // 检测是否有标签存在
-    virtual bool IsTagPresent();
+    bool IsTagPresent();
 
     // 写入 NFC 标签（可选功能）
     // TODO: 后续如果需要写入功能，可以添加

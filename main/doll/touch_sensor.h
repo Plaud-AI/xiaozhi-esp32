@@ -2,6 +2,7 @@
 #define TOUCH_SENSOR_H
 
 #include "doll_service.h"
+#include <sdkconfig.h>
 
 #ifdef CONFIG_ENABLE_DOLL_INTERACTION
 
@@ -14,16 +15,16 @@
 class TouchSensor {
 public:
     TouchSensor() = default;
-    virtual ~TouchSensor();
+    ~TouchSensor() = default;
 
     // 初始化传感器
-    virtual bool Initialize();
+    bool Initialize();
 
     // 获取当前触摸位置
-    virtual TouchPosition GetTouchPosition();
+    TouchPosition GetTouchPosition();
 
     // 检测是否有触摸
-    virtual bool IsTouched();
+    bool IsTouched();
 
 private:
     // TODO: 添加触摸传感器配置
