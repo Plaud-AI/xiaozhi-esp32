@@ -475,6 +475,32 @@ void AudioService::EnableWakeWordDetection(bool enable) {
             }
             wake_word_initialized_ = true;
             ESP_LOGI(TAG, "Wake word initialized successfully, feed_size=%d", wake_word_->GetFeedSize());
+            
+            // 初始化完成后，尝试从 NVS 加载保存的唤醒词配置
+            ESP_LOGI(TAG, "");
+            ESP_LOGI(TAG, "🔄 尝试从 NVS 加载保存的唤醒词配置...");
+            auto& manager = WakeWordManager::GetInstance();
+            if (manager.LoadFromNVS()) {
+                ESP_LOGI(TAG, "✅ 从 NVS 加载了 %d 个唤醒词配置", manager.GetCount());
+                
+                // 尝试转换为 CustomWakeWord
+                CustomWakeWord* custom_wake_word = dynamic_cast<CustomWakeWord*>(wake_word_.get());
+                if (custom_wake_word) {
+                    // 应用保存的配置（运行时更新）
+                    if (manager.ApplyToCustomWakeWord(custom_wake_word)) {
+                        ESP_LOGI(TAG, "✅✅✅ 唤醒词配置已从 NVS 加载并应用成功！");
+                        ESP_LOGI(TAG, "     当前激活 %d 个唤醒词，阈值 %.3f", 
+                                 manager.GetCount(), manager.GetThreshold());
+                    } else {
+                        ESP_LOGW(TAG, "⚠️  应用唤醒词配置失败，将使用默认配置");
+                    }
+                } else {
+                    ESP_LOGW(TAG, "⚠️  WakeWord 不是 CustomWakeWord 类型，无法应用配置");
+                }
+            } else {
+                ESP_LOGI(TAG, "ℹ️  NVS 中没有保存的唤醒词配置，使用默认配置");
+            }
+            ESP_LOGI(TAG, "");
         }
         wake_word_->Start();
         xEventGroupSetBits(event_group_, AS_EVENT_WAKE_WORD_RUNNING);
@@ -691,31 +717,7 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
     if (esp_srmodel_filter(models_list_, ESP_MN_PREFIX, NULL) != nullptr) {
         ESP_LOGI(TAG, "Creating CustomWakeWord (MN prefix found)");
         wake_word_ = std::make_unique<CustomWakeWord>();
-        
-        // 🔧 [测试模式] 不使用 NVS 和 WakeWordManager，直接使用代码中的默认唤醒词
-        // 目的：测试 MultiNet 模型本身的检测能力
-        // CustomWakeWord::Initialize() 会在 commands_ 为空时自动使用默认唤醒词
-        ESP_LOGW(TAG, "⚠️  [TEST MODE] Skipping NVS/WakeWordManager, using built-in defaults");
-        ESP_LOGI(TAG, "CustomWakeWord will use hardcoded wake words for model testing");
-        
-        /*
-        // 原始逻辑（使用 NVS 配置）：
-        auto& manager = WakeWordManager::GetInstance();
-        if (manager.LoadFromNVS()) {
-            ESP_LOGI(TAG, "Loaded %d wake words from NVS", manager.GetCount());
-            CustomWakeWord* custom_wake_word = dynamic_cast<CustomWakeWord*>(wake_word_.get());
-            if (custom_wake_word) {
-                manager.ApplyToCustomWakeWord(custom_wake_word);
-            }
-        } else {
-            ESP_LOGW(TAG, "No saved wake words, using defaults");
-            manager.ResetToDefault();
-            CustomWakeWord* custom_wake_word = dynamic_cast<CustomWakeWord*>(wake_word_.get());
-            if (custom_wake_word) {
-                manager.ApplyToCustomWakeWord(custom_wake_word);
-            }
-        }
-        */
+        ESP_LOGI(TAG, "ℹ️  唤醒词配置将在首次启用检测时从 NVS 自动加载");
     } else {
         ESP_LOGW(TAG, "MultiNet model not found in models list!");
         wake_word_ = nullptr;
