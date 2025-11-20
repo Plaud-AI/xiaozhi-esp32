@@ -117,7 +117,7 @@ private:
     bool ValidateConfig(const WakeWordConfig& config);
     
     std::vector<WakeWordConfig> wake_words_;
-    float threshold_ = 0.15f;
+    float threshold_ = 0.40f;  // 提高默认阈值，减少噪声误触发
     
     static constexpr const char* TAG = "WakeWordManager";
     static constexpr const char* NVS_NAMESPACE = "wake_words";

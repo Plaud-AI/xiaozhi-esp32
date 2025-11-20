@@ -234,10 +234,13 @@ bool WakeWordManager::LoadFromNVS() {
         ESP_LOGI(TAG, "Config version: %d", version->valueint);
     }
     
-    // 读取阈值
+    // 读取阈值（但不使用，保留用于调试）
     cJSON* threshold = cJSON_GetObjectItem(root, "threshold");
     if (threshold && cJSON_IsNumber(threshold)) {
         threshold_ = threshold->valuedouble;
+        ESP_LOGI(TAG, "Loaded threshold from NVS: %.3f (will NOT be applied to CustomWakeWord)", threshold_);
+    } else {
+        ESP_LOGI(TAG, "No threshold in NVS, default: %.3f (will NOT be applied to CustomWakeWord)", threshold_);
     }
     
     // 读取唤醒词列表
@@ -314,8 +317,9 @@ bool WakeWordManager::ApplyToCustomWakeWord(CustomWakeWord* wake_word) {
         }
     }
     
-    // 3. 设置阈值
-    wake_word->SetThreshold(threshold_);
+    // 3. 设置阈值（暂时禁用，使用代码中的默认阈值进行测试）
+    // wake_word->SetThreshold(threshold_);
+    ESP_LOGI(TAG, "⚠️  Using default threshold in code (ignoring NVS threshold %.3f for testing)", threshold_);
     
     // 4. 更新命令到 MultiNet（运行时生效！）
     bool success = wake_word->UpdateCommands();

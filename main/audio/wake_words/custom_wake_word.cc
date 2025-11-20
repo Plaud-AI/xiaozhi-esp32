@@ -348,7 +348,7 @@ void CustomWakeWord::AudioDetectionTask() {
             ESP_LOGI(TAG, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
             ESP_LOGI(TAG, "MultiNet DETECTED");
             
-            // 计算当前音频块的能量
+            // 计算当前音频块的能量（仅用于数据收集，不影响判断）
             int64_t sum = 0;
             int max_val = 0;
             int num_samples = res->data_size / sizeof(int16_t);
@@ -359,7 +359,7 @@ void CustomWakeWord::AudioDetectionTask() {
             }
             int avg_energy = num_samples > 0 ? sum / num_samples : 0;
             
-            ESP_LOGI(TAG, "Audio energy: avg=%d, max=%d", avg_energy, max_val);
+            ESP_LOGI(TAG, "📊 Audio energy: avg=%d, max=%d (for reference only)", avg_energy, max_val);
             
             esp_mn_results_t* mn_result = multinet_->get_results(multinet_model_data_);
             
@@ -367,50 +367,40 @@ void CustomWakeWord::AudioDetectionTask() {
                 int command_id = mn_result->phrase_id[0];
                 float best_prob = mn_result->prob[0];
                 
-                // 显示所有检测结果
-                ESP_LOGI(TAG, "Detection results (num=%d):", mn_result->num);
+                // 显示所有检测结果（方便分析模型表现）
+                ESP_LOGI(TAG, "📊 Detection results (num=%d):", mn_result->num);
                 for (int i = 0; i < mn_result->num && i < 5; i++) {
                     int result_cmd_id = mn_result->phrase_id[i];
                     float result_prob = mn_result->prob[i];
                     int result_array_index = result_cmd_id - 1;
                     
                     if (result_array_index >= 0 && result_array_index < commands_.size()) {
-                        ESP_LOGI(TAG, "  [%d] ID=%d \"%s\": prob=%.3f %s",
+                        ESP_LOGI(TAG, "  [%d] ID=%d \"%s\" (cmd=\"%s\"): prob=%.3f %s",
                                  i, result_cmd_id,
                                  commands_[result_array_index].text.c_str(),
+                                 commands_[result_array_index].command.c_str(),
                                  result_prob,
                                  (i == 0) ? "← BEST" : "");
+                    } else {
+                        ESP_LOGW(TAG, "  [%d] ID=%d (INVALID INDEX %d): prob=%.3f",
+                                 i, result_cmd_id, result_array_index, result_prob);
                     }
                 }
                 
-                // 动态阈值：音频能量低时提高阈值要求
-                float effective_threshold = app_threshold_;
-                if (avg_energy < 200) {
-                    // 音频能量很低（可能是噪声），提高阈值
-                    effective_threshold = app_threshold_ + 0.10;
-                    ESP_LOGW(TAG, "⚠️ Low audio energy (%d < 200), raising threshold to %.3f", 
-                             avg_energy, effective_threshold);
-                } else if (avg_energy < 500) {
-                    // 音频能量较低，稍微提高阈值
-                    effective_threshold = app_threshold_ + 0.05;
-                    ESP_LOGI(TAG, "Low-medium audio energy (%d < 500), raising threshold to %.3f", 
-                             avg_energy, effective_threshold);
-                }
+                // 简单的固定阈值过滤（让模型自己说话）
+                ESP_LOGI(TAG, "🔍 Threshold check: best_prob=%.3f vs app_threshold=%.3f", 
+                         best_prob, app_threshold_);
                 
-                // 应用层阈值过滤
-                ESP_LOGI(TAG, "Threshold check: best_prob=%.3f, effective_threshold=%.3f", 
-                         best_prob, effective_threshold);
-                
-                if (best_prob < effective_threshold) {
-                    ESP_LOGW(TAG, "⚠️ Probability %.3f < threshold %.3f, ignoring (noise rejection)", 
-                             best_prob, effective_threshold);
+                if (best_prob < app_threshold_) {
+                    ESP_LOGW(TAG, "❌ Rejected: prob %.3f < threshold %.3f", 
+                             best_prob, app_threshold_);
                     ESP_LOGI(TAG, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
                     multinet_->clean(multinet_model_data_);
                     continue;
                 }
                 
-                ESP_LOGI(TAG, "✓ Passed threshold check (prob=%.3f >= threshold=%.3f)", 
-                         best_prob, effective_threshold);
+                ESP_LOGI(TAG, "✅ Accepted: prob %.3f >= threshold %.3f", 
+                         best_prob, app_threshold_);
                 
                 // 检查命令 ID 是否有效
                 int array_index = command_id - 1;
