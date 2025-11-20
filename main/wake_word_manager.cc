@@ -20,29 +20,48 @@ WakeWordManager::WakeWordManager() {
 bool WakeWordManager::SetWakeWords(const std::vector<WakeWordConfig>& words, 
                                     float threshold, 
                                     bool replace) {
-    ESP_LOGI(TAG, "SetWakeWords: count=%d, threshold=%.2f, replace=%d", 
+    ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "║ SetWakeWords 调用");
+    ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "║ 参数: count=%d, threshold=%.3f, replace=%d", 
              words.size(), threshold, replace);
+    ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
     
     if (words.empty()) {
-        ESP_LOGW(TAG, "Empty wake words list");
+        ESP_LOGW(TAG, "❌ Empty wake words list");
         return false;
     }
     
     if (words.size() > MAX_WAKE_WORDS) {
-        ESP_LOGW(TAG, "Too many wake words: %d (max %d)", words.size(), MAX_WAKE_WORDS);
+        ESP_LOGW(TAG, "❌ Too many wake words: %d (max %d)", words.size(), MAX_WAKE_WORDS);
         return false;
     }
     
     // 替换模式：清空现有配置
     if (replace) {
+        ESP_LOGI(TAG, "🗑️  清空现有唤醒词配置 (replace=true)");
         wake_words_.clear();
+    } else {
+        ESP_LOGI(TAG, "➕ 追加模式，当前已有 %d 个唤醒词", wake_words_.size());
     }
     
     // 添加新唤醒词
-    for (const auto& word : words) {
+    int added_count = 0;
+    for (size_t i = 0; i < words.size(); i++) {
+        const auto& word = words[i];
+        
+        ESP_LOGI(TAG, "────────────────────────────────────────");
+        ESP_LOGI(TAG, "处理唤醒词 [%d/%d]:", i + 1, words.size());
+        ESP_LOGI(TAG, "  text: %s", word.text.c_str());
+        ESP_LOGI(TAG, "  display: %s", word.display.c_str());
+        ESP_LOGI(TAG, "  phonemes: %d 个变体", word.phonemes.size());
+        for (size_t j = 0; j < word.phonemes.size(); j++) {
+            ESP_LOGI(TAG, "    [%d] %s", j + 1, word.phonemes[j].c_str());
+        }
+        
         // 验证配置
         if (!ValidateConfig(word)) {
-            ESP_LOGW(TAG, "Invalid wake word config: %s", word.text.c_str());
+            ESP_LOGW(TAG, "❌ Invalid wake word config: %s", word.text.c_str());
             continue;
         }
         
@@ -56,24 +75,32 @@ bool WakeWordManager::SetWakeWords(const std::vector<WakeWordConfig>& words,
         }
         
         if (exists) {
-            ESP_LOGW(TAG, "Wake word already exists: %s", word.text.c_str());
+            ESP_LOGW(TAG, "⚠️  Wake word already exists: %s (跳过)", word.text.c_str());
             continue;
         }
         
         wake_words_.push_back(word);
-        ESP_LOGI(TAG, "Added wake word: %s (%d phoneme variants)", 
-                 word.text.c_str(), word.phonemes.size());
+        added_count++;
+        ESP_LOGI(TAG, "✅ Added wake word: %s", word.text.c_str());
     }
     
     threshold_ = threshold;
     
+    ESP_LOGI(TAG, "════════════════════════════════════════");
+    ESP_LOGI(TAG, "📊 汇总:");
+    ESP_LOGI(TAG, "  新增: %d 个唤醒词", added_count);
+    ESP_LOGI(TAG, "  总计: %d 个唤醒词", wake_words_.size());
+    ESP_LOGI(TAG, "  阈值: %.3f", threshold_);
+    ESP_LOGI(TAG, "════════════════════════════════════════");
+    
     // 保存到 NVS
+    ESP_LOGI(TAG, "💾 开始保存到 NVS...");
     if (!SaveToNVS()) {
-        ESP_LOGW(TAG, "Failed to save to NVS");
+        ESP_LOGE(TAG, "❌ Failed to save to NVS");
         return false;
     }
     
-    ESP_LOGI(TAG, "SetWakeWords completed: total=%d wake words", wake_words_.size());
+    ESP_LOGI(TAG, "✅ SetWakeWords 完成！");
     return true;
 }
 
@@ -112,19 +139,26 @@ bool WakeWordManager::ResetToDefault() {
 }
 
 bool WakeWordManager::SaveToNVS() {
-    ESP_LOGI(TAG, "Saving %d wake words to NVS", wake_words_.size());
+    ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "║ SaveToNVS 调用");
+    ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "║ 唤醒词数量: %d", wake_words_.size());
+    ESP_LOGI(TAG, "║ 阈值: %.3f", threshold_);
+    ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
     
     nvs_handle_t nvs_handle;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "❌ Failed to open NVS: %s", esp_err_to_name(err));
         return false;
     }
+    ESP_LOGI(TAG, "✅ NVS 打开成功 (namespace: %s)", NVS_NAMESPACE);
     
     // 构建 JSON
+    ESP_LOGI(TAG, "📝 构建 JSON 数据...");
     cJSON* root = cJSON_CreateObject();
     if (!root) {
-        ESP_LOGE(TAG, "Failed to create JSON object");
+        ESP_LOGE(TAG, "❌ Failed to create JSON object");
         nvs_close(nvs_handle);
         return false;
     }
@@ -149,30 +183,40 @@ bool WakeWordManager::SaveToNVS() {
     cJSON_AddItemToObject(root, "words", words_array);
     
     // 序列化
+    ESP_LOGI(TAG, "🔄 序列化 JSON...");
     char* json_str = cJSON_PrintUnformatted(root);
     if (!json_str) {
-        ESP_LOGE(TAG, "Failed to serialize JSON");
+        ESP_LOGE(TAG, "❌ Failed to serialize JSON");
         cJSON_Delete(root);
         nvs_close(nvs_handle);
         return false;
     }
     
+    size_t json_len = strlen(json_str);
+    ESP_LOGI(TAG, "✅ JSON 序列化完成 (长度: %d 字节)", json_len);
+    ESP_LOGI(TAG, "JSON 内容预览: %.100s%s", json_str, (json_len > 100) ? "..." : "");
+    
     // 保存到 NVS
+    ESP_LOGI(TAG, "💾 写入 NVS (key: %s)...", NVS_KEY_CONFIG);
     err = nvs_set_str(nvs_handle, NVS_KEY_CONFIG, json_str);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to save to NVS: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "❌ Failed to save to NVS: %s", esp_err_to_name(err));
         free(json_str);
         cJSON_Delete(root);
         nvs_close(nvs_handle);
         return false;
     }
+    ESP_LOGI(TAG, "✅ NVS 写入成功");
     
+    ESP_LOGI(TAG, "💾 提交 NVS...");
     err = nvs_commit(nvs_handle);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "NVS commit failed: %s", esp_err_to_name(err));
+        ESP_LOGW(TAG, "⚠️  NVS commit failed: %s", esp_err_to_name(err));
+    } else {
+        ESP_LOGI(TAG, "✅ NVS 提交成功");
     }
     
-    ESP_LOGI(TAG, "Saved to NVS successfully (size: %d bytes)", strlen(json_str));
+    ESP_LOGI(TAG, "✅ SaveToNVS 完成！");
     
     free(json_str);
     cJSON_Delete(root);
@@ -182,28 +226,34 @@ bool WakeWordManager::SaveToNVS() {
 }
 
 bool WakeWordManager::LoadFromNVS() {
-    ESP_LOGI(TAG, "Loading wake words from NVS");
+    ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "║ LoadFromNVS 调用");
+    ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
     
     nvs_handle_t nvs_handle;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs_handle);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to open NVS: %s (may not exist yet)", esp_err_to_name(err));
+        ESP_LOGW(TAG, "⚠️  Failed to open NVS: %s (may not exist yet)", esp_err_to_name(err));
         return false;
     }
+    ESP_LOGI(TAG, "✅ NVS 打开成功 (namespace: %s)", NVS_NAMESPACE);
     
     // 获取 JSON 字符串长度
+    ESP_LOGI(TAG, "📏 获取数据长度 (key: %s)...", NVS_KEY_CONFIG);
     size_t required_size = 0;
     err = nvs_get_str(nvs_handle, NVS_KEY_CONFIG, nullptr, &required_size);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "No saved config found");
+        ESP_LOGW(TAG, "⚠️  No saved config found: %s", esp_err_to_name(err));
         nvs_close(nvs_handle);
         return false;
     }
+    ESP_LOGI(TAG, "✅ 数据大小: %d 字节", required_size);
     
     // 读取 JSON 字符串
+    ESP_LOGI(TAG, "📖 读取数据...");
     char* json_str = (char*)malloc(required_size);
     if (!json_str) {
-        ESP_LOGE(TAG, "Failed to allocate memory");
+        ESP_LOGE(TAG, "❌ Failed to allocate %d bytes", required_size);
         nvs_close(nvs_handle);
         return false;
     }
@@ -212,57 +262,78 @@ bool WakeWordManager::LoadFromNVS() {
     nvs_close(nvs_handle);
     
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to read from NVS: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "❌ Failed to read from NVS: %s", esp_err_to_name(err));
         free(json_str);
         return false;
     }
     
-    ESP_LOGI(TAG, "Loaded JSON from NVS (size: %d bytes)", required_size);
+    ESP_LOGI(TAG, "✅ JSON 读取成功 (长度: %d 字节)", required_size);
+    ESP_LOGI(TAG, "JSON 内容预览: %.100s%s", json_str, (required_size > 100) ? "..." : "");
     
     // 解析 JSON
+    ESP_LOGI(TAG, "🔄 解析 JSON...");
     cJSON* root = cJSON_Parse(json_str);
     free(json_str);
     
     if (!root) {
-        ESP_LOGE(TAG, "Failed to parse JSON");
+        ESP_LOGE(TAG, "❌ Failed to parse JSON");
+        const char* error_ptr = cJSON_GetErrorPtr();
+        if (error_ptr != NULL) {
+            ESP_LOGE(TAG, "JSON 错误位置: %s", error_ptr);
+        }
         return false;
     }
+    ESP_LOGI(TAG, "✅ JSON 解析成功");
     
     // 读取版本
     cJSON* version = cJSON_GetObjectItem(root, "version");
     if (version && cJSON_IsNumber(version)) {
-        ESP_LOGI(TAG, "Config version: %d", version->valueint);
+        ESP_LOGI(TAG, "📌 Config version: %d", version->valueint);
     }
     
-    // 读取阈值（但不使用，保留用于调试）
+    // 读取阈值
     cJSON* threshold = cJSON_GetObjectItem(root, "threshold");
     if (threshold && cJSON_IsNumber(threshold)) {
         threshold_ = threshold->valuedouble;
-        ESP_LOGI(TAG, "Loaded threshold from NVS: %.3f (will NOT be applied to CustomWakeWord)", threshold_);
+        ESP_LOGI(TAG, "📌 阈值: %.3f", threshold_);
     } else {
-        ESP_LOGI(TAG, "No threshold in NVS, default: %.3f (will NOT be applied to CustomWakeWord)", threshold_);
+        ESP_LOGI(TAG, "⚠️  未找到阈值，使用默认值: %.3f", threshold_);
     }
     
     // 读取唤醒词列表
+    ESP_LOGI(TAG, "📋 读取唤醒词列表...");
     cJSON* words_array = cJSON_GetObjectItem(root, "words");
     if (!words_array || !cJSON_IsArray(words_array)) {
-        ESP_LOGE(TAG, "Invalid words array in JSON");
+        ESP_LOGE(TAG, "❌ Invalid words array in JSON");
         cJSON_Delete(root);
         return false;
     }
     
+    int array_size = cJSON_GetArraySize(words_array);
+    ESP_LOGI(TAG, "找到 %d 个唤醒词", array_size);
+    
     wake_words_.clear();
     
     cJSON* word_item = nullptr;
+    int word_index = 0;
     cJSON_ArrayForEach(word_item, words_array) {
+        word_index++;
+        ESP_LOGI(TAG, "────────────────────────────────────────");
+        ESP_LOGI(TAG, "解析唤醒词 [%d/%d]", word_index, array_size);
+        
         WakeWordConfig config;
         
         cJSON* text = cJSON_GetObjectItem(word_item, "text");
         cJSON* display = cJSON_GetObjectItem(word_item, "display");
         cJSON* phonemes = cJSON_GetObjectItem(word_item, "phonemes");
         
-        if (!text || !cJSON_IsString(text) || !phonemes || !cJSON_IsArray(phonemes)) {
-            ESP_LOGW(TAG, "Skipping invalid wake word entry");
+        if (!text || !cJSON_IsString(text)) {
+            ESP_LOGW(TAG, "❌ text 字段缺失或无效，跳过");
+            continue;
+        }
+        
+        if (!phonemes || !cJSON_IsArray(phonemes)) {
+            ESP_LOGW(TAG, "❌ phonemes 字段缺失或无效，跳过");
             continue;
         }
         
@@ -270,69 +341,105 @@ bool WakeWordManager::LoadFromNVS() {
         config.display = display && cJSON_IsString(display) ? 
                          display->valuestring : config.text;
         
+        ESP_LOGI(TAG, "  text: %s", config.text.c_str());
+        ESP_LOGI(TAG, "  display: %s", config.display.c_str());
+        
         // 读取音素数组
         cJSON* phoneme_item = nullptr;
+        int phoneme_index = 0;
         cJSON_ArrayForEach(phoneme_item, phonemes) {
             if (cJSON_IsString(phoneme_item)) {
                 config.phonemes.push_back(phoneme_item->valuestring);
+                phoneme_index++;
+                ESP_LOGI(TAG, "    phoneme[%d]: %s", phoneme_index, phoneme_item->valuestring);
             }
         }
         
         if (!config.phonemes.empty()) {
             wake_words_.push_back(config);
-            ESP_LOGI(TAG, "Loaded wake word: %s (%d phonemes)", 
+            ESP_LOGI(TAG, "✅ 加载成功: %s (%d 个音素)", 
                      config.text.c_str(), config.phonemes.size());
+        } else {
+            ESP_LOGW(TAG, "⚠️  音素列表为空，跳过");
         }
     }
     
     cJSON_Delete(root);
     
-    ESP_LOGI(TAG, "Loaded %d wake words from NVS", wake_words_.size());
+    ESP_LOGI(TAG, "════════════════════════════════════════");
+    ESP_LOGI(TAG, "✅ LoadFromNVS 完成！");
+    ESP_LOGI(TAG, "  成功加载: %d 个唤醒词", wake_words_.size());
+    ESP_LOGI(TAG, "  阈值: %.3f", threshold_);
+    ESP_LOGI(TAG, "════════════════════════════════════════");
     return true;
 }
 
 bool WakeWordManager::ApplyToCustomWakeWord(CustomWakeWord* wake_word) {
-
-    return true;
-
+    ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "║ ApplyToCustomWakeWord 调用");
+    ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
+    
     if (!wake_word) {
-        ESP_LOGE(TAG, "Wake word object is NULL");
+        ESP_LOGE(TAG, "❌ Wake word object is NULL");
         return false;
     }
+    ESP_LOGI(TAG, "✅ CustomWakeWord 对象有效");
     
     if (wake_words_.empty()) {
-        ESP_LOGW(TAG, "No wake words to apply");
+        ESP_LOGW(TAG, "⚠️  No wake words to apply");
         return false;
     }
     
-    ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "Applying %d wake words to CustomWakeWord", wake_words_.size());
+    ESP_LOGI(TAG, "📊 配置信息:");
+    ESP_LOGI(TAG, "  唤醒词数量: %d", wake_words_.size());
+    ESP_LOGI(TAG, "  阈值: %.3f", threshold_);
     
     // 1. 清除现有命令
+    ESP_LOGI(TAG, "🗑️  清除现有命令...");
     wake_word->ClearCommands();
     
-    // 2. 添加新命令
+    // 2. 添加新命令（将所有音素变体都添加进去）
+    ESP_LOGI(TAG, "➕ 添加新命令...");
+    ESP_LOGI(TAG, "════════════════════════════════════════");
+    
     int total_phonemes = 0;
-    for (const auto& word : wake_words_) {
-        for (const auto& phoneme : word.phonemes) {
+    for (size_t i = 0; i < wake_words_.size(); i++) {
+        const auto& word = wake_words_[i];
+        ESP_LOGI(TAG, "唤醒词 [%d/%d]: %s", i + 1, wake_words_.size(), word.text.c_str());
+        ESP_LOGI(TAG, "  display: %s", word.display.c_str());
+        ESP_LOGI(TAG, "  音素变体: %d 个", word.phonemes.size());
+        
+        for (size_t j = 0; j < word.phonemes.size(); j++) {
+            const auto& phoneme = word.phonemes[j];
+            ESP_LOGI(TAG, "    [%d] 添加命令: \"%s\" -> \"%s\"", 
+                     j + 1, phoneme.c_str(), word.display.c_str());
             wake_word->AddCommand(phoneme, word.display, "wake");
             total_phonemes++;
         }
     }
     
-    // 3. 设置阈值（暂时禁用，使用代码中的默认阈值进行测试）
-    // wake_word->SetThreshold(threshold_);
-    ESP_LOGI(TAG, "⚠️  Using default threshold in code (ignoring NVS threshold %.3f for testing)", threshold_);
+    ESP_LOGI(TAG, "════════════════════════════════════════");
+    ESP_LOGI(TAG, "✅ 共添加 %d 个音素命令", total_phonemes);
+    
+    // 3. 设置阈值
+    ESP_LOGI(TAG, "🎚️  设置阈值: %.3f", threshold_);
+    wake_word->SetThreshold(threshold_);
     
     // 4. 更新命令到 MultiNet（运行时生效！）
+    ESP_LOGI(TAG, "🔄 更新命令到 MultiNet...");
     bool success = wake_word->UpdateCommands();
+    
+    ESP_LOGI(TAG, "════════════════════════════════════════");
     if (success) {
-        ESP_LOGI(TAG, "✓ Applied %d phoneme variants (threshold=%.2f) - RUNTIME UPDATE SUCCESS!", 
-                 total_phonemes, threshold_);
+        ESP_LOGI(TAG, "✅✅✅ ApplyToCustomWakeWord 成功！");
+        ESP_LOGI(TAG, "  音素命令: %d 个", total_phonemes);
+        ESP_LOGI(TAG, "  阈值: %.3f", threshold_);
+        ESP_LOGI(TAG, "  运行时更新: 成功 (无需重启)");
     } else {
-        ESP_LOGW(TAG, "⚠️  Commands added but MultiNet update failed, will apply on next Initialize()");
+        ESP_LOGW(TAG, "⚠️  MultiNet 更新失败");
+        ESP_LOGW(TAG, "  命令已添加，但需要重启设备才能生效");
     }
-    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "════════════════════════════════════════");
     
     return success;
 }
