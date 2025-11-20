@@ -1,40 +1,43 @@
 #include "custom_wake_word.h"
 #include "audio_service.h"
-#include "system_info.h"
-#include "assets.h"
 
 #include <esp_log.h>
-#include <esp_mn_iface.h>
-#include <esp_mn_models.h>
 #include <esp_mn_speech_commands.h>
-#include <cJSON.h>
 
+#define DETECTION_RUNNING_EVENT 1
 
 #define TAG "CustomWakeWord"
 
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// CustomWakeWord: 基于 MultiNet 的唤醒词检测
+// 数据流：音频 -> AFE 预处理（降噪/AEC） -> MultiNet 检测
+// 参考：AfeWakeWord（使用 WakeNet）
+// 差异：检测模型从 WakeNet 改为 MultiNet
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 CustomWakeWord::CustomWakeWord()
-    : wake_word_pcm_(), wake_word_opus_() {
+    : afe_data_(nullptr),
+      wake_word_pcm_(),
+      wake_word_opus_() {
+    ESP_LOGI(TAG, "CustomWakeWord constructor called");
     event_group_ = xEventGroupCreate();
 }
 
 CustomWakeWord::~CustomWakeWord() {
-    // 清理 AFE
-    if (afe_data_ != nullptr && afe_iface_ != nullptr) {
+    ESP_LOGI(TAG, "CustomWakeWord destructor called");
+    
+    // 清理 AFE（与 AfeWakeWord 相同）
+    if (afe_data_ != nullptr) {
         afe_iface_->destroy(afe_data_);
-        afe_data_ = nullptr;
     }
     
-    if (event_group_ != nullptr) {
-        vEventGroupDelete(event_group_);
-    }
-    
-    // 清理 MultiNet
+    // 清理 MultiNet（CustomWakeWord 特有）
     if (multinet_model_data_ != nullptr && multinet_ != nullptr) {
         multinet_->destroy(multinet_model_data_);
         multinet_model_data_ = nullptr;
     }
 
+    // 清理编码任务资源（与 AfeWakeWord 相同）
     if (wake_word_encode_task_stack_ != nullptr) {
         heap_caps_free(wake_word_encode_task_stack_);
     }
@@ -43,385 +46,206 @@ CustomWakeWord::~CustomWakeWord() {
         heap_caps_free(wake_word_encode_task_buffer_);
     }
 
+    // 清理模型列表（与 AfeWakeWord 相同）
     if (models_ != nullptr) {
         esp_srmodel_deinit(models_);
     }
-}
 
-void CustomWakeWord::ParseWakenetModelConfig() {
-    // Read index.json
-    auto& assets = Assets::GetInstance();
-    void* ptr = nullptr;
-    size_t size = 0;
-    if (!assets.GetAssetData("index.json", ptr, size)) {
-        ESP_LOGE(TAG, "Failed to read index.json");
-        return;
-    }
-    cJSON* root = cJSON_ParseWithLength(static_cast<char*>(ptr), size);
-    if (root == nullptr) {
-        ESP_LOGE(TAG, "Failed to parse index.json");
-        return;
-    }
-    cJSON* multinet_model = cJSON_GetObjectItem(root, "multinet_model");
-    if (cJSON_IsObject(multinet_model)) {
-        cJSON* language = cJSON_GetObjectItem(multinet_model, "language");
-        cJSON* duration = cJSON_GetObjectItem(multinet_model, "duration");
-        cJSON* threshold = cJSON_GetObjectItem(multinet_model, "threshold");
-        cJSON* commands = cJSON_GetObjectItem(multinet_model, "commands");
-        if (cJSON_IsString(language)) {
-            language_ = language->valuestring;
-        }
-        if (cJSON_IsNumber(duration)) {
-            duration_ = duration->valueint;
-        }
-        if (cJSON_IsNumber(threshold)) {
-            app_threshold_ = threshold->valuedouble;  // 从配置读取应用层阈值
-        }
-        if (cJSON_IsArray(commands)) {
-            for (int i = 0; i < cJSON_GetArraySize(commands); i++) {
-                cJSON* command = cJSON_GetArrayItem(commands, i);
-                if (cJSON_IsObject(command)) {
-                    cJSON* command_name = cJSON_GetObjectItem(command, "command");
-                    cJSON* text = cJSON_GetObjectItem(command, "text");
-                    cJSON* action = cJSON_GetObjectItem(command, "action");
-                    if (cJSON_IsString(command_name) && cJSON_IsString(text) && cJSON_IsString(action)) {
-                        commands_.push_back({command_name->valuestring, text->valuestring, action->valuestring});
-                        ESP_LOGI(TAG, "Command: %s, Text: %s, Action: %s", command_name->valuestring, text->valuestring, action->valuestring);
-                    }
-                }
-            }
-        }
-    }
-    cJSON_Delete(root);
+    vEventGroupDelete(event_group_);
 }
-
 
 bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) {
+    ESP_LOGI(TAG, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    ESP_LOGI(TAG, "CustomWakeWord::Initialize START");
+    ESP_LOGI(TAG, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    
     codec_ = codec;
-    commands_.clear();
+    int ref_num = codec_->input_reference() ? 1 : 0;
+
+    ESP_LOGI(TAG, "Parameters: codec=%p, models_list=%p, ref_num=%d", 
+             codec, models_list, ref_num);
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // MultiNet Only Mode: 直接使用 MultiNet 作为唤醒模型
-    // MultiNet6 使用 Grapheme（字形）格式，推荐全大写
-    // 参考: https://docs.espressif.com/projects/esp-sr/en/latest/esp32/speech_command_recognition/README.html
+    // 初始化模型列表（与 AfeWakeWord 相同）
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     if (models_list == nullptr) {
-        ESP_LOGI(TAG, "CustomWakeWord::Initialize1");
+        ESP_LOGI(TAG, "models_list is NULL, calling esp_srmodel_init(\"model\")");
         models_ = esp_srmodel_init("model");
-        language_ = "en";  // 使用英文模型
-        multinet_threshold_ = 0.05;  // MultiNet 内部阈值（低阈值让它总是返回结果）
-        app_threshold_ = 0.30;  // 应用层阈值（降低适应非标准发音，标准词可达0.6-0.8）
-        duration_ = 5000;  // 超时时间 5 秒
-
-        /*
-        // 添加固定的唤醒词（MultiNet6 格式：全大写标准拼写）
-        ESP_LOGI(TAG, "Loading built-in wake words (MultiNet6 format)");
-        ESP_LOGI(TAG, "  MultiNet threshold=%.2f (internal, low to get all results)", multinet_threshold_);
-        ESP_LOGI(TAG, "  App threshold=%.2f (application layer filtering)", app_threshold_);
-
-        // MultiNet6 正确格式：全大写字母，标准英文拼写
-        commands_.push_back({"HI PLAUD", "hi plaud", "wake"});
-        commands_.push_back({"HELLO PLAUD", "hello plaud", "wake"});
-        commands_.push_back({"HEY PLAUD", "hey plaud", "wake"});
-     */
-
-        // ⚠️ 避免使用太多 "HI + 名字" 的相似模式，会导致混淆
-        // ⚠️ Tom/Jack/Lily/Lucy 音素相似，MultiNet6 很难区分
-        
-        // ✅ 推荐：标准英文唤醒词（音素清晰，好发音，不易误触发）
-        commands_.push_back({"COMPUTER", "computer", "wake"});        // 单词：常用词，3音节
-        commands_.push_back({"HELLO FRIEND", "hello friend", "wake"}); // 双词：HELLO + 朋友
-        
-        // 备选唤醒词（可根据需要启用）
-        // commands_.push_back({"ASSISTANT", "assistant", "wake"});   // 单词：助手
-        // commands_.push_back({"HELLO ROBOT", "hello robot", "wake"}); // HELLO + 机器人
-        // commands_.push_back({"HELLO SYSTEM", "hello system", "wake"}); // HELLO + 系统
-
     } else {
-        ESP_LOGI(TAG, "CustomWakeWord::Initialize2  hit!!!!");
+        ESP_LOGI(TAG, "Using provided models_list");
         models_ = models_list;
-        // MultiNet Only 模式：始终使用代码中定义的默认唤醒词
-        // 不从 assets 读取，确保行为一致
-        ESP_LOGI(TAG, "Using built-in wake words (ignoring assets config)");
-        language_ = "en";
-        multinet_threshold_ = 0.05;  // MultiNet 内部阈值（低阈值让它总是返回结果）
-        app_threshold_ = 0.35;  // 🔧 [优化] 降低阈值：0.45→0.35（适配真实唤醒词置信度0.31-0.38）
-        duration_ = 5000;
-       
-        // ⚠️ 避免使用太多 "HI + 名字" 的相似模式，会导致混淆
-        // ⚠️ Tom/Jack/Lily/Lucy 音素相似，MultiNet6 很难区分
-        
-        // ✅ 推荐：标准英文唤醒词（音素清晰，好发音，不易误触发）
-        //commands_.push_back({"COMPUTER", "computer", "wake"});        // 单词：常用词，3音节
-        //commands_.push_back({"HELLO FRIEND", "hello friend", "wake"}); // 双词：HELLO + 朋友
-
-        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        // 🔧 [优化] 唤醒词优化：减少相似模式，降低混淆率
-        // 问题诊断：HI/HEY/HELLO + COMPUTER/DEVICE/ASSISTANT 太相似，导致混淆
-        // 测试策略：先用单个唤醒词测试，确认识别率后再添加其他词
-        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        
-        // 🔧 [测试] 使用 MultiNet 支持更好的唤醒词
-        // "COMPUTER" 是代码注释推荐的标准词，识别率应该更高
-        commands_.push_back({"COMPUTER", "computer", "wake"});           // 单词，MultiNet 支持好
-        
-        // 备选方案（如果 COMPUTER 效果好，可以取消注释测试其他词）
-        // commands_.push_back({"HI DEVICE", "hi device", "wake"});      // 之前测试的词（识别率低）
-        // commands_.push_back({"OK SYSTEM", "ok system", "wake"});
-        // commands_.push_back({"WAKE UP", "wake up", "wake"});
-        
-        // 原配置（导致"hi device"被识别成"hi computer"，已禁用）
-        // commands_.push_back({"HI COMPUTER", "hi computer", "wake"});
-        // commands_.push_back({"HELLO ASSISTANT", "hello assistant", "wake"});
-        // commands_.push_back({"HEY DEVICE", "hey device", "wake"});  
-        
-        // 备选唤醒词（可根据需要启用）
-        // commands_.push_back({"ASSISTANT", "assistant", "wake"});   // 单词：助手
-        // commands_.push_back({"HELLO ROBOT", "hello robot", "wake"}); // HELLO + 机器人
-        // commands_.push_back({"HELLO SYSTEM", "hello system", "wake"}); // HELLO + 系统
     }
 
     if (models_ == nullptr || models_->num == -1) {
-        ESP_LOGE(TAG, "Failed to initialize model");
+        ESP_LOGE(TAG, "Failed to initialize model, models_=%p, num=%d", 
+                 models_, models_ ? models_->num : -999);
         return false;
+    }
+    
+    ESP_LOGI(TAG, "Found %d models in list", models_->num);
+    for (int i = 0; i < models_->num; i++) {
+        ESP_LOGI(TAG, "  Model %d: %s", i, models_->model_name[i]);
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 初始化 MultiNet（命令词识别，作为唤醒模型）
+    // 查找并初始化 MultiNet 模型
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    mn_name_ = esp_srmodel_filter(models_, ESP_MN_PREFIX, language_.c_str());
-    if (mn_name_ == nullptr) {
+    multinet_model_name_ = esp_srmodel_filter(models_, ESP_MN_PREFIX, language_.c_str());
+    if (multinet_model_name_ == nullptr) {
         ESP_LOGE(TAG, "Failed to find MultiNet model for language: %s", language_.c_str());
         ESP_LOGE(TAG, "Please ensure MultiNet model is selected in sdkconfig");
-        ESP_LOGI(TAG, "For English: CONFIG_SR_MN5Q8_EN=y");
-        ESP_LOGI(TAG, "For Chinese: CONFIG_SR_MN_CN=y");
         return false;
     }
 
-    ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "Found MultiNet model: %s (language: %s)", mn_name_, language_.c_str());
-    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "Found MultiNet model: %s (language: %s)", multinet_model_name_, language_.c_str());
     
-    // 确认使用的模型版本
-    if (strstr(mn_name_, "mn6") != nullptr) {
-        ESP_LOGI(TAG, "✓ Confirmed using MultiNet6 - Grapheme format required");
-    } else if (strstr(mn_name_, "mn5") != nullptr) {
-        ESP_LOGW(TAG, "⚠️ Using MultiNet5 - Phoneme format required, but code is configured for MultiNet6!");
-        ESP_LOGW(TAG, "⚠️ Please update sdkconfig to use CONFIG_SR_MN_EN_MULTINET6_QUANT=y");
-    } else if (strstr(mn_name_, "mn7") != nullptr) {
-        ESP_LOGI(TAG, "✓ Using MultiNet7 - Grapheme format with optional phoneme column");
-    } else {
-        ESP_LOGW(TAG, "⚠️ Unknown MultiNet version: %s", mn_name_);
+    // 确认模型版本
+    if (strstr(multinet_model_name_, "mn6") != nullptr) {
+        ESP_LOGI(TAG, "  ✓ Using MultiNet6 - Grapheme format required");
+    } else if (strstr(multinet_model_name_, "mn5") != nullptr) {
+        ESP_LOGW(TAG, "  ⚠️ Using MultiNet5 - Phoneme format required");
+    } else if (strstr(multinet_model_name_, "mn7") != nullptr) {
+        ESP_LOGI(TAG, "  ✓ Using MultiNet7 - Grapheme format");
     }
 
-    multinet_ = esp_mn_handle_from_name(mn_name_);
+    multinet_ = esp_mn_handle_from_name(multinet_model_name_);
     if (multinet_ == nullptr) {
         ESP_LOGE(TAG, "Failed to create MultiNet handle");
         return false;
     }
 
-    // 创建 MultiNet 模型数据
-    multinet_model_data_ = multinet_->create(mn_name_, duration_);
+    multinet_model_data_ = multinet_->create(multinet_model_name_, duration_);
     if (multinet_model_data_ == nullptr) {
         ESP_LOGE(TAG, "Failed to create MultiNet model data");
         return false;
     }
     
-    // 获取 MultiNet 参数信息
     int chunk_size = multinet_->get_samp_chunksize(multinet_model_data_);
     int sample_rate = multinet_->get_samp_rate(multinet_model_data_);
     ESP_LOGI(TAG, "MultiNet parameters: chunk_size=%d, sample_rate=%d", chunk_size, sample_rate);
     
-    // 设置 MultiNet 内部检测阈值（设置得很低，让它总是返回结果）
+    // 设置 MultiNet 内部阈值（低阈值，让它返回所有结果）
     multinet_->set_det_threshold(multinet_model_data_, multinet_threshold_);
-    ESP_LOGI(TAG, "MultiNet internal threshold set to: %.2f", multinet_threshold_);
-    ESP_LOGI(TAG, "Application layer threshold: %.2f (for filtering)", app_threshold_);
+    ESP_LOGI(TAG, "MultiNet internal threshold: %.3f (low to get all results)", multinet_threshold_);
+    ESP_LOGI(TAG, "Application layer threshold: %.3f (for filtering)", app_threshold_);
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 添加默认唤醒命令
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    commands_.clear();
+    commands_.push_back({"COMPUTER", "computer", "wake"});
+    commands_.push_back({"ASSISTANT", "assistant", "wake"});
+    commands_.push_back({"HI DEVICE", "hi device", "wake"});
     
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 添加唤醒命令（MultiNet6 使用 Grapheme 格式）
-    // MultiNet6 格式：全大写标准英文拼写，无需音素转换
-    // 参考: https://docs.espressif.com/projects/esp-sr/en/latest/esp32/speech_command_recognition/README.html#multinet6-customize-speech-commands
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    ESP_LOGI(TAG, "Adding %d wake word commands:", commands_.size());
     esp_mn_commands_clear();
-    
-    ESP_LOGI(TAG, "Adding %d wake word commands (MultiNet6 format):", commands_.size());
     for (int i = 0; i < commands_.size(); i++) {
         ESP_LOGI(TAG, "  [%d] command=\"%s\", text=\"%s\", action=\"%s\"", 
-                 i + 1,  // MultiNet command ID 从 1 开始（0 保留）
-                 commands_[i].command.c_str(),
-                 commands_[i].text.c_str(), 
-                 commands_[i].action.c_str());
-        
-        // MultiNet6: 添加命令（Grapheme 格式，全大写）
-        // 注意: command ID 从 1 开始（0 保留给系统）
+                 i + 1, commands_[i].command.c_str(), commands_[i].text.c_str(), commands_[i].action.c_str());
         esp_mn_commands_add(i + 1, commands_[i].command.c_str());
     }
     
-    // 更新命令到模型
-    ESP_LOGI(TAG, "Calling esp_mn_commands_update()...");
     esp_mn_error_t* err = esp_mn_commands_update();
     if (err) {
-        ESP_LOGE(TAG, "❌ Failed to update commands, %d errors:", err->num);
+        ESP_LOGE(TAG, "Failed to update commands, %d errors:", err->num);
         for (int i = 0; i < err->num; i++) {
             ESP_LOGE(TAG, "  Error command ID: %d, content: '%s'", 
-                     err->phrases[i]->command_id, 
-                     err->phrases[i]->string);
+                     err->phrases[i]->command_id, err->phrases[i]->string);
         }
-        // 错误结构会自动清理，不需要手动释放
         return false;
     }
-
-    // 打印已添加的命令
-    ESP_LOGI(TAG, "✓ Successfully added %d commands to MultiNet6", commands_.size());
-    ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "Active MultiNet6 commands:");
-    esp_mn_commands_print();
-    ESP_LOGI(TAG, "========================================");
     
+    ESP_LOGI(TAG, "✓ Successfully added %d commands to MultiNet", commands_.size());
+
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 初始化 AFE (Audio Front-End) 用于降噪、波束成形、AEC
+    // 初始化 AFE（与 AfeWakeWord 完全相同）
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    if (use_afe_) {
-        ESP_LOGI(TAG, "Initializing AFE for audio preprocessing...");
-        
-        int ref_num = codec_->input_reference() ? 1 : 0;
-        ESP_LOGI(TAG, "AFE config: input_channels=%d, ref_num=%d, input_reference=%d",
-                 codec_->input_channels(), ref_num, codec_->input_reference());
-        
-        // 构建输入格式字符串：M=麦克风，R=回放参考
-        std::string input_format;
-        for (int i = 0; i < codec_->input_channels() - ref_num; i++) {
-            input_format.push_back('M');
-        }
-        for (int i = 0; i < ref_num; i++) {
-            input_format.push_back('R');
-        }
-        ESP_LOGI(TAG, "AFE input format: \"%s\"", input_format.c_str());
-        
-        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        // 🔧 [重要修复] 使用与 AfeWakeWord 相同的初始化方式
-        // 问题：之前传入 NULL 导致 AFE 内部状态不完整
-        // 解决：传入 models_，让 AFE 自动配置（然后禁用不需要的功能）
-        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        
-        // 传入 models_ 让 AFE 自动初始化（与 AfeWakeWord 一致）
-        afe_config_t* afe_config = afe_config_init(input_format.c_str(), models_, AFE_TYPE_SR, AFE_MODE_HIGH_PERF);
-        if (afe_config == nullptr) {
-            ESP_LOGE(TAG, "❌ Failed to init AFE config!");
-            return false;
-        }
-        
-        // 🔧 [关键修复] 完全模仿 AfeWakeWord 的配置方式
-        // 只覆盖必要参数，其他让 AFE 根据 models_ 自动配置
-        afe_config->aec_init = codec_->input_reference();
-        afe_config->aec_mode = AEC_MODE_SR_HIGH_PERF;
-        afe_config->afe_perferred_core = 1;
-        afe_config->afe_perferred_priority = 1;
-        afe_config->memory_alloc_mode = AFE_MEMORY_ALLOC_MORE_PSRAM;
-        
-        // 🔧 禁用 WakeNet（因为我们使用 MultiNet）
-        afe_config->wakenet_init = false;
-        
-        // 📝 不显式设置 ns_init、vad_init、agc_init
-        // 让 AFE 根据 models_ 自动决定（与 AfeWakeWord 一致）
-        
-        ESP_LOGI(TAG, "AFE config: aec_init=%d, aec_mode=%d", 
-                 afe_config->aec_init, afe_config->aec_mode);
-        
-        // 创建 AFE 接口
-        afe_iface_ = esp_afe_handle_from_config(afe_config);
-        if (afe_iface_ == nullptr) {
-            ESP_LOGE(TAG, "❌ Failed to get AFE interface handle!");
-            return false;
-        }
-        
-        // 创建 AFE 数据实例
-        afe_data_ = afe_iface_->create_from_config(afe_config);
-        if (afe_data_ == nullptr) {
-            ESP_LOGE(TAG, "❌ Failed to create AFE data from config!");
-            return false;
-        }
-        
-        ESP_LOGI(TAG, "✓ AFE initialized: feed_size=%d, fetch_size=%d", 
-                 afe_iface_->get_feed_chunksize(afe_data_),
-                 afe_iface_->get_fetch_chunksize(afe_data_));
-        
-        // 创建音频检测任务（AFE + MultiNet）
-        // 使用 xTaskCreatePinnedToCore 指定核心 1（AFE 也在核心 1）
-        BaseType_t task_created = xTaskCreatePinnedToCore(
-            [](void* arg) {
-                auto this_ = (CustomWakeWord*)arg;
-                this_->AudioDetectionTask();
-                vTaskDelete(NULL);
-            }, 
-            "wake_det",     // 任务名（缩短以节省内存）
-            4096,           // 栈大小 4KB（足够了，AFE fetch 不需要太多栈）
-            this,           // 参数
-            5,              // 优先级（与 AFE 任务相同）
-            nullptr,        // 任务句柄
-            1               // 核心 1（与 AFE 在同一核心）
-        );
-        
-        if (task_created != pdPASS) {
-            ESP_LOGE(TAG, "❌ Failed to create audio detection task! (out of memory?)");
-            ESP_LOGI(TAG, "Available heap: %d bytes", esp_get_free_heap_size());
-            return false;
-        }
-        ESP_LOGI(TAG, "✓ Audio detection task created on core 1");
-    } else {
-        ESP_LOGI(TAG, "AFE disabled, using raw audio input");
+    std::string input_format;
+    for (int i = 0; i < codec_->input_channels() - ref_num; i++) {
+        input_format.push_back('M');
+    }
+    for (int i = 0; i < ref_num; i++) {
+        input_format.push_back('R');
+    }
+    ESP_LOGI(TAG, "Input format: %s, channels=%d, ref_num=%d", 
+             input_format.c_str(), codec_->input_channels(), ref_num);
+    
+    afe_config_t* afe_config = afe_config_init(input_format.c_str(), models_, AFE_TYPE_SR, AFE_MODE_HIGH_PERF);
+    if (afe_config == nullptr) {
+        ESP_LOGE(TAG, "Failed to init AFE config!");
+        return false;
     }
     
-    ESP_LOGI(TAG, "CustomWakeWord initialized successfully");
+    afe_config->aec_init = codec_->input_reference();
+    afe_config->aec_mode = AEC_MODE_SR_HIGH_PERF;
+    afe_config->afe_perferred_core = 1;
+    afe_config->afe_perferred_priority = 1;
+    afe_config->memory_alloc_mode = AFE_MEMORY_ALLOC_MORE_PSRAM;
+    
+    // 禁用 WakeNet（因为我们使用 MultiNet）
+    afe_config->wakenet_init = false;
+    
+    ESP_LOGI(TAG, "AFE config: aec_init=%d, aec_mode=%d, wakenet_init=%d", 
+             afe_config->aec_init, afe_config->aec_mode, afe_config->wakenet_init);
+    
+    afe_iface_ = esp_afe_handle_from_config(afe_config);
+    if (afe_iface_ == nullptr) {
+        ESP_LOGE(TAG, "Failed to get AFE interface handle!");
+        return false;
+    }
+    
+    afe_data_ = afe_iface_->create_from_config(afe_config);
+    if (afe_data_ == nullptr) {
+        ESP_LOGE(TAG, "Failed to create AFE data from config!");
+        return false;
+    }
+    ESP_LOGI(TAG, "AFE interface created successfully, feed_size=%d", 
+             afe_iface_->get_feed_chunksize(afe_data_));
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 创建音频检测任务（与 AfeWakeWord 相同）
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    xTaskCreate([](void* arg) {
+        auto this_ = (CustomWakeWord*)arg;
+        this_->AudioDetectionTask();
+        vTaskDelete(NULL);
+    }, "audio_detection", 4096, this, 3, nullptr);
+
+    ESP_LOGI(TAG, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    ESP_LOGI(TAG, "CustomWakeWord initialization completed!");
+    ESP_LOGI(TAG, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     return true;
 }
 
 void CustomWakeWord::OnWakeWordDetected(std::function<void(const std::string& wake_word)> callback) {
     wake_word_detected_callback_ = callback;
+    ESP_LOGI(TAG, "Wake word callback registered");
 }
 
 void CustomWakeWord::Start() {
-    running_ = true;
-    if (use_afe_ && event_group_ != nullptr) {
-        xEventGroupSetBits(event_group_, 0x01);  // 启动 AFE 检测任务
-    }
+    ESP_LOGI(TAG, "Starting wake word detection...");
+    xEventGroupSetBits(event_group_, DETECTION_RUNNING_EVENT);
 }
 
 void CustomWakeWord::Stop() {
-    ESP_LOGI(TAG, "Stopping CustomWakeWord...");
-    running_ = false;
+    ESP_LOGI(TAG, "Stopping wake word detection...");
     
-    if (use_afe_ && event_group_ != nullptr) {
-        // 1. 先清除事件位，通知 AudioDetectionTask 停止
-        xEventGroupClearBits(event_group_, 0x01);
-        
-        // 2. 重置 AFE 缓冲区，中断可能阻塞的 fetch()
-        if (afe_data_ != nullptr && afe_iface_ != nullptr) {
-            afe_iface_->reset_buffer(afe_data_);
-        }
-        
-        // 3. 等待一小段时间，让 AudioDetectionTask 真正停止
-        //    确保它不再阻塞在 fetch() 中
-        vTaskDelay(pdMS_TO_TICKS(50));
-        
-        // 4. 再次重置缓冲区（以防万一）
-        if (afe_data_ != nullptr && afe_iface_ != nullptr) {
-            afe_iface_->reset_buffer(afe_data_);
-        }
+    // 清除检测运行标志位（与 AfeWakeWord 相同）
+    xEventGroupClearBits(event_group_, DETECTION_RUNNING_EVENT);
+    
+    // 重置 AFE 缓冲区（幂等操作，可以重复调用）
+    if (afe_data_ != nullptr && afe_iface_ != nullptr) {
+        afe_iface_->reset_buffer(afe_data_);
+        ESP_LOGI(TAG, "AFE buffer reset");
     }
-    
-    ESP_LOGI(TAG, "CustomWakeWord stopped");
 }
 
 void CustomWakeWord::Feed(const std::vector<int16_t>& data) {
-    // 🔧 [优化] AFE 模式下不检查 running_
-    // 理由：
-    // 1. AFE 内部有 ringbuffer，可以随时接收数据
-    // 2. AudioDetectionTask 通过事件位和 running_ 控制消费
-    // 3. Stop() 会清空 buffer，不会积压数据
-    // 4. 参考 AfeWakeWord：Feed() 不检查任何状态
+    if (afe_data_ == nullptr) {
+        return;
+    }
     
-    // 添加调试日志，证明 Feed 被调用
+    // 计算音频能量，用于检测麦克风是否工作（与 AfeWakeWord 相同）
     static int feed_count = 0;
     if (++feed_count % 100 == 0) {
         int64_t sum = 0;
@@ -433,381 +257,71 @@ void CustomWakeWord::Feed(const std::vector<int16_t>& data) {
             }
         }
         int avg = data.empty() ? 0 : sum / data.size();
-        ESP_LOGI(TAG, "CustomWakeWord Feed (count %d): avg=%d, max=%d, samples=%d", 
+        ESP_LOGI(TAG, "Audio level check (feed %d): avg=%d, max=%d, samples=%d", 
                  feed_count, avg, max_val, data.size());
-    }
-
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // AFE 模式：将数据送入 AFE 进行预处理
-    // AFE 会在后台任务中处理，然后送给 MultiNet
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    if (use_afe_ && afe_data_ != nullptr && afe_iface_ != nullptr) {
-        afe_iface_->feed(afe_data_, data.data());
-        return;
-    }
-
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 非 AFE 模式（当前已禁用，保留代码框架）
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    return;
-    ///////////////
-
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 非 AFE 模式：直接使用 MultiNet 检测（原有逻辑）
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    esp_mn_state_t mn_state;
-    
-    // 处理双通道音频（如果是）
-    if (codec_->input_channels() == 2) {
-        // 提取左声道
-        auto mono_data = std::vector<int16_t>(data.size() / 2);
-        for (size_t i = 0, j = 0; i < mono_data.size(); ++i, j += 2) {
-            mono_data[i] = data[j];
+        if (max_val < 100) {
+            ESP_LOGW(TAG, "  ⚠️ Audio level is very low! Microphone may not be working!");
         }
-        
-        StoreWakeWordData(mono_data);
-        mn_state = multinet_->detect(multinet_model_data_, 
-                                     const_cast<int16_t*>(mono_data.data()));
-    } else {
-        StoreWakeWordData(data);
-        mn_state = multinet_->detect(multinet_model_data_, 
-                                     const_cast<int16_t*>(data.data()));
     }
     
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 处理检测结果
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    
-    // 调试：每 100 次 Feed 显示一次检测状态
-    static int state_count = 0;
-    if (++state_count % 100 == 0) {
-        ESP_LOGI(TAG, "MultiNet state: %d (0=DETECTING, 1=DETECTED, 2=TIMEOUT), running=%d", 
-                 mn_state, running_ ? 1 : 0);
-    }
-    
-    // 重要：记录非 DETECTING 状态
-    if (mn_state != ESP_MN_STATE_DETECTING) {
-        ESP_LOGI(TAG, "⚠️ MultiNet state changed to: %d (0=DETECTING, 1=DETECTED, 2=TIMEOUT)", 
-                 mn_state);
-    }
-    
-    if (mn_state == ESP_MN_STATE_DETECTING) {
-        // 正在检测中，无需处理
-        return;
-    } 
-    else if (mn_state == ESP_MN_STATE_DETECTED) {
-        // ✓ MultiNet 返回了检测结果（但可能低于应用层阈值）
-        esp_mn_results_t* mn_result = multinet_->get_results(multinet_model_data_);
-        
-        if (mn_result != NULL && mn_result->num > 0) {
-            // 获取第一个检测到的命令 ID（概率最高的）
-            int command_id = mn_result->phrase_id[0];
-            float best_prob = mn_result->prob[0];  // prob[0] 对应 phrase_id[0]
-            
-            // 总是显示所有检测结果（方便调试阈值）
-            ESP_LOGI(TAG, "begin━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-            ESP_LOGI(TAG, "📊 MultiNet detection result (num=%d):", mn_result->num);
-            for (int i = 0; i < mn_result->num && i < 5; i++) {
-                int result_cmd_id = mn_result->phrase_id[i];
-                float result_prob = mn_result->prob[i];
-                int result_array_index = result_cmd_id - 1;
-                
-                if (result_array_index >= 0 && result_array_index < commands_.size()) {
-                    ESP_LOGI(TAG, "  [%d] ID=%d (%s): prob=%.3f %s", 
-                             i, result_cmd_id, 
-                             commands_[result_array_index].text.c_str(),
-                             result_prob,
-                             (i == 0) ? "← BEST" : "");
-                } else {
-                    ESP_LOGI(TAG, "  [%d] ID=%d (unknown): prob=%.3f", 
-                             i, result_cmd_id, result_prob);
-                }
-            }
-            ESP_LOGI(TAG, "end━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-
-            
-            // 应用层阈值过滤
-            if (best_prob < app_threshold_) {
-                ESP_LOGW(TAG, "⚠️  Probability %.3f < threshold %.2f, ignoring detection", 
-                         best_prob, app_threshold_);
-                ESP_LOGI(TAG, " 应用层过滤结束━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-                multinet_->clean(multinet_model_data_);
-                return;
-            }
-            
-            ESP_LOGI(TAG, "✓ Best match - Command ID: %d, Probability: %.3f (>= %.2f)", 
-                     command_id, best_prob, app_threshold_);
-            
-            // 检查命令 ID 是否有效
-            // 注意：MultiNet command ID 从 1 开始，我们的数组从 0 开始
-            int array_index = command_id - 1;
-            if (array_index >= 0 && array_index < commands_.size()) {
-                auto& command = commands_[array_index];
-                
-                ESP_LOGI(TAG, "  → Command: \"%s\", Text: \"%s\", Action: \"%s\"",
-                         command.command.c_str(),
-                         command.text.c_str(),
-                         command.action.c_str());
-                
-                // 只响应 "wake" 动作的命令
-                if (command.action == "wake") {
-                    last_detected_wake_word_ = command.text;  // 例如: "hi plaud"
-                    running_ = false;  // 停止检测
-                    
-                    ESP_LOGI(TAG, "✓✓✓ Wake word detected: \"%s\" (probability: %.3f) ✓✓✓", 
-                             last_detected_wake_word_.c_str(), best_prob);
-                    ESP_LOGI(TAG, "唤醒命中━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-                    
-                    // 触发回调
-                    if (wake_word_detected_callback_) {
-                        wake_word_detected_callback_(last_detected_wake_word_);
-                    }
-                }
-            } else {
-                ESP_LOGW(TAG, "Invalid command ID: %d (array index: %d, total commands: %d)", 
-                         command_id, array_index, commands_.size());
-            }
-        } else {
-            ESP_LOGW(TAG, "MultiNet detected but no results (mn_result=%p, num=%d)", 
-                     mn_result, mn_result ? mn_result->num : -1);
-        }
-        
-        // 清理 MultiNet 状态
-        multinet_->clean(multinet_model_data_);
-    } 
-    else if (mn_state == ESP_MN_STATE_TIMEOUT) {
-        // 超时，清理状态
-        ESP_LOGD(TAG, "MultiNet timeout");
-        multinet_->clean(multinet_model_data_);
-    }
+    // 将音频数据送入 AFE 处理（与 AfeWakeWord 完全相同）
+    afe_iface_->feed(afe_data_, data.data());
 }
 
 size_t CustomWakeWord::GetFeedSize() {
-    // 如果启用了 AFE，返回 AFE 的 feed size
-    if (use_afe_ && afe_data_ != nullptr && afe_iface_ != nullptr) {
-        return afe_iface_->get_feed_chunksize(afe_data_);
-    }
-    
-    // 否则返回 MultiNet 的 chunk size
-    if (multinet_model_data_ == nullptr) {
+    if (afe_data_ == nullptr) {
         return 0;
     }
-    return multinet_->get_samp_chunksize(multinet_model_data_);
+    return afe_iface_->get_feed_chunksize(afe_data_);
 }
 
-void CustomWakeWord::StoreWakeWordData(const std::vector<int16_t>& data) {
-    // Store PCM data for wake word encoding
-    wake_word_pcm_.push_back(data);
-    
-    // Keep only the last 2 seconds (16000 Hz * 2 / 480 ≈ 66 frames)
-    while (wake_word_pcm_.size() > 66) {
-        wake_word_pcm_.pop_front();
-    }
-}
-
-void CustomWakeWord::EncodeWakeWordData() {
-    const size_t stack_size = 4096 * 7;
-    wake_word_opus_.clear();
-    if (wake_word_encode_task_stack_ == nullptr) {
-        wake_word_encode_task_stack_ = (StackType_t*)heap_caps_malloc(stack_size, MALLOC_CAP_SPIRAM);
-        assert(wake_word_encode_task_stack_ != nullptr);
-    }
-    if (wake_word_encode_task_buffer_ == nullptr) {
-        wake_word_encode_task_buffer_ = (StaticTask_t*)heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL);
-        assert(wake_word_encode_task_buffer_ != nullptr);
-    }
-    xTaskCreateStatic([](void* arg) {
-        auto this_ = (CustomWakeWord*)arg;
-        OpusEncoderWrapper encoder(16000, 1, 60);
-        
-        // Opus 编码器期望 960 samples (60ms @ 16kHz)
-        // CustomWakeWord 每个块是 512 samples (32ms @ 16kHz)
-        // 需要合并多个块来满足 Opus 的要求
-        const size_t opus_frame_size = 960; // 60ms @ 16kHz
-        std::vector<int16_t> buffer;
-        
-        for (auto& pcm : this_->wake_word_pcm_) {
-            // 将数据添加到缓冲区
-            buffer.insert(buffer.end(), pcm.begin(), pcm.end());
-            
-            // 当缓冲区有足够数据时，编码一帧
-            while (buffer.size() >= opus_frame_size) {
-                std::vector<int16_t> frame(buffer.begin(), buffer.begin() + opus_frame_size);
-                buffer.erase(buffer.begin(), buffer.begin() + opus_frame_size);
-                
-                std::vector<uint8_t> opus;
-                if (encoder.Encode(std::move(frame), opus)) {
-                    this_->wake_word_opus_.push_back(std::move(opus));
-                }
-            }
-        }
-        
-        // 如果还有剩余数据（不足一帧），补零后编码
-        if (!buffer.empty()) {
-            buffer.resize(opus_frame_size, 0); // 补零到正确大小
-            std::vector<uint8_t> opus;
-            if (encoder.Encode(std::move(buffer), opus)) {
-                this_->wake_word_opus_.push_back(std::move(opus));
-            }
-        }
-        
-        vTaskDelete(NULL);
-    }, "encode_wake_word", stack_size, this, 3, wake_word_encode_task_stack_, wake_word_encode_task_buffer_);
-}
-
-bool CustomWakeWord::GetWakeWordOpus(std::vector<uint8_t>& opus) {
-    if (wake_word_opus_.empty()) {
-        return false;
-    }
-    opus = std::move(wake_word_opus_.front());
-    wake_word_opus_.pop_front();
-    return true;
-}
-
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 动态命令管理接口实现
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-void CustomWakeWord::ClearCommands() {
-    commands_.clear();
-    ESP_LOGI(TAG, "Cleared all wake word commands");
-}
-
-void CustomWakeWord::AddCommand(const std::string& phoneme, 
-                                const std::string& text, 
-                                const std::string& action) {
-    commands_.push_back({phoneme, text, action});
-    ESP_LOGI(TAG, "Added command: phoneme='%s', text='%s', action='%s'", 
-             phoneme.c_str(), text.c_str(), action.c_str());
-}
-
-void CustomWakeWord::SetThreshold(float threshold) {
-    app_threshold_ = threshold;  // 设置应用层阈值
-    ESP_LOGI(TAG, "Set application layer threshold to %.2f", app_threshold_);
-    ESP_LOGI(TAG, "Note: MultiNet internal threshold remains at %.2f (low value to get all results)", multinet_threshold_);
-    
-    // 应用层阈值不需要更新到 MultiNet（我们在应用层过滤）
-    // MultiNet 内部阈值保持低值以获取所有检测结果
-}
-
-bool CustomWakeWord::UpdateCommands() {
-    if (multinet_model_data_ == nullptr) {
-        ESP_LOGW(TAG, "MultiNet not initialized, cannot update commands");
-        return false;
-    }
-    
-    ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "Updating commands to MultiNet at runtime...");
-    ESP_LOGI(TAG, "========================================");
-    
-    // 1. 清空现有命令
-    esp_mn_commands_clear();
-    ESP_LOGI(TAG, "Cleared existing MultiNet commands");
-    
-    // 2. 添加新命令
-    ESP_LOGI(TAG, "Adding %d wake word commands:", commands_.size());
-    for (int i = 0; i < commands_.size(); i++) {
-        ESP_LOGI(TAG, "  [%d] command=\"%s\", text=\"%s\", action=\"%s\"", 
-                 i + 1,  // MultiNet command ID 从 1 开始
-                 commands_[i].command.c_str(),
-                 commands_[i].text.c_str(), 
-                 commands_[i].action.c_str());
-        
-        // MultiNet command ID 从 1 开始
-        esp_mn_commands_add(i + 1, commands_[i].command.c_str());
-    }
-    
-    // 3. 更新命令到模型（运行时生效！）
-    esp_mn_error_t* err = esp_mn_commands_update();
-    if (err) {
-        ESP_LOGE(TAG, "Failed to update commands, %d errors:", err->num);
-        for (int i = 0; i < err->num; i++) {
-            ESP_LOGE(TAG, "  Error command ID: %d, content: %s", 
-                     err->phrases[i]->command_id, 
-                     err->phrases[i]->string);
-        }
-        return false;
-    }
-    
-    // 4. 打印已更新的命令
-    ESP_LOGI(TAG, "✓ Successfully updated %d commands to MultiNet at runtime!", commands_.size());
-    esp_mn_commands_print();
-    ESP_LOGI(TAG, "========================================");
-    
-    return true;
-}
-
-
-
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// AudioDetectionTask: AFE + MultiNet 集成检测任务
-// 从 AFE 获取处理后的干净音频，然后送给 MultiNet 进行唤醒词检测
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 void CustomWakeWord::AudioDetectionTask() {
-    ESP_LOGI(TAG, "AudioDetectionTask started (AFE + MultiNet mode)");
-    
-    if (afe_iface_ == nullptr || afe_data_ == nullptr) {
-        ESP_LOGE(TAG, "AFE not initialized, task exiting!");
-        return;
-    }
+    ESP_LOGI(TAG, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    ESP_LOGI(TAG, "Audio detection task started (AFE + MultiNet)");
+    ESP_LOGI(TAG, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     
     auto fetch_size = afe_iface_->get_fetch_chunksize(afe_data_);
     auto feed_size = afe_iface_->get_feed_chunksize(afe_data_);
     ESP_LOGI(TAG, "AFE parameters: feed_size=%d, fetch_size=%d", feed_size, fetch_size);
-    
+
     int loop_count = 0;
     while (true) {
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        // 等待检测启用信号（避免在未启用时持续 fetch 导致 ringbuffer empty）
+        // 等待检测启用事件（与 AfeWakeWord 相同）
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        EventBits_t bits = xEventGroupWaitBits(
-            event_group_, 
-            0x01,          // 等待 bit 0
-            pdFALSE,       // 不清除 bit
-            pdTRUE,        // 所有 bit 都满足
-            portMAX_DELAY  // 无限等待
-        );
-        
-        // 检查是否真正启用（double check）
-        if (!running_.load() || (bits & 0x01) == 0) {
-            vTaskDelay(pdMS_TO_TICKS(100));  // 短暂延迟后重试
-            continue;
-        }
-        
+        xEventGroupWaitBits(event_group_, DETECTION_RUNNING_EVENT, pdFALSE, pdTRUE, portMAX_DELAY);
+
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        // 从 AFE 获取处理后的音频（使用超时，避免永久阻塞）
+        // 从 AFE 获取处理后的音频（与 AfeWakeWord 相同）
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        afe_fetch_result_t* res = afe_iface_->fetch_with_delay(afe_data_, pdMS_TO_TICKS(100));
+        auto res = afe_iface_->fetch_with_delay(afe_data_, pdMS_TO_TICKS(100));
         if (res == nullptr || res->ret_value == ESP_FAIL) {
-            // AFE 数据不可用（可能已经 Stop 或 ringbuffer 空）
-            // 不打印日志（避免日志刷屏），直接继续等待
             continue;
         }
-        
-        // 每 100 次循环打印一次状态（调试用）
+
+        // 每处理 100 次打印一次日志（与 AfeWakeWord 相同）
         loop_count++;
         if (loop_count % 100 == 0) {
-            bool is_running = running_.load();
-            ESP_LOGI(TAG, "AFE fetch loop %d: data_size=%d, running=%d",
-                     loop_count, res->data_size, is_running);
+            // 计算 AFE 处理后的音频能量
+            int64_t sum = 0;
+            int max_val = 0;
+            int num_samples = res->data_size / sizeof(int16_t);
+            for (int i = 0; i < num_samples; i++) {
+                int val = abs(res->data[i]);
+                sum += val;
+                if (val > max_val) max_val = val;
+            }
+            int avg = num_samples > 0 ? sum / num_samples : 0;
+            
+            ESP_LOGI(TAG, "Detection running (loop %d): data_size=%d, avg=%d, max=%d", 
+                     loop_count, res->data_size, avg, max_val);
         }
-        
-        // 再次检查是否启用（可能在 fetch 期间被停止）
-        if (!running_.load()) {
-            continue;  // 丢弃数据并返回等待
-        }
-        
-        // 存储唤醒词数据（用于后续编码发送）
-        if (res->data && res->data_size > 0) {
-            std::vector<int16_t> audio_data(res->data, res->data + res->data_size / sizeof(int16_t));
-            StoreWakeWordData(audio_data);
-        }
-        
+
+        // 存储唤醒词数据（与 AfeWakeWord 相同）
+        StoreWakeWordData(res->data, res->data_size / sizeof(int16_t));
+
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        // 将 AFE 处理后的音频送给 MultiNet 检测
-        // 注意：不使用 VAD 过滤！
-        // 原因：VAD 误判会导致唤醒词被丢弃，造成严重延迟或无法唤醒
-        // 降低误触发的策略：依赖多唤醒词 + 阈值过滤
+        // 使用 MultiNet 检测（替代 WakeNet）
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         if (multinet_ == nullptr || multinet_model_data_ == nullptr) {
             continue;
@@ -818,20 +332,18 @@ void CustomWakeWord::AudioDetectionTask() {
         // 调试：每 100 次显示一次状态
         static int state_count = 0;
         if (++state_count % 100 == 0) {
-            ESP_LOGI(TAG, "MultiNet state: %d (0=DETECTING, 1=DETECTED, 2=TIMEOUT), running=%d",
-                     mn_state, running_ ? 1 : 0);
-        }
-        
-        if (mn_state != ESP_MN_STATE_DETECTING) {
-            ESP_LOGI(TAG, "⚠️ MultiNet state changed to: %d (0=DETECTING, 1=DETECTED, 2=TIMEOUT)",
-                     mn_state);
+            ESP_LOGD(TAG, "MultiNet state: %d (0=DETECTING, 1=DETECTED, 2=TIMEOUT)", mn_state);
         }
         
         if (mn_state == ESP_MN_STATE_DETECTING) {
-            continue;  // 正在检测中
+            // 正在检测中，继续下一次循环
+            continue;
         }
         else if (mn_state == ESP_MN_STATE_DETECTED) {
             // ✓ MultiNet 检测到命令
+            ESP_LOGI(TAG, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            ESP_LOGI(TAG, "MultiNet DETECTED");
+            
             esp_mn_results_t* mn_result = multinet_->get_results(multinet_model_data_);
             
             if (mn_result != NULL && mn_result->num > 0) {
@@ -839,17 +351,14 @@ void CustomWakeWord::AudioDetectionTask() {
                 float best_prob = mn_result->prob[0];
                 
                 // 显示所有检测结果
-                ESP_LOGI(TAG, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-                ESP_LOGI(TAG, "📊 MultiNet result: num=%d, total_commands=%d", 
-                         mn_result->num, commands_.size());
-                
+                ESP_LOGI(TAG, "Detection results (num=%d):", mn_result->num);
                 for (int i = 0; i < mn_result->num && i < 5; i++) {
                     int result_cmd_id = mn_result->phrase_id[i];
                     float result_prob = mn_result->prob[i];
                     int result_array_index = result_cmd_id - 1;
                     
                     if (result_array_index >= 0 && result_array_index < commands_.size()) {
-                        ESP_LOGI(TAG, "  [%d] ID=%d (%s): prob=%.3f %s",
+                        ESP_LOGI(TAG, "  [%d] ID=%d \"%s\": prob=%.3f %s",
                                  i, result_cmd_id,
                                  commands_[result_array_index].text.c_str(),
                                  result_prob,
@@ -857,24 +366,19 @@ void CustomWakeWord::AudioDetectionTask() {
                     }
                 }
                 
-                // 警告：如果返回结果少于注册词，说明其他词概率太低被 MultiNet 过滤
-                if (mn_result->num < commands_.size()) {
-                    ESP_LOGW(TAG, "  ⚠️ %d 个唤醒词被 MultiNet 过滤（概率太低 < MultiNet内部阈值）", 
-                             commands_.size() - mn_result->num);
-                }
-                
                 // 应用层阈值过滤
+                ESP_LOGI(TAG, "Threshold check: best_prob=%.3f, app_threshold=%.3f", 
+                         best_prob, app_threshold_);
+                
                 if (best_prob < app_threshold_) {
-                    ESP_LOGW(TAG, "⚠️ Probability %.3f < threshold %.2f", best_prob, app_threshold_);
+                    ESP_LOGW(TAG, "⚠️ Probability %.3f < threshold %.3f, ignoring", 
+                             best_prob, app_threshold_);
                     ESP_LOGI(TAG, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
                     multinet_->clean(multinet_model_data_);
-                    // 🔧 [关键修复] 清空 AFE Ringbuffer，防止处理旧数据
-                    if (afe_iface_ && afe_data_) {
-                        afe_iface_->reset_buffer(afe_data_);
-                        ESP_LOGI(TAG, "🔄 AFE buffer reset to prevent stale data");
-                    }
                     continue;
                 }
+                
+                ESP_LOGI(TAG, "✓ Passed threshold check");
                 
                 // 检查命令 ID 是否有效
                 int array_index = command_id - 1;
@@ -884,39 +388,160 @@ void CustomWakeWord::AudioDetectionTask() {
                     if (command.action == "wake") {
                         last_detected_wake_word_ = command.text;
                         
-                        ESP_LOGI(TAG, "✓✓✓ Wake word: \"%s\" (prob: %.3f, WITH AFE) ✓✓✓",
+                        ESP_LOGI(TAG, "*** WAKE WORD DETECTED! ***");
+                        ESP_LOGI(TAG, "Wake word: \"%s\" (prob: %.3f)", 
                                  last_detected_wake_word_.c_str(), best_prob);
                         ESP_LOGI(TAG, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
                         
-                        // 🔧 [关键修复] 参考 AfeWakeWord：停止检测并清空所有状态
-                        // 必须先 Stop() 再回调，确保不会有新数据进入 buffer
-                        running_ = false;  // 设置标志（让循环停止处理新数据）
+                        // 停止检测（与 AfeWakeWord 相同）
+                        Stop();
                         
-                        // 立即清除事件位和清空 buffer（与 Stop() 相同的逻辑）
-                        if (event_group_) {
-                            xEventGroupClearBits(event_group_, 0x01);
-                        }
-                       
+                        // 触发回调（与 AfeWakeWord 相同）
                         if (wake_word_detected_callback_) {
                             wake_word_detected_callback_(last_detected_wake_word_);
+                        } else {
+                            ESP_LOGW(TAG, "Wake word detected but callback is NULL!");
                         }
                     }
+                } else {
+                    ESP_LOGW(TAG, "Invalid command ID: %d (array index: %d, total: %d)", 
+                             command_id, array_index, commands_.size());
                 }
+            } else {
+                ESP_LOGW(TAG, "MultiNet detected but no results");
             }
-
+            
+            // 清理 MultiNet 状态
             multinet_->clean(multinet_model_data_);
-            if (afe_iface_ && afe_data_) {
-                    afe_iface_->reset_buffer(afe_data_);
-                    ESP_LOGI(TAG, "🔄 AFE buffer reset after detection");
-            }
         }
         else if (mn_state == ESP_MN_STATE_TIMEOUT) {
+            // 超时，清理状态
+            ESP_LOGD(TAG, "MultiNet timeout");
             multinet_->clean(multinet_model_data_);
-            // 🔧 [优化] 超时时也清空 AFE buffer，避免积压
-            if (afe_iface_ && afe_data_) {
-                afe_iface_->reset_buffer(afe_data_);
-            }
         }
     }
 }
 
+void CustomWakeWord::StoreWakeWordData(const int16_t* data, size_t samples) {
+    // 存储 PCM 数据用于编码（与 AfeWakeWord 完全相同）
+    wake_word_pcm_.emplace_back(std::vector<int16_t>(data, data + samples));
+    
+    // 保留约 2 秒数据（检测周期 30ms，采样率 16000Hz，chunk 512）
+    while (wake_word_pcm_.size() > 2000 / 30) {
+        wake_word_pcm_.pop_front();
+    }
+}
+
+void CustomWakeWord::EncodeWakeWordData() {
+    // 与 AfeWakeWord 完全相同的实现
+    const size_t stack_size = 4096 * 7;
+    wake_word_opus_.clear();
+    if (wake_word_encode_task_stack_ == nullptr) {
+        wake_word_encode_task_stack_ = (StackType_t*)heap_caps_malloc(stack_size, MALLOC_CAP_SPIRAM);
+        assert(wake_word_encode_task_stack_ != nullptr);
+    }
+    if (wake_word_encode_task_buffer_ == nullptr) {
+        wake_word_encode_task_buffer_ = (StaticTask_t*)heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL);
+        assert(wake_word_encode_task_buffer_ != nullptr);
+    }
+
+    wake_word_encode_task_ = xTaskCreateStatic([](void* arg) {
+        auto this_ = (CustomWakeWord*)arg;
+        {
+            auto start_time = esp_timer_get_time();
+            auto encoder = std::make_unique<OpusEncoderWrapper>(16000, 1, OPUS_FRAME_DURATION_MS);
+            encoder->SetComplexity(0); // 0 is the fastest
+
+            int packets = 0;
+            for (auto& pcm: this_->wake_word_pcm_) {
+                encoder->Encode(std::move(pcm), [this_](std::vector<uint8_t>&& opus) {
+                    std::lock_guard<std::mutex> lock(this_->wake_word_mutex_);
+                    this_->wake_word_opus_.emplace_back(std::move(opus));
+                    this_->wake_word_cv_.notify_all();
+                });
+                packets++;
+            }
+            this_->wake_word_pcm_.clear();
+
+            auto end_time = esp_timer_get_time();
+            ESP_LOGI(TAG, "Encode wake word opus %d packets in %ld ms", 
+                     packets, (long)((end_time - start_time) / 1000));
+
+            std::lock_guard<std::mutex> lock(this_->wake_word_mutex_);
+            this_->wake_word_opus_.push_back(std::vector<uint8_t>());
+            this_->wake_word_cv_.notify_all();
+        }
+        vTaskDelete(NULL);
+    }, "encode_wake_word", stack_size, this, 2, wake_word_encode_task_stack_, wake_word_encode_task_buffer_);
+}
+
+bool CustomWakeWord::GetWakeWordOpus(std::vector<uint8_t>& opus) {
+    // 与 AfeWakeWord 完全相同的实现
+    std::unique_lock<std::mutex> lock(wake_word_mutex_);
+    wake_word_cv_.wait(lock, [this]() {
+        return !wake_word_opus_.empty();
+    });
+    opus.swap(wake_word_opus_.front());
+    wake_word_opus_.pop_front();
+    return !opus.empty();
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 动态命令管理接口（MultiNet 特有功能）
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+void CustomWakeWord::ClearCommands() {
+    commands_.clear();
+    ESP_LOGI(TAG, "Cleared all wake word commands");
+}
+
+void CustomWakeWord::AddCommand(const std::string& command, 
+                                const std::string& text, 
+                                const std::string& action) {
+    commands_.push_back({command, text, action});
+    ESP_LOGI(TAG, "Added command: command='%s', text='%s', action='%s'", 
+             command.c_str(), text.c_str(), action.c_str());
+}
+
+void CustomWakeWord::SetThreshold(float threshold) {
+    app_threshold_ = threshold;
+    ESP_LOGI(TAG, "Set application layer threshold to %.3f", app_threshold_);
+}
+
+bool CustomWakeWord::UpdateCommands() {
+    if (multinet_model_data_ == nullptr) {
+        ESP_LOGW(TAG, "MultiNet not initialized, cannot update commands");
+        return false;
+    }
+    
+    ESP_LOGI(TAG, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    ESP_LOGI(TAG, "Updating commands to MultiNet...");
+    ESP_LOGI(TAG, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    
+    // 清空并重新添加命令
+    esp_mn_commands_clear();
+    
+    ESP_LOGI(TAG, "Adding %d wake word commands:", commands_.size());
+    for (int i = 0; i < commands_.size(); i++) {
+        ESP_LOGI(TAG, "  [%d] command=\"%s\", text=\"%s\", action=\"%s\"", 
+                 i + 1, commands_[i].command.c_str(), 
+                 commands_[i].text.c_str(), commands_[i].action.c_str());
+        esp_mn_commands_add(i + 1, commands_[i].command.c_str());
+    }
+    
+    // 更新命令到模型
+    esp_mn_error_t* err = esp_mn_commands_update();
+    if (err) {
+        ESP_LOGE(TAG, "Failed to update commands, %d errors:", err->num);
+        for (int i = 0; i < err->num; i++) {
+            ESP_LOGE(TAG, "  Error command ID: %d, content: %s", 
+                     err->phrases[i]->command_id, err->phrases[i]->string);
+        }
+        return false;
+    }
+    
+    ESP_LOGI(TAG, "✓ Successfully updated %d commands to MultiNet!", commands_.size());
+    ESP_LOGI(TAG, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    
+    return true;
+}

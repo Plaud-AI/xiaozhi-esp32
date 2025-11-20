@@ -1,25 +1,28 @@
 #ifndef CUSTOM_WAKE_WORD_H
 #define CUSTOM_WAKE_WORD_H
 
-#include <esp_attr.h>
-#include <esp_mn_iface.h>
-#include <esp_mn_models.h>
-#include <esp_afe_sr_models.h>
-#include <model_path.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <freertos/event_groups.h>
 
+#include <esp_afe_sr_models.h>
+#include <esp_mn_iface.h>
+#include <esp_mn_models.h>
+#include <model_path.h>
+
+#include <condition_variable>
 #include <deque>
-#include <string>
-#include <vector>
 #include <functional>
 #include <mutex>
-#include <condition_variable>
-#include <atomic>
+#include <string>
+#include <vector>
 
 #include "audio_codec.h"
 #include "wake_word.h"
 
+// CustomWakeWord: 基于 MultiNet 模型的唤醒词检测
+// 数据流：音频 -> AFE 预处理 -> MultiNet 检测
+// 与 AfeWakeWord 的区别：使用 MultiNet 而非 WakeNet
 class CustomWakeWord : public WakeWord {
 public:
     CustomWakeWord();
@@ -35,42 +38,43 @@ public:
     bool GetWakeWordOpus(std::vector<uint8_t>& opus);
     const std::string& GetLastDetectedWakeWord() const { return last_detected_wake_word_; }
 
-    // 动态命令管理接口（用于蓝牙配置）
+    // 动态命令管理接口（MultiNet 特有）
     void ClearCommands();
-    void AddCommand(const std::string& phoneme, const std::string& text, const std::string& action);
+    void AddCommand(const std::string& command, const std::string& text, const std::string& action);
     void SetThreshold(float threshold);
-    bool UpdateCommands();  // 批量更新命令到 MultiNet（运行时生效）
+    bool UpdateCommands();
     int GetCommandCount() const { return commands_.size(); }
 
 private:
+    // 命令结构体（MultiNet 特有）
     struct Command {
-        std::string command;
-        std::string text;
-        std::string action;
+        std::string command;  // MultiNet 命令格式（如 "COMPUTER"）
+        std::string text;     // 显示文本（如 "computer"）
+        std::string action;   // 动作类型（如 "wake"）
     };
 
-    // AFE (Audio Front-End) 相关成员 - 用于降噪、波束成形、AEC
+    // AFE 相关（与 AfeWakeWord 相同）
+    srmodel_list_t* models_ = nullptr;
     esp_afe_sr_iface_t* afe_iface_ = nullptr;
     esp_afe_sr_data_t* afe_data_ = nullptr;
-    EventGroupHandle_t event_group_ = nullptr;
-    bool use_afe_ = true;  // 是否使用 AFE 预处理（默认启用）
-
-    // multinet 相关成员变量
+    EventGroupHandle_t event_group_;
+    
+    // MultiNet 相关（替代 WakeNet）
     esp_mn_iface_t* multinet_ = nullptr;
     model_iface_data_t* multinet_model_data_ = nullptr;
-    srmodel_list_t *models_ = nullptr;
-    char* mn_name_ = nullptr;
+    char* multinet_model_name_ = nullptr;
     std::string language_ = "en";
-    int duration_ = 3000;
-    float multinet_threshold_ = 0.05;  // MultiNet 内部阈值（低阈值获取所有结果）
-    float app_threshold_ = 0.35;       // 应用层阈值（3 个唤醒词，降低误触发）
+    int duration_ = 5000;
+    float multinet_threshold_ = 0.05;  // MultiNet 内部阈值（低值获取所有结果）
+    float app_threshold_ = 0.30;       // 应用层过滤阈值
     std::deque<Command> commands_;
- 
+    
+    // 回调和状态（与 AfeWakeWord 相同）
     std::function<void(const std::string& wake_word)> wake_word_detected_callback_;
     AudioCodec* codec_ = nullptr;
     std::string last_detected_wake_word_;
-    std::atomic<bool> running_ = false;
 
+    // 编码相关（与 AfeWakeWord 相同）
     TaskHandle_t wake_word_encode_task_ = nullptr;
     StaticTask_t* wake_word_encode_task_buffer_ = nullptr;
     StackType_t* wake_word_encode_task_stack_ = nullptr;
@@ -79,9 +83,9 @@ private:
     std::mutex wake_word_mutex_;
     std::condition_variable wake_word_cv_;
 
-    void StoreWakeWordData(const std::vector<int16_t>& data);
-    void ParseWakenetModelConfig();
-    void AudioDetectionTask();  // AFE + MultiNet 检测任务
+    // 内部方法
+    void StoreWakeWordData(const int16_t* data, size_t samples);
+    void AudioDetectionTask();
 };
 
 #endif
