@@ -27,7 +27,7 @@ static uint16_t g_char_val_handle;
 static BluetoothService* g_instance = nullptr;
 
 BluetoothService::BluetoothService() 
-    : initialized_(false), connected_(false), conn_handle_(0), mtu_(23) {
+    : initialized_(false), connected_(false), conn_handle_(0), mtu_(23), receive_buffer_("") {
     g_instance = this;
     ESP_LOGI(TAG, "BluetoothService构造，默认MTU: %d", mtu_);
 }
@@ -64,11 +64,11 @@ int BluetoothService::gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_ha
                     os_mbuf_copydata(ctxt->om, 0, om_len, data);
                     data[om_len] = '\0';
                     
-                    ESP_LOGI(TAG, "收到数据: %s (长度: %d)", data, om_len);
+                    ESP_LOGI(TAG, "收到数据片段: %s (长度: %d)", data, om_len);
                     
-                    // 调用数据接收回调（不再自动回复，由上层处理）
-                    if (g_instance->data_received_callback_) {
-                        g_instance->data_received_callback_(std::string(data, om_len));
+                    // 处理接收到的数据片段（支持分包重组）
+                    if (g_instance) {
+                        g_instance->ProcessReceivedData(std::string(data, om_len));
                     }
                     
                     free(data);
@@ -124,6 +124,8 @@ int BluetoothService::gap_event_handler(struct ble_gap_event *event, void *arg) 
             ESP_LOGI(TAG, "客户端断开连接，原因: %d", event->disconnect.reason);
             g_instance->connected_ = false;
             g_instance->conn_handle_ = 0;
+            // 清空接收缓冲区
+            g_instance->receive_buffer_.clear();
             // 重新开始广播
             g_instance->StartAdvertising();
             break;
@@ -387,5 +389,44 @@ bool BluetoothService::SendData(const std::string& data) {
 
 void BluetoothService::SetDataReceivedCallback(std::function<void(const std::string&)> callback) {
     data_received_callback_ = callback;
+}
+
+void BluetoothService::ProcessReceivedData(const std::string& data) {
+    // 将接收到的数据片段添加到缓冲区
+    receive_buffer_ += data;
+    
+    ESP_LOGD(TAG, "累积缓冲区大小: %d 字节", receive_buffer_.length());
+    
+    // 查找换行符（消息结束标记）
+    size_t newline_pos = receive_buffer_.find('\n');
+    
+    while (newline_pos != std::string::npos) {
+        // 提取完整的消息（不包含换行符）
+        std::string complete_message = receive_buffer_.substr(0, newline_pos);
+        
+        ESP_LOGI(TAG, "========================================");
+        ESP_LOGI(TAG, "📦 接收到完整消息（分包重组）");
+        ESP_LOGI(TAG, "消息长度: %d 字节", complete_message.length());
+        ESP_LOGI(TAG, "消息内容: %s", complete_message.c_str());
+        ESP_LOGI(TAG, "========================================");
+        
+        // 调用数据接收回调
+        if (data_received_callback_) {
+            data_received_callback_(complete_message);
+        }
+        
+        // 从缓冲区中移除已处理的消息（包括换行符）
+        receive_buffer_.erase(0, newline_pos + 1);
+        
+        // 查找下一个换行符（可能同时收到多条消息）
+        newline_pos = receive_buffer_.find('\n');
+    }
+    
+    // 检查缓冲区是否过大（防止内存溢出）
+    if (receive_buffer_.length() > 4096) {
+        ESP_LOGW(TAG, "⚠️  接收缓冲区过大(%d 字节)，可能数据格式错误，清空缓冲区", 
+                 receive_buffer_.length());
+        receive_buffer_.clear();
+    }
 }
 

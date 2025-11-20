@@ -96,6 +96,15 @@ private:
     uint16_t conn_handle_;
     uint16_t mtu_;  // 当前MTU大小
     std::function<void(const std::string&)> data_received_callback_;
+    
+    // 分包接收缓冲区
+    std::string receive_buffer_;  // 累积接收到的数据片段
+    
+    /**
+     * @brief 处理接收到的数据片段（支持分包重组）
+     * @param data 接收到的数据片段
+     */
+    void ProcessReceivedData(const std::string& data);
 };
 
 #endif // BLUETOOTH_SERVICE_H
