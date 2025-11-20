@@ -882,7 +882,15 @@ void BLEWiFiProvisioner::SetProvisionFailureCallback(
 
 void BLEWiFiProvisioner::HandleSetWakeWordsCommand(cJSON* root) {
     ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "开始设置唤醒词");
+    ESP_LOGI(TAG, "🎯 开始设置唤醒词");
+    ESP_LOGI(TAG, "========================================");
+    
+    // 打印原始JSON（用于调试）
+    char* json_str = cJSON_PrintUnformatted(root);
+    if (json_str) {
+        ESP_LOGI(TAG, "收到的完整JSON: %s", json_str);
+        free(json_str);
+    }
     
     cJSON* data_item = cJSON_GetObjectItem(root, "data");
     if (!data_item || !cJSON_IsObject(data_item)) {
@@ -890,6 +898,7 @@ void BLEWiFiProvisioner::HandleSetWakeWordsCommand(cJSON* root) {
         SendErrorResponse("set_wake_words", ERROR_JSON_PARSE_FAILED, "data字段缺失");
         return;
     }
+    ESP_LOGI(TAG, "✓ 找到 data 字段");
     
     // 解析唤醒词列表
     cJSON* words_array = cJSON_GetObjectItem(data_item, "words");
@@ -898,12 +907,17 @@ void BLEWiFiProvisioner::HandleSetWakeWordsCommand(cJSON* root) {
         SendErrorResponse("set_wake_words", ERROR_JSON_PARSE_FAILED, "words字段缺失");
         return;
     }
+    int words_count = cJSON_GetArraySize(words_array);
+    ESP_LOGI(TAG, "✓ 找到 words 数组，包含 %d 个唤醒词", words_count);
     
     // 读取阈值（可选，默认 0.15）
     float threshold = 0.15f;
     cJSON* threshold_item = cJSON_GetObjectItem(data_item, "threshold");
     if (threshold_item && cJSON_IsNumber(threshold_item)) {
         threshold = threshold_item->valuedouble;
+        ESP_LOGI(TAG, "✓ 使用自定义阈值: %.3f", threshold);
+    } else {
+        ESP_LOGI(TAG, "ℹ️  使用默认阈值: %.3f", threshold);
     }
     
     // 读取替换标志（可选，默认 true）
@@ -912,13 +926,21 @@ void BLEWiFiProvisioner::HandleSetWakeWordsCommand(cJSON* root) {
     if (replace_item && cJSON_IsBool(replace_item)) {
         replace = cJSON_IsTrue(replace_item);
     }
+    ESP_LOGI(TAG, "ℹ️  替换模式: %s", replace ? "是（清空现有唤醒词）" : "否（追加到现有唤醒词）");
     
     // 解析每个唤醒词
+    ESP_LOGI(TAG, "----------------------------------------");
+    ESP_LOGI(TAG, "开始解析唤醒词列表...");
     std::vector<WakeWordConfig> wake_words;
     cJSON* word_item = nullptr;
+    int word_index = 0;
     cJSON_ArrayForEach(word_item, words_array) {
+        word_index++;
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, "📝 解析第 %d 个唤醒词...", word_index);
+        
         if (!cJSON_IsObject(word_item)) {
-            ESP_LOGW(TAG, "⚠️  跳过无效的唤醒词条目（非对象）");
+            ESP_LOGW(TAG, "⚠️  跳过：非对象类型");
             continue;
         }
         
@@ -926,49 +948,77 @@ void BLEWiFiProvisioner::HandleSetWakeWordsCommand(cJSON* root) {
         cJSON* display = cJSON_GetObjectItem(word_item, "display");
         cJSON* phonemes = cJSON_GetObjectItem(word_item, "phonemes");
         
-        if (!text || !cJSON_IsString(text) || 
-            !phonemes || !cJSON_IsArray(phonemes)) {
-            ESP_LOGW(TAG, "⚠️  跳过无效的唤醒词条目（缺少必要字段）");
+        if (!text || !cJSON_IsString(text)) {
+            ESP_LOGW(TAG, "⚠️  跳过：缺少 text 字段");
             continue;
         }
+        ESP_LOGI(TAG, "   text: %s", text->valuestring);
         
         WakeWordConfig config;
         config.text = text->valuestring;
         config.display = (display && cJSON_IsString(display)) ? 
                          display->valuestring : config.text;
         
-        // 解析音素数组
-        cJSON* phoneme_item = nullptr;
-        cJSON_ArrayForEach(phoneme_item, phonemes) {
-            if (cJSON_IsString(phoneme_item)) {
-                config.phonemes.push_back(phoneme_item->valuestring);
+        ESP_LOGI(TAG, "   display: %s", config.display.c_str());
+        
+        // 解析音素数组（可选字段）
+        if (phonemes && cJSON_IsArray(phonemes)) {
+            int phonemes_count = cJSON_GetArraySize(phonemes);
+            ESP_LOGI(TAG, "   phonemes 数量: %d", phonemes_count);
+            
+            cJSON* phoneme_item = nullptr;
+            int phoneme_index = 0;
+            cJSON_ArrayForEach(phoneme_item, phonemes) {
+                if (cJSON_IsString(phoneme_item)) {
+                    config.phonemes.push_back(phoneme_item->valuestring);
+                    phoneme_index++;
+                    ESP_LOGI(TAG, "      [%d] %s", phoneme_index, phoneme_item->valuestring);
+                } else {
+                    ESP_LOGW(TAG, "      [%d] 跳过非字符串音素", phoneme_index + 1);
+                }
             }
+        } else {
+            ESP_LOGI(TAG, "   ℹ️  未提供 phonemes 字段");
         }
         
+        // 如果 phonemes 为空或不存在，使用 text 作为默认音素
         if (config.phonemes.empty()) {
-            ESP_LOGW(TAG, "⚠️  跳过唤醒词 '%s'（音素列表为空）", config.text.c_str());
-            continue;
+            ESP_LOGI(TAG, "   💡 phonemes 为空，使用 text 作为默认音素");
+            config.phonemes.push_back(config.text);
+            ESP_LOGI(TAG, "      [1] %s (默认)", config.text.c_str());
         }
         
         wake_words.push_back(config);
-        ESP_LOGI(TAG, "✓ 解析唤醒词: %s (%d 个音素变体)", 
+        ESP_LOGI(TAG, "✅ 成功解析唤醒词: %s (%d 个音素变体)", 
                  config.text.c_str(), config.phonemes.size());
     }
+    
+    ESP_LOGI(TAG, "----------------------------------------");
+    ESP_LOGI(TAG, "✓ 唤醒词解析完成，共成功解析 %d 个", wake_words.size());
     
     // 应用配置
     if (wake_words.empty()) {
         ESP_LOGE(TAG, "❌ 没有有效的唤醒词");
         SendErrorResponse("set_wake_words", -2, "音素列表为空");
+        ESP_LOGI(TAG, "========================================");
         return;
     }
+    
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "📦 准备保存唤醒词配置到 NVS...");
+    ESP_LOGI(TAG, "   唤醒词数量: %d", wake_words.size());
+    ESP_LOGI(TAG, "   阈值: %.3f", threshold);
+    ESP_LOGI(TAG, "   替换模式: %s", replace ? "是" : "否");
     
     auto& manager = WakeWordManager::GetInstance();
     bool success = manager.SetWakeWords(wake_words, threshold, replace);
     
     if (success) {
-        ESP_LOGI(TAG, "✓ 唤醒词配置成功，共 %d 个", wake_words.size());
+        ESP_LOGI(TAG, "✅ 唤醒词配置已保存到 NVS，共 %d 个", wake_words.size());
         
         // 立即应用配置（运行时生效，无需重启！）
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, "🔄 尝试立即应用唤醒词配置（运行时更新）...");
         bool applied = Application::GetInstance().ApplyWakeWordConfig();
         
         // 构建响应
@@ -980,21 +1030,31 @@ void BLEWiFiProvisioner::HandleSetWakeWordsCommand(cJSON* root) {
         if (applied) {
             cJSON_AddStringToObject(response_data, "message", "唤醒词配置成功并已立即生效");
             cJSON_AddBoolToObject(response_data, "runtime_applied", true);
-            ESP_LOGI(TAG, "✓✓✓ 唤醒词已立即生效，无需重启！");
+            ESP_LOGI(TAG, "");
+            ESP_LOGI(TAG, "✅✅✅ 唤醒词已立即生效，无需重启！");
         } else {
             cJSON_AddStringToObject(response_data, "message", "唤醒词配置成功，重启后生效");
             cJSON_AddBoolToObject(response_data, "runtime_applied", false);
-            ESP_LOGW(TAG, "⚠️  唤醒词已保存，但运行时应用失败，请重启设备");
+            ESP_LOGW(TAG, "");
+            ESP_LOGW(TAG, "⚠️  唤醒词已保存到 NVS，但运行时应用失败");
+            ESP_LOGW(TAG, "⚠️  请重启设备使唤醒词生效");
         }
         cJSON_AddNumberToObject(response_data, "count", wake_words.size());
         cJSON_AddItemToObject(response, "data", response_data);
         
         char* json_str = cJSON_PrintUnformatted(response);
-        SendResponse(std::string(json_str));
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, "📤 发送响应给 App: %s", json_str);
+        bool send_ok = SendResponse(std::string(json_str));
+        if (send_ok) {
+            ESP_LOGI(TAG, "✓ 响应发送成功");
+        } else {
+            ESP_LOGE(TAG, "❌ 响应发送失败");
+        }
         free(json_str);
         cJSON_Delete(response);
     } else {
-        ESP_LOGE(TAG, "❌ 唤醒词配置失败");
+        ESP_LOGE(TAG, "❌ 唤醒词配置保存到 NVS 失败");
         SendErrorResponse("set_wake_words", -3, "NVS存储失败");
     }
     
