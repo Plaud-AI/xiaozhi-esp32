@@ -3,6 +3,7 @@
 
 #include <esp_log.h>
 #include <esp_mn_speech_commands.h>
+#include <freertos/task.h>
 
 #define DETECTION_RUNNING_EVENT 1
 
@@ -136,6 +137,7 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
         ESP_LOGI(TAG, "No commands pre-configured, using default wake words (MultiNet6 Grapheme)");
         
         // 使用组合词（更适合 MultiNet6）
+        // ✅ 测试验证：相同主体名称的变体效果最好
         commands_.push_back({"HI XIAOZHI", "hi xiaozhi", "wake"});
         commands_.push_back({"HEY XIAOZHI", "hey xiaozhi", "wake"});
         commands_.push_back({"HELLO XIAOZHI", "hello xiaozhi", "wake"});
@@ -234,6 +236,23 @@ void CustomWakeWord::OnWakeWordDetected(std::function<void(const std::string& wa
 
 void CustomWakeWord::Start() {
     ESP_LOGI(TAG, "Starting wake word detection...");
+    
+    // ⚠️ 重要：清理 MultiNet 和 AFE 状态，防止上次检测的残留
+    if (multinet_model_data_ != nullptr && multinet_ != nullptr) {
+        multinet_->clean(multinet_model_data_);
+        ESP_LOGD(TAG, "MultiNet state cleaned on start");
+    }
+    
+    if (afe_data_ != nullptr && afe_iface_ != nullptr) {
+        afe_iface_->reset_buffer(afe_data_);
+        ESP_LOGD(TAG, "AFE buffer reset on start");
+    }
+    
+    // 🔥 冷却时间：延迟200ms后再启动检测，让扬声器余音和回声消散
+    // 官方 demo 没有这个延迟，但我们用 MultiNet 做唤醒，需要防止回声误触发
+    vTaskDelay(pdMS_TO_TICKS(200));
+    ESP_LOGD(TAG, "Wake word detection cooldown completed (200ms)");
+    
     xEventGroupSetBits(event_group_, DETECTION_RUNNING_EVENT);
 }
 
@@ -275,8 +294,8 @@ void CustomWakeWord::Feed(const std::vector<int16_t>& data) {
         }
         int avg = data.empty() ? 0 : sum / data.size();
         int64_t now_ms = esp_timer_get_time() / 1000;
-        ESP_LOGI(TAG, "📥 Feed (count %d, time %lld ms): avg=%d, max=%d, samples=%zu", 
-                 feed_count, (long long)now_ms, avg, max_val, data.size());
+        ESP_LOGI(TAG, "📥 Feed (count %d, time %d ms): avg=%d, max=%d, samples=%d", 
+                 feed_count, (int)now_ms, avg, max_val, (int)data.size());
         if (max_val < 100) {
             ESP_LOGW(TAG, "  ⚠️ Audio level is very low! Microphone may not be working!");
         }
@@ -324,7 +343,7 @@ void CustomWakeWord::AudioDetectionTask() {
         // 每 100 次记录 fetch 延迟
         static int fetch_count = 0;
         if (++fetch_count % 100 == 0) {
-            ESP_LOGI(TAG, "⏱️  AFE fetch delay: %lld ms (count %d)", (long long)fetch_duration, fetch_count);
+            ESP_LOGI(TAG, "⏱️  AFE fetch delay: %d ms (count %d)", (int)fetch_duration, fetch_count);
         }
 
         // 每处理 100 次打印一次日志（与 AfeWakeWord 相同）
@@ -342,8 +361,8 @@ void CustomWakeWord::AudioDetectionTask() {
             int avg = num_samples > 0 ? sum / num_samples : 0;
             int64_t now_ms = esp_timer_get_time() / 1000;
             
-            ESP_LOGI(TAG, "📤 Detection loop %d (time %lld ms): data_size=%zu, avg=%d, max=%d", 
-                     loop_count, (long long)now_ms, res->data_size, avg, max_val);
+            ESP_LOGI(TAG, "📤 Detection loop %d (time %d ms): data_size=%d, avg=%d, max=%d", 
+                     loop_count, (int)now_ms, (int)res->data_size, avg, max_val);
         }
 
         // 存储唤醒词数据（与 AfeWakeWord 相同）
@@ -356,6 +375,16 @@ void CustomWakeWord::AudioDetectionTask() {
             continue;
         }
         
+        // 🔥 移除定期清理：参考官方 demo，只在超时时清理
+        // 官方 demo 依赖 MultiNet 的内置超时机制（5秒）
+        // 定期清理可能在用户说话时打断，导致需要重新累积状态
+        // 
+        // MultiNet 自身超时机制：
+        // - 5秒无有效语音 → ESP_MN_STATE_TIMEOUT
+        // - 超时后我们会 clean，见下面的 TIMEOUT 处理
+        // 
+        // 因此不需要额外的定期清理
+        
         // 测量 MultiNet detect() 调用时间
         int64_t detect_start = esp_timer_get_time();
         esp_mn_state_t mn_state = multinet_->detect(multinet_model_data_, res->data);
@@ -364,7 +393,7 @@ void CustomWakeWord::AudioDetectionTask() {
         // 每 100 次记录 detect 耗时
         static int detect_count = 0;
         if (++detect_count % 100 == 0) {
-            ESP_LOGI(TAG, "⏱️  MultiNet detect() took: %lld ms (count %d)", (long long)detect_duration, detect_count);
+            ESP_LOGI(TAG, "⏱️  MultiNet detect() took: %d ms (count %d)", (int)detect_duration, detect_count);
         }
         
         // 调试：每 50 次显示一次状态（提高频率）
@@ -382,9 +411,9 @@ void CustomWakeWord::AudioDetectionTask() {
             // ✓ MultiNet 检测到命令
             int64_t now_ms = esp_timer_get_time() / 1000;
             ESP_LOGI(TAG, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-            ESP_LOGI(TAG, "🎯 MultiNet DETECTED at %lld ms (loop %d)", (long long)now_ms, loop_count);
-            ESP_LOGI(TAG, "⏱️  Detection timing: fetch_duration=%lld ms, detect_duration=%lld ms", 
-                     (long long)fetch_duration, (long long)detect_duration);
+            ESP_LOGI(TAG, "🎯 MultiNet DETECTED at %d ms (loop %d)", (int)now_ms, loop_count);
+            ESP_LOGI(TAG, "⏱️  Detection timing: fetch=%d ms, detect=%d ms", 
+                     (int)fetch_duration, (int)detect_duration);
             
             // 计算当前音频块的能量（仅用于数据收集，不影响判断）
             int64_t sum = 0;
@@ -432,14 +461,28 @@ void CustomWakeWord::AudioDetectionTask() {
                 }
                 
                 // 简单的固定阈值过滤（让模型自己说话）
-                ESP_LOGI(TAG, "🔍 Threshold check: best_prob=%.3f vs app_threshold=%.3f", 
-                         best_prob, app_threshold_);
+                // 诊断：显示时间戳帮助分析触发间隔
+                int64_t now_ms = esp_timer_get_time() / 1000;
+                ESP_LOGI(TAG, "🔍 Threshold check: best_prob=%.3f vs app_threshold=%.3f (time: %d ms)", 
+                         best_prob, app_threshold_, (int)now_ms);
                 
                 if (best_prob < app_threshold_) {
-                    ESP_LOGW(TAG, "❌ Rejected: prob %.3f < threshold %.3f", 
-                             best_prob, app_threshold_);
+                    float gap = app_threshold_ - best_prob;
+                    ESP_LOGW(TAG, "❌ Rejected: prob %.3f < threshold %.3f (gap: %.3f)", 
+                             best_prob, app_threshold_, gap);
                     ESP_LOGI(TAG, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-                    multinet_->clean(multinet_model_data_);
+                    
+                    // 🔥 关键修复：参考官方 demo，检测失败时不清理 MultiNet 状态
+                    // 官方 demo 在检测成功后也不清理，让 MultiNet 继续处理后续音频
+                    // 只在超时时才清理状态
+                    // 
+                    // 原因：用户可能正在说话或重复说唤醒词，清理状态会导致：
+                    // 1. 丢失已累积的音频特征
+                    // 2. 需要重新累积 2-3 秒音频
+                    // 3. 造成巨大延迟（实测：6秒 → 72秒）
+                    // 
+                    // multinet_->clean(multinet_model_data_);  // ← 移除这个导致延迟的 clean
+                    ESP_LOGD(TAG, "MultiNet state preserved for continuous detection");
                     continue;
                 }
                 
@@ -454,9 +497,21 @@ void CustomWakeWord::AudioDetectionTask() {
                     if (command.action == "wake") {
                         last_detected_wake_word_ = command.text;
                         
+                        // 诊断：记录检测间隔，帮助分析误触发
+                        static int64_t last_wake_time_ms = 0;
+                        int64_t current_wake_time_ms = esp_timer_get_time() / 1000;
+                        int interval_sec = 0;
+                        if (last_wake_time_ms > 0) {
+                            interval_sec = (current_wake_time_ms - last_wake_time_ms) / 1000;
+                        }
+                        last_wake_time_ms = current_wake_time_ms;
+                        
                         ESP_LOGI(TAG, "*** WAKE WORD DETECTED! ***");
                         ESP_LOGI(TAG, "Wake word: \"%s\" (prob: %.3f)", 
                                  last_detected_wake_word_.c_str(), best_prob);
+                        if (interval_sec > 0) {
+                            ESP_LOGI(TAG, "⏰ Time since last wake: %d seconds", interval_sec);
+                        }
                         ESP_LOGI(TAG, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
                         
                         // 停止检测（与 AfeWakeWord 相同）
@@ -481,8 +536,9 @@ void CustomWakeWord::AudioDetectionTask() {
             multinet_->clean(multinet_model_data_);
         }
         else if (mn_state == ESP_MN_STATE_TIMEOUT) {
-            // 超时，清理状态
-            ESP_LOGD(TAG, "MultiNet timeout");
+            // 超时，只清理 MultiNet 状态
+            // 不清理 AFE buffer，让音频流继续，避免延迟
+            ESP_LOGD(TAG, "MultiNet timeout, cleaning MultiNet only");
             multinet_->clean(multinet_model_data_);
         }
     }
