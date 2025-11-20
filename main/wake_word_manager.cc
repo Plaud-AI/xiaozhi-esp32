@@ -445,24 +445,30 @@ bool WakeWordManager::ApplyToCustomWakeWord(CustomWakeWord* wake_word) {
 }
 
 bool WakeWordManager::ValidateConfig(const WakeWordConfig& config) {
+    // 检查 text 字段（必需）
     if (config.text.empty()) {
-        ESP_LOGW(TAG, "Wake word text is empty");
+        ESP_LOGW(TAG, "❌ 验证失败: text 字段为空");
         return false;
     }
     
+    // 检查 phonemes 字段（必需，但可以只包含 text 本身）
     if (config.phonemes.empty()) {
-        ESP_LOGW(TAG, "Wake word phonemes list is empty: %s", config.text.c_str());
+        ESP_LOGW(TAG, "❌ 验证失败: phonemes 列表为空 (text: %s)", config.text.c_str());
+        ESP_LOGW(TAG, "   提示: phonemes 应该包含至少一个音素变体");
         return false;
     }
     
-    // 检查音素格式（简单验证：不能为空字符串）
-    for (const auto& phoneme : config.phonemes) {
-        if (phoneme.empty()) {
-            ESP_LOGW(TAG, "Empty phoneme in wake word: %s", config.text.c_str());
+    // 检查音素格式（不能为空字符串）
+    for (size_t i = 0; i < config.phonemes.size(); i++) {
+        if (config.phonemes[i].empty()) {
+            ESP_LOGW(TAG, "❌ 验证失败: phoneme[%d] 为空字符串 (wake word: %s)", 
+                     i, config.text.c_str());
             return false;
         }
     }
     
+    ESP_LOGD(TAG, "✅ 验证通过: text='%s', phonemes=%d", 
+             config.text.c_str(), config.phonemes.size());
     return true;
 }
 
