@@ -91,13 +91,13 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
     commands_.clear();
 
     if (models_list == nullptr) {
-        language_ = "cn";
+        language_ = "en";
         models_ = esp_srmodel_init("model");
 #ifdef CONFIG_CUSTOM_WAKE_WORD
         threshold_ = CONFIG_CUSTOM_WAKE_WORD_THRESHOLD / 100.0f;
         //commands_.push_back({"ni hao yuan bao", "你好元宝", "wake"});
         //commands_.push_back({CONFIG_CUSTOM_WAKE_WORD, CONFIG_CUSTOM_WAKE_WORD_DISPLAY, "wake"});
-        commands_.push_back({"HI COMPUTER", "HI COMPUTER", "wake"});
+        commands_.push_back({"HI BUDDY", "hi buddy", "wake"});
 #endif
     } else {
         models_ = models_list;
