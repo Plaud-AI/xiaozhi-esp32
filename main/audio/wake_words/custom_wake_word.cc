@@ -255,6 +255,13 @@ void CustomWakeWord::Feed(const std::vector<int16_t>& data) {
         return;
     }
     
+    // ⚠️ 修复：如果检测已停止，不要继续 feed，避免 AFE ringbuffer 溢出
+    EventBits_t bits = xEventGroupGetBits(event_group_);
+    if ((bits & DETECTION_RUNNING_EVENT) == 0) {
+        // 检测未运行，不 feed 数据
+        return;
+    }
+    
     // 计算音频能量，用于检测麦克风是否工作（与 AfeWakeWord 相同）
     static int feed_count = 0;
     if (++feed_count % 100 == 0) {
@@ -306,7 +313,8 @@ void CustomWakeWord::AudioDetectionTask() {
         // 从 AFE 获取处理后的音频（与 AfeWakeWord 相同）
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         int64_t fetch_start = esp_timer_get_time();
-        auto res = afe_iface_->fetch_with_delay(afe_data_, pdMS_TO_TICKS(100));
+        // ⚠️ 优化：减少超时时间从 100ms 到 50ms，降低延迟
+        auto res = afe_iface_->fetch_with_delay(afe_data_, pdMS_TO_TICKS(50));
         int64_t fetch_duration = (esp_timer_get_time() - fetch_start) / 1000;  // ms
         
         if (res == nullptr || res->ret_value == ESP_FAIL) {
@@ -374,7 +382,9 @@ void CustomWakeWord::AudioDetectionTask() {
             // ✓ MultiNet 检测到命令
             int64_t now_ms = esp_timer_get_time() / 1000;
             ESP_LOGI(TAG, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-            ESP_LOGI(TAG, "MultiNet DETECTED at %lld ms (loop %d)", (long long)now_ms, loop_count);
+            ESP_LOGI(TAG, "🎯 MultiNet DETECTED at %lld ms (loop %d)", (long long)now_ms, loop_count);
+            ESP_LOGI(TAG, "⏱️  Detection timing: fetch_duration=%lld ms, detect_duration=%lld ms", 
+                     (long long)fetch_duration, (long long)detect_duration);
             
             // 计算当前音频块的能量（仅用于数据收集，不影响判断）
             int64_t sum = 0;
