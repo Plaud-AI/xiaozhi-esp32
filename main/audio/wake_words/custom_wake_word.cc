@@ -125,10 +125,12 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
     int sample_rate = multinet_->get_samp_rate(multinet_model_data_);
     ESP_LOGI(TAG, "MultiNet parameters: chunk_size=%d, sample_rate=%d", chunk_size, sample_rate);
     
-    // 设置 MultiNet 内部阈值（低阈值，让它返回所有结果）
+    // 设置 MultiNet 内部阈值（合理阈值，过滤低概率噪声）
+    // 关键修复：从 0.05 提高到 0.30，避免暴露大量低概率"垃圾结果"
+    // 这样可以防止低概率检测持续触发 DETECTED，导致超时计时器不断重置
     multinet_->set_det_threshold(multinet_model_data_, multinet_threshold_);
-    ESP_LOGI(TAG, "MultiNet internal threshold: %.3f (low to get all results)", multinet_threshold_);
-    ESP_LOGI(TAG, "Application layer threshold: %.3f (for filtering)", app_threshold_);
+    ESP_LOGI(TAG, "MultiNet internal threshold: %.3f (filter low-prob noise)", multinet_threshold_);
+    ESP_LOGI(TAG, "Application layer threshold: %.3f (final confirmation)", app_threshold_);
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // 添加唤醒命令（如果已有命令则使用，否则使用默认）
@@ -437,6 +439,8 @@ void CustomWakeWord::AudioDetectionTask() {
                 // 显示所有检测结果（方便分析模型表现）
                 ESP_LOGI(TAG, "📊 Detection results (num=%d, registered_commands=%d):", 
                          mn_result->num, commands_.size());
+                ESP_LOGI(TAG, "   ✅ All results passed MultiNet internal threshold (%.3f)", 
+                         multinet_threshold_);
                 
                 if (mn_result->num < commands_.size()) {
                     ESP_LOGW(TAG, "  ⚠️ Only %d/%d commands returned (others below MultiNet threshold %.3f)", 
@@ -468,21 +472,25 @@ void CustomWakeWord::AudioDetectionTask() {
                 
                 if (best_prob < app_threshold_) {
                     float gap = app_threshold_ - best_prob;
-                    ESP_LOGW(TAG, "❌ Rejected: prob %.3f < threshold %.3f (gap: %.3f)", 
+                    ESP_LOGW(TAG, "❌ Rejected by application layer: prob %.3f < threshold %.3f (gap: %.3f)", 
                              best_prob, app_threshold_, gap);
-                    ESP_LOGI(TAG, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                    ESP_LOGI(TAG, "   💡 Note: This should be rare now (MultiNet internal threshold = %.3f)", 
+                             multinet_threshold_);
                     
-                    // 🔥 关键修复：参考官方 demo，检测失败时不清理 MultiNet 状态
-                    // 官方 demo 在检测成功后也不清理，让 MultiNet 继续处理后续音频
-                    // 只在超时时才清理状态
+                    // 🔥 兜底机制：清理 MultiNet 状态
                     // 
-                    // 原因：用户可能正在说话或重复说唤醒词，清理状态会导致：
-                    // 1. 丢失已累积的音频特征
-                    // 2. 需要重新累积 2-3 秒音频
-                    // 3. 造成巨大延迟（实测：6秒 → 72秒）
+                    // 说明：
+                    // - MultiNet 内部阈值已从 0.05 提高到 0.30，大幅减少低概率结果暴露
+                    // - 理论上，能到达这里的 prob 应该在 [0.30, 0.38) 之间（很窄的区间）
+                    // - 如果频繁触发此分支，说明内部阈值可能需要进一步调整
                     // 
-                    // multinet_->clean(multinet_model_data_);  // ← 移除这个导致延迟的 clean
-                    ESP_LOGD(TAG, "MultiNet state preserved for continuous detection");
+                    // 清理逻辑：
+                    // - prob < app_threshold 说明这是边缘情况（模糊发音、弱信号等）
+                    // - 清理状态，让 MultiNet 从干净状态重新开始
+                    // - 避免 RNN 状态累积错误特征
+                    multinet_->clean(multinet_model_data_);
+                    ESP_LOGI(TAG, "🧹 Cleaned MultiNet state (fallback mechanism)");
+                    ESP_LOGI(TAG, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
                     continue;
                 }
                 
@@ -532,13 +540,20 @@ void CustomWakeWord::AudioDetectionTask() {
                 ESP_LOGW(TAG, "MultiNet detected but no results");
             }
             
-            // 清理 MultiNet 状态
+            // 成功检测后清理 MultiNet 状态
+            // 注意：Stop() 已调用，任务将停止，这个 clean 是为了确保下次 Start() 时状态干净
+            // 实际上 Start() 中也会调用 clean，所以这里是双保险
             multinet_->clean(multinet_model_data_);
         }
         else if (mn_state == ESP_MN_STATE_TIMEOUT) {
             // 超时，只清理 MultiNet 状态
             // 不清理 AFE buffer，让音频流继续，避免延迟
-            ESP_LOGD(TAG, "MultiNet timeout, cleaning MultiNet only");
+            // 
+            // 说明：
+            // - MultiNet 内部阈值提高到 0.30 后，超时机制应该能正常工作
+            // - 只有 prob >= 0.30 的检测才会触发 DETECTED 并重置计时器
+            // - 环境噪声（prob < 0.30）不会影响超时
+            ESP_LOGI(TAG, "⏱️  MultiNet TIMEOUT (5s no valid detection), cleaning state");
             multinet_->clean(multinet_model_data_);
         }
     }

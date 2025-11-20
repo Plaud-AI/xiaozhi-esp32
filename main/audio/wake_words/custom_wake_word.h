@@ -65,8 +65,8 @@ private:
     char* multinet_model_name_ = nullptr;
     std::string language_ = "en";
     int duration_ = 5000;
-    float multinet_threshold_ = 0.05;  // MultiNet 内部阈值（低值获取所有结果）
-    float app_threshold_ = 0.40;       // 应用层过滤阈值（提高以减少误触发）
+    float multinet_threshold_ = 0.40;  // MultiNet 内部阈值（保守配置，优先准确率）
+    float app_threshold_ = 0.50;       // 应用层阈值（保守配置，减少误触发）
     std::deque<Command> commands_;
     
     // 回调和状态（与 AfeWakeWord 相同）
