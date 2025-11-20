@@ -64,7 +64,23 @@ int BluetoothService::gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_ha
                     os_mbuf_copydata(ctxt->om, 0, om_len, data);
                     data[om_len] = '\0';
                     
-                    ESP_LOGI(TAG, "收到数据片段: %s (长度: %d)", data, om_len);
+                    // 打印数据内容（显示前50个字符，避免过长）
+                    int preview_len = (om_len > 50) ? 50 : om_len;
+                    ESP_LOGI(TAG, "收到数据片段 (长度: %d)", om_len);
+                    ESP_LOGI(TAG, "内容预览: %.*s%s", preview_len, data, 
+                             (om_len > 50) ? "..." : "");
+                    
+                    // 显示前16个字节的十六进制表示（用于调试）
+                    if (om_len > 0) {
+                        char hex_buf[64];
+                        int hex_len = (om_len > 16) ? 16 : om_len;
+                        int hex_pos = 0;
+                        for (int i = 0; i < hex_len && hex_pos < 60; i++) {
+                            hex_pos += snprintf(hex_buf + hex_pos, sizeof(hex_buf) - hex_pos, 
+                                              "%02X ", (unsigned char)data[i]);
+                        }
+                        ESP_LOGD(TAG, "十六进制: %s%s", hex_buf, (om_len > 16) ? "..." : "");
+                    }
                     
                     // 处理接收到的数据片段（支持分包重组）
                     if (g_instance) {
@@ -395,17 +411,27 @@ void BluetoothService::ProcessReceivedData(const std::string& data) {
     // 将接收到的数据片段添加到缓冲区
     receive_buffer_ += data;
     
-    ESP_LOGD(TAG, "累积缓冲区大小: %d 字节", receive_buffer_.length());
+    ESP_LOGI(TAG, "累积缓冲区大小: %d 字节", receive_buffer_.length());
+    
+    // 添加调试：显示缓冲区的首尾字符
+    if (!receive_buffer_.empty()) {
+        ESP_LOGI(TAG, "缓冲区首字符: '%c' (0x%02X)", 
+                 receive_buffer_[0], (unsigned char)receive_buffer_[0]);
+        ESP_LOGI(TAG, "缓冲区尾字符: '%c' (0x%02X)", 
+                 receive_buffer_[receive_buffer_.length()-1], 
+                 (unsigned char)receive_buffer_[receive_buffer_.length()-1]);
+    }
     
     // 查找换行符（消息结束标记）
     size_t newline_pos = receive_buffer_.find('\n');
     
+    // 情况1：找到换行符（标准分包传输场景）
     while (newline_pos != std::string::npos) {
         // 提取完整的消息（不包含换行符）
         std::string complete_message = receive_buffer_.substr(0, newline_pos);
         
         ESP_LOGI(TAG, "========================================");
-        ESP_LOGI(TAG, "📦 接收到完整消息（分包重组）");
+        ESP_LOGI(TAG, "📦 接收到完整消息（带换行符）");
         ESP_LOGI(TAG, "消息长度: %d 字节", complete_message.length());
         ESP_LOGI(TAG, "消息内容: %s", complete_message.c_str());
         ESP_LOGI(TAG, "========================================");
@@ -422,10 +448,57 @@ void BluetoothService::ProcessReceivedData(const std::string& data) {
         newline_pos = receive_buffer_.find('\n');
     }
     
+    // 情况2：没有换行符，检查是否是完整JSON消息
+    // 如果收到的数据以 { 开头且以 } 结尾，可能是完整的JSON消息（无换行符）
+    if (!receive_buffer_.empty()) {
+        // 去除首尾空白字符
+        size_t start = 0;
+        size_t end = receive_buffer_.length();
+        
+        // 跳过开头的空白字符
+        while (start < end && std::isspace((unsigned char)receive_buffer_[start])) {
+            start++;
+        }
+        
+        // 跳过结尾的空白字符
+        while (end > start && std::isspace((unsigned char)receive_buffer_[end - 1])) {
+            end--;
+        }
+        
+        // 检查是否是完整的JSON（以 { 开头且以 } 结尾）
+        if (end > start && 
+            receive_buffer_[start] == '{' && 
+            receive_buffer_[end - 1] == '}') {
+            
+            std::string trimmed = receive_buffer_.substr(start, end - start);
+            
+            ESP_LOGI(TAG, "========================================");
+            ESP_LOGI(TAG, "📦 接收到完整JSON消息（无换行符）");
+            ESP_LOGI(TAG, "消息长度: %d 字节", trimmed.length());
+            ESP_LOGI(TAG, "消息内容: %s", trimmed.c_str());
+            ESP_LOGI(TAG, "========================================");
+            
+            // 调用数据接收回调
+            if (data_received_callback_) {
+                data_received_callback_(trimmed);
+            }
+            
+            // 清空缓冲区
+            receive_buffer_.clear();
+        } else {
+            // 不是完整的JSON，等待更多数据
+            if (end > start) {
+                ESP_LOGD(TAG, "等待更多数据... (首字符: '%c', 尾字符: '%c')", 
+                         receive_buffer_[start], receive_buffer_[end - 1]);
+            }
+        }
+    }
+    
     // 检查缓冲区是否过大（防止内存溢出）
     if (receive_buffer_.length() > 4096) {
         ESP_LOGW(TAG, "⚠️  接收缓冲区过大(%d 字节)，可能数据格式错误，清空缓冲区", 
                  receive_buffer_.length());
+        ESP_LOGW(TAG, "缓冲区内容: %s", receive_buffer_.c_str());
         receive_buffer_.clear();
     }
 }
