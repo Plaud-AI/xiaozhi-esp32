@@ -32,9 +32,10 @@ public:
     bool GetWakeWordOpus(std::vector<uint8_t>& opus);
     const std::string& GetLastDetectedWakeWord() const { return last_detected_wake_word_; }
 
-    // 动态命令管理接口（空实现，仅用于兼容）
+    // 动态命令管理接口（支持运行时更新唤醒词）
     void ClearCommands();
     void AddCommand(const std::string& command, const std::string& text, const std::string& action);
+    void SetThreshold(float threshold);
     bool UpdateCommands();
 
 private:

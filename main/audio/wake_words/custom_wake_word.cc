@@ -262,19 +262,107 @@ bool CustomWakeWord::GetWakeWordOpus(std::vector<uint8_t>& opus) {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 void CustomWakeWord::ClearCommands() {
-    // 空实现 - 此类在初始化时设置命令，不支持动态清除
-    ESP_LOGW(TAG, "ClearCommands() called but not implemented in this version");
+    int old_count = commands_.size();
+    commands_.clear();
+    ESP_LOGI(TAG, "🗑️  ClearCommands: 已清空 %d 个命令", old_count);
 }
 
 void CustomWakeWord::AddCommand(const std::string& command, 
                                 const std::string& text, 
                                 const std::string& action) {
-    // 空实现 - 此类在初始化时设置命令，不支持动态添加
-    ESP_LOGW(TAG, "AddCommand() called but not implemented in this version");
+    commands_.push_back({command, text, action});
+    ESP_LOGI(TAG, "➕ AddCommand [%d]: command='%s', text='%s', action='%s'", 
+             commands_.size(), command.c_str(), text.c_str(), action.c_str());
+}
+
+void CustomWakeWord::SetThreshold(float threshold) {
+    float old_threshold = threshold_;
+    threshold_ = threshold;
+    if (multinet_ != nullptr && multinet_model_data_ != nullptr) {
+        multinet_->set_det_threshold(multinet_model_data_, threshold_);
+        ESP_LOGI(TAG, "🎚️  SetThreshold: %.3f -> %.3f (已应用到 MultiNet)", 
+                 old_threshold, threshold_);
+    } else {
+        ESP_LOGI(TAG, "🎚️  SetThreshold: %.3f -> %.3f (将在 Initialize 时应用)", 
+                 old_threshold, threshold_);
+    }
 }
 
 bool CustomWakeWord::UpdateCommands() {
-    // 空实现 - 此类在初始化时设置命令，不支持动态更新
-    ESP_LOGW(TAG, "UpdateCommands() called but not implemented in this version");
-    return false;
+    ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════╗");
+    ESP_LOGI(TAG, "║  🔄 CustomWakeWord::UpdateCommands                         ║");
+    ESP_LOGI(TAG, "║     运行时更新命令到 MultiNet（无需重启）                   ║");
+    ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════╝");
+    
+    // 检查 MultiNet 是否初始化
+    if (multinet_model_data_ == nullptr) {
+        ESP_LOGE(TAG, "❌ MultiNet 未初始化，无法更新命令");
+        ESP_LOGE(TAG, "   提示: 命令将在下次 Initialize() 时自动加载");
+        return false;
+    }
+    ESP_LOGI(TAG, "✅ MultiNet 已初始化，可以运行时更新");
+    
+    // 检查命令列表
+    if (commands_.empty()) {
+        ESP_LOGW(TAG, "⚠️  命令列表为空，没有命令可更新");
+        return false;
+    }
+    ESP_LOGI(TAG, "✅ 命令列表包含 %d 个命令", commands_.size());
+    
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "步骤 1: 清空旧命令...");
+    esp_mn_commands_clear();
+    ESP_LOGI(TAG, "✅ 旧命令已清空");
+    
+    // 添加新命令
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "步骤 2: 添加新命令到 MultiNet...");
+    for (int i = 0; i < commands_.size(); i++) {
+        ESP_LOGI(TAG, "   [%d/%d] 添加命令:", i + 1, commands_.size());
+        ESP_LOGI(TAG, "      command: %s", commands_[i].command.c_str());
+        ESP_LOGI(TAG, "      text: %s", commands_[i].text.c_str());
+        ESP_LOGI(TAG, "      action: %s", commands_[i].action.c_str());
+        
+        esp_err_t ret = esp_mn_commands_add(i + 1, commands_[i].command.c_str());
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "      ⚠️  添加失败: %s", esp_err_to_name(ret));
+        } else {
+            ESP_LOGI(TAG, "      ✅ 添加成功");
+        }
+    }
+    
+    // 更新命令到模型（运行时生效！）
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "步骤 3: 更新命令到 MultiNet 模型...");
+    esp_mn_error_t* err = esp_mn_commands_update();
+    if (err) {
+        ESP_LOGE(TAG, "❌ 更新失败，发现 %d 个错误:", err->num);
+        for (int i = 0; i < err->num; i++) {
+            ESP_LOGE(TAG, "   错误 [%d]:", i + 1);
+            ESP_LOGE(TAG, "      命令 ID: %d", err->phrases[i]->command_id);
+            ESP_LOGE(TAG, "      内容: %s", err->phrases[i]->string);
+        }
+        ESP_LOGE(TAG, "");
+        ESP_LOGE(TAG, "╔════════════════════════════════════════════════════════════╗");
+        ESP_LOGE(TAG, "║  ❌ UpdateCommands 失败                                    ║");
+        ESP_LOGE(TAG, "╚════════════════════════════════════════════════════════════╝");
+        return false;
+    }
+    ESP_LOGI(TAG, "✅ 命令更新成功！");
+    
+    // 打印已激活的命令
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "步骤 4: 验证已激活的命令...");
+    ESP_LOGI(TAG, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    multinet_->print_active_speech_commands(multinet_model_data_);
+    ESP_LOGI(TAG, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════╗");
+    ESP_LOGI(TAG, "║  ✅✅✅ UpdateCommands 成功！                              ║");
+    ESP_LOGI(TAG, "║  📢 %d 个命令已更新到 MultiNet 并立即生效                 ║", commands_.size());
+    ESP_LOGI(TAG, "║  🎉 现在可以使用新的唤醒词了！                             ║");
+    ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════╝");
+    
+    return true;
 }
