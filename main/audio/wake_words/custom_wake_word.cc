@@ -133,10 +133,17 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
     // 添加唤醒命令（如果已有命令则使用，否则使用默认）
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     if (commands_.empty()) {
-        ESP_LOGI(TAG, "No commands pre-configured, using default wake words");
-        commands_.push_back({"COMPUTER", "computer", "wake"});
-        commands_.push_back({"ASSISTANT", "assistant", "wake"});
-        commands_.push_back({"HI DEVICE", "hi device", "wake"});
+        ESP_LOGI(TAG, "No commands pre-configured, using default wake words (MultiNet6 Grapheme)");
+        
+        // 选项 A：实际使用的唤醒词（推荐测试）
+       // commands_.push_back({"HI PLAUD", "hi plaud", "wake"});
+       // commands_.push_back({"HEY PLAUD", "hey plaud", "wake"});
+       // commands_.push_back({"HELLO PLAUD", "hello plaud", "wake"});
+        
+        // 选项 B：通用测试唤醒词（如需切换，注释上面3行，取消注释下面3行）
+         commands_.push_back({"COMPUTER", "computer", "wake"});
+         commands_.push_back({"ASSISTANT", "assistant", "wake"});
+         commands_.push_back({"HI DEVICE", "hi device", "wake"});
     } else {
         ESP_LOGI(TAG, "Using %d pre-configured wake word commands", commands_.size());
     }

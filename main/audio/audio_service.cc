@@ -692,7 +692,14 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
         ESP_LOGI(TAG, "Creating CustomWakeWord (MN prefix found)");
         wake_word_ = std::make_unique<CustomWakeWord>();
         
-        // 加载唤醒词配置并应用
+        // 🔧 [测试模式] 不使用 NVS 和 WakeWordManager，直接使用代码中的默认唤醒词
+        // 目的：测试 MultiNet 模型本身的检测能力
+        // CustomWakeWord::Initialize() 会在 commands_ 为空时自动使用默认唤醒词
+        ESP_LOGW(TAG, "⚠️  [TEST MODE] Skipping NVS/WakeWordManager, using built-in defaults");
+        ESP_LOGI(TAG, "CustomWakeWord will use hardcoded wake words for model testing");
+        
+        /*
+        // 原始逻辑（使用 NVS 配置）：
         auto& manager = WakeWordManager::GetInstance();
         if (manager.LoadFromNVS()) {
             ESP_LOGI(TAG, "Loaded %d wake words from NVS", manager.GetCount());
@@ -708,6 +715,7 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
                 manager.ApplyToCustomWakeWord(custom_wake_word);
             }
         }
+        */
     } else {
         ESP_LOGW(TAG, "MultiNet model not found in models list!");
         wake_word_ = nullptr;

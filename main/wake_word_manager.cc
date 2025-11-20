@@ -107,7 +107,7 @@ void WakeWordManager::ClearWakeWords() {
 bool WakeWordManager::ResetToDefault() {
     ESP_LOGI(TAG, "Resetting to default wake words");
     wake_words_ = GetDefaultWakeWords();
-    threshold_ = 0.15f;
+    threshold_ = 0.40f;  // 使用与 CustomWakeWord 相同的默认阈值
     return SaveToNVS();
 }
 
@@ -292,6 +292,9 @@ bool WakeWordManager::LoadFromNVS() {
 }
 
 bool WakeWordManager::ApplyToCustomWakeWord(CustomWakeWord* wake_word) {
+
+    return true;
+
     if (!wake_word) {
         ESP_LOGE(TAG, "Wake word object is NULL");
         return false;
@@ -359,25 +362,24 @@ bool WakeWordManager::ValidateConfig(const WakeWordConfig& config) {
 std::vector<WakeWordConfig> WakeWordManager::GetDefaultWakeWords() {
     std::vector<WakeWordConfig> defaults;
     
-    // 默认唤醒词 1: "hi plaud"
+    // 默认唤醒词 1: "hi plaud" (MultiNet6 Grapheme 格式)
     defaults.push_back({
         "hi plaud",
         "Hi Plaud",
         {
-            "hi PLAA1D",
-            "hi PLaD",
-            "hi PLeD",
-            "HH AY1 P L AA1 D"
+            "HI PLAUD",
+            "HEY PLAUD",
+            "HELLO PLAUD"
         }
     });
     
-    // 默认唤醒词 2: "hi nicebuild"
+    // 默认唤醒词 2: "hi device" (更清晰易识别)
     defaults.push_back({
-        "hi nicebuild",
-        "Hi Nicebuild",
+        "hi device",
+        "Hi Device",
         {
-            "HH AY1 N AY1 S B IH0 L D",
-            "hi NgSgBcLD"
+            "HI DEVICE",
+            "HEY DEVICE"
         }
     });
     
