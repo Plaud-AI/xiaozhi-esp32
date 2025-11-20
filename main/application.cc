@@ -927,36 +927,68 @@ void Application::PlaySound(const std::string_view& sound) {
 }
 
 bool Application::ApplyWakeWordConfig() {
-    ESP_LOGI(TAG, "Applying wake word configuration at runtime...");
+    ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════╗");
+    ESP_LOGI(TAG, "║  🔄 Application::ApplyWakeWordConfig                     ║");
+    ESP_LOGI(TAG, "║     运行时应用唤醒词配置（无需重启）                      ║");
+    ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════╝");
     
     // 获取 CustomWakeWord 指针
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "步骤 1: 获取 CustomWakeWord 对象...");
     auto* wake_word = audio_service_.GetWakeWord();
     if (!wake_word) {
-        ESP_LOGW(TAG, "Wake word object is NULL");
+        ESP_LOGE(TAG, "❌ Wake word object is NULL");
+        ESP_LOGE(TAG, "   可能原因: AudioService 未正确初始化");
         return false;
     }
+    ESP_LOGI(TAG, "✅ 成功获取 WakeWord 对象");
     
     // 尝试转换为 CustomWakeWord
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "步骤 2: 检查 WakeWord 类型...");
     CustomWakeWord* custom_wake_word = dynamic_cast<CustomWakeWord*>(wake_word);
     if (!custom_wake_word) {
-        ESP_LOGW(TAG, "Wake word is not CustomWakeWord type, runtime update not supported");
+        ESP_LOGE(TAG, "❌ Wake word is not CustomWakeWord type");
+        ESP_LOGE(TAG, "   运行时更新仅支持 CustomWakeWord");
+        ESP_LOGE(TAG, "   当前类型可能是其他唤醒词实现");
+        return false;
+    }
+    ESP_LOGI(TAG, "✅ WakeWord 类型正确 (CustomWakeWord)");
+    
+    // 加载配置并应用
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "步骤 3: 从 NVS 加载唤醒词配置...");
+    auto& manager = WakeWordManager::GetInstance();
+    if (!manager.LoadFromNVS()) {
+        ESP_LOGW(TAG, "⚠️  NVS 中没有保存的唤醒词配置");
+        ESP_LOGW(TAG, "   可能是首次启动或配置被清除");
         return false;
     }
     
-    // 加载配置并应用
-    auto& manager = WakeWordManager::GetInstance();
-    if (manager.LoadFromNVS()) {
-        ESP_LOGI(TAG, "Loaded %d wake words from NVS", manager.GetCount());
-        bool success = manager.ApplyToCustomWakeWord(custom_wake_word);
-        if (success) {
-            ESP_LOGI(TAG, "✓ Wake word configuration applied successfully at runtime!");
-            return true;
-        } else {
-            ESP_LOGE(TAG, "Failed to apply wake word configuration");
-            return false;
-        }
+    int wake_word_count = manager.GetCount();
+    float threshold = manager.GetThreshold();
+    ESP_LOGI(TAG, "✅ 成功从 NVS 加载配置:");
+    ESP_LOGI(TAG, "   唤醒词数量: %d", wake_word_count);
+    ESP_LOGI(TAG, "   阈值: %.3f", threshold);
+    
+    // 应用到 CustomWakeWord
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "步骤 4: 应用配置到 CustomWakeWord...");
+    bool success = manager.ApplyToCustomWakeWord(custom_wake_word);
+    
+    if (success) {
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════╗");
+        ESP_LOGI(TAG, "║  ✅✅✅ 唤醒词配置应用成功！                              ║");
+        ESP_LOGI(TAG, "║  📢 %d 个唤醒词已立即生效，无需重启设备                 ║", wake_word_count);
+        ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════╝");
+        return true;
     } else {
-        ESP_LOGW(TAG, "No saved wake words in NVS");
+        ESP_LOGE(TAG, "");
+        ESP_LOGE(TAG, "╔══════════════════════════════════════════════════════════╗");
+        ESP_LOGE(TAG, "║  ❌ 唤醒词配置应用失败                                    ║");
+        ESP_LOGE(TAG, "║  建议: 重启设备后唤醒词将自动加载                         ║");
+        ESP_LOGE(TAG, "╚══════════════════════════════════════════════════════════╝");
         return false;
     }
 }
