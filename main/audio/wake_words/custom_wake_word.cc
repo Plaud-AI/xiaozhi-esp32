@@ -96,7 +96,8 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
 #ifdef CONFIG_CUSTOM_WAKE_WORD
         threshold_ = CONFIG_CUSTOM_WAKE_WORD_THRESHOLD / 100.0f;
         //commands_.push_back({"ni hao yuan bao", "你好元宝", "wake"});
-        commands_.push_back({CONFIG_CUSTOM_WAKE_WORD, CONFIG_CUSTOM_WAKE_WORD_DISPLAY, "wake"});
+        //commands_.push_back({CONFIG_CUSTOM_WAKE_WORD, CONFIG_CUSTOM_WAKE_WORD_DISPLAY, "wake"});
+        commands_.push_back({"HI COMPUTER", "HI COMPUTER", "wake"});
 #endif
     } else {
         models_ = models_list;
@@ -254,4 +255,26 @@ bool CustomWakeWord::GetWakeWordOpus(std::vector<uint8_t>& opus) {
     opus.swap(wake_word_opus_.front());
     wake_word_opus_.pop_front();
     return !opus.empty();
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 动态命令管理接口（空实现，仅用于兼容编译）
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+void CustomWakeWord::ClearCommands() {
+    // 空实现 - 此类在初始化时设置命令，不支持动态清除
+    ESP_LOGW(TAG, "ClearCommands() called but not implemented in this version");
+}
+
+void CustomWakeWord::AddCommand(const std::string& command, 
+                                const std::string& text, 
+                                const std::string& action) {
+    // 空实现 - 此类在初始化时设置命令，不支持动态添加
+    ESP_LOGW(TAG, "AddCommand() called but not implemented in this version");
+}
+
+bool CustomWakeWord::UpdateCommands() {
+    // 空实现 - 此类在初始化时设置命令，不支持动态更新
+    ESP_LOGW(TAG, "UpdateCommands() called but not implemented in this version");
+    return false;
 }
