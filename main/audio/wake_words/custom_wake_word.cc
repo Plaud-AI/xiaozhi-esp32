@@ -185,6 +185,10 @@ void CustomWakeWord::Feed(const std::vector<int16_t>& data) {
             }
         }
         multinet_->clean(multinet_model_data_);
+        
+        detection_frame_count_ = 0;
+        last_log_frame_ = 0;
+        
     } else if (mn_state == ESP_MN_STATE_TIMEOUT) {
         ESP_LOGD(TAG, "Command word detection timeout, cleaning state");
         multinet_->clean(multinet_model_data_);

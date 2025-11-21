@@ -60,6 +60,10 @@ private:
     AudioCodec* codec_ = nullptr;
     std::string last_detected_wake_word_;
     std::atomic<bool> running_ = false;
+    
+    // 检测状态日志相关
+    uint32_t detection_frame_count_ = 0;
+    uint32_t last_log_frame_ = 0;
 
     TaskHandle_t wake_word_encode_task_ = nullptr;
     StaticTask_t* wake_word_encode_task_buffer_ = nullptr;
