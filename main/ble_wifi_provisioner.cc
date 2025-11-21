@@ -910,8 +910,8 @@ void BLEWiFiProvisioner::HandleSetWakeWordsCommand(cJSON* root) {
     int words_count = cJSON_GetArraySize(words_array);
     ESP_LOGI(TAG, "✓ 找到 words 数组，包含 %d 个唤醒词", words_count);
     
-    // 读取阈值（可选，默认 0.15）
-    float threshold = 0.15f;
+    // 读取阈值（可选，默认使用 DEFAULT_WAKE_WORD_THRESHOLD）
+    float threshold = DEFAULT_WAKE_WORD_THRESHOLD;
     cJSON* threshold_item = cJSON_GetObjectItem(data_item, "threshold");
     if (threshold_item && cJSON_IsNumber(threshold_item)) {
         threshold = threshold_item->valuedouble;

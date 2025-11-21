@@ -134,7 +134,7 @@ void WakeWordManager::ClearWakeWords() {
 bool WakeWordManager::ResetToDefault() {
     ESP_LOGI(TAG, "Resetting to default wake words");
     wake_words_ = GetDefaultWakeWords();
-    threshold_ = 0.40f;  // 使用与 CustomWakeWord 相同的默认阈值
+    threshold_ = DEFAULT_WAKE_WORD_THRESHOLD;
     return SaveToNVS();
 }
 

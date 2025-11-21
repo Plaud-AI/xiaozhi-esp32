@@ -16,6 +16,7 @@
 
 #include "audio_codec.h"
 #include "wake_word.h"
+#include "wake_word_constants.h"
 
 class CustomWakeWord : public WakeWord {
 public:
@@ -52,7 +53,7 @@ private:
     char* mn_name_ = nullptr;
     std::string language_ = "cn";
     int duration_ = 3000;
-    float threshold_ = 0.2;
+    float threshold_ = DEFAULT_WAKE_WORD_THRESHOLD;
     std::deque<Command> commands_;
  
     std::function<void(const std::string& wake_word)> wake_word_detected_callback_;

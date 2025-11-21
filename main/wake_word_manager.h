@@ -5,6 +5,8 @@
 #include <vector>
 #include <memory>
 
+#include "audio/wake_words/wake_word_constants.h"
+
 // 前向声明
 class CustomWakeWord;
 
@@ -40,12 +42,12 @@ public:
     /**
      * 设置唤醒词列表
      * @param words 唤醒词配置列表
-     * @param threshold 检测阈值 (0.0-1.0)，默认 0.15
+     * @param threshold 检测阈值 (0.0-1.0)，默认使用 DEFAULT_WAKE_WORD_THRESHOLD
      * @param replace 是否替换现有配置（true）或追加（false）
      * @return 是否成功
      */
     bool SetWakeWords(const std::vector<WakeWordConfig>& words, 
-                      float threshold = 0.15f, 
+                      float threshold = DEFAULT_WAKE_WORD_THRESHOLD, 
                       bool replace = true);
     
     /**
@@ -117,7 +119,7 @@ private:
     bool ValidateConfig(const WakeWordConfig& config);
     
     std::vector<WakeWordConfig> wake_words_;
-    float threshold_ = 0.40f;  // 提高默认阈值，减少噪声误触发
+    float threshold_ = DEFAULT_WAKE_WORD_THRESHOLD;
     
     static constexpr const char* TAG = "WakeWordManager";
     static constexpr const char* NVS_NAMESPACE = "wake_words";
