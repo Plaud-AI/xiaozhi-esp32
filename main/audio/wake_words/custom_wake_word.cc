@@ -124,6 +124,7 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
     multinet_ = esp_mn_handle_from_name(mn_name_);
     multinet_model_data_ = multinet_->create(mn_name_, duration_);
     multinet_->set_det_threshold(multinet_model_data_, threshold_);
+    ESP_LOGI(TAG, "🎚️  MultiNet detection threshold set to: %.3f", threshold_);
     esp_mn_commands_clear();
     for (int i = 0; i < commands_.size(); i++) {
         esp_mn_commands_add(i + 1, commands_[i].command.c_str());
