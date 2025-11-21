@@ -1017,11 +1017,28 @@ void BLEWiFiProvisioner::HandleSetWakeWordsCommand(cJSON* root) {
             continue;
         }
         
-        // 如果 phonemes 为空或不存在，使用 text 作为默认音素
-        if (config.phonemes.empty()) {
-            ESP_LOGI(TAG, "   💡 phonemes 为空，使用 text 作为默认音素");
-            config.phonemes.push_back(config.text);
-            ESP_LOGI(TAG, "      [1] %s (默认)", config.text.c_str());
+        // ✅ 策略：text 永远作为第一个默认音素，phonemes 中的其他音素作为额外变体
+        // 先检查 text 是否已经在 phonemes 中
+        bool text_exists = false;
+        for (const auto& p : config.phonemes) {
+            if (p == config.text) {
+                text_exists = true;
+                break;
+            }
+        }
+        
+        // 如果 text 不在 phonemes 中，将其作为第一个音素插入
+        if (!text_exists) {
+            config.phonemes.insert(config.phonemes.begin(), config.text);
+            ESP_LOGI(TAG, "   💡 将 text 作为默认音素添加到最前面: '%s'", config.text.c_str());
+        } else {
+            ESP_LOGI(TAG, "   ℹ️  text 已存在于 phonemes 中，无需重复添加");
+        }
+        
+        ESP_LOGI(TAG, "   📊 最终音素列表 (共 %d 个):", config.phonemes.size());
+        for (size_t i = 0; i < config.phonemes.size(); i++) {
+            ESP_LOGI(TAG, "      [%d] %s%s", i + 1, config.phonemes[i].c_str(),
+                    (config.phonemes[i] == config.text) ? " (默认)" : "");
         }
         
         wake_words.push_back(config);

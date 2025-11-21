@@ -381,23 +381,36 @@ bool WakeWordManager::LoadFromNVS() {
             }
         }
         
-        // 如果没有有效音素，尝试使用 text 作为默认音素
-        if (config.phonemes.empty()) {
+        // ✅ 策略：text 永远作为第一个默认音素（如果有效）
+        // 先检查 text 是否有效
+        if (config.text.length() < 3) {
+            ESP_LOGE(TAG, "❌ text '%s' 太短（长度: %d < 3），无法作为默认音素，跳过该唤醒词", 
+                    config.text.c_str(), config.text.length());
+            continue;
+        }
+        
+        // 检查 text 是否已经在 phonemes 中
+        bool text_exists = false;
+        for (const auto& p : config.phonemes) {
+            if (p == config.text) {
+                text_exists = true;
+                break;
+            }
+        }
+        
+        // 如果 text 不在 phonemes 中，将其作为第一个音素插入
+        if (!text_exists) {
+            config.phonemes.insert(config.phonemes.begin(), config.text);
             if (invalid_phoneme_count > 0) {
-                ESP_LOGW(TAG, "⚠️  所有 %d 个音素都无效（长度 < 3），尝试使用 text 作为默认音素", 
-                        invalid_phoneme_count);
-            }
-            
-            // 验证 text 是否符合要求
-            if (config.text.length() >= 3) {
-                ESP_LOGI(TAG, "💡 使用 text 作为默认音素: '%s' (长度: %d)", 
-                        config.text.c_str(), config.text.length());
-                config.phonemes.push_back(config.text);
+                ESP_LOGW(TAG, "⚠️  所有 %d 个音素都无效，使用 text 作为唯一音素: '%s'", 
+                        invalid_phoneme_count, config.text.c_str());
+            } else if (config.phonemes.size() == 1) {
+                ESP_LOGI(TAG, "💡 未提供音素，使用 text 作为默认音素: '%s'", config.text.c_str());
             } else {
-                ESP_LOGE(TAG, "❌ text '%s' 也太短（长度: %d < 3），无法作为默认音素，跳过该唤醒词", 
-                        config.text.c_str(), config.text.length());
-                continue;
+                ESP_LOGI(TAG, "💡 将 text 作为默认音素添加到最前面: '%s'", config.text.c_str());
             }
+        } else {
+            ESP_LOGI(TAG, "ℹ️  text 已存在于音素列表中");
         }
         
         wake_words_.push_back(config);
