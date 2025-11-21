@@ -141,16 +141,23 @@ void CustomWakeWord::OnWakeWordDetected(std::function<void(const std::string& wa
 
 void CustomWakeWord::Start() {
     running_ = true;
+    detection_frame_count_ = 0;
+    last_log_frame_ = 0;
+    
+    ESP_LOGI(TAG, "🎙️  唤醒词检测启动 | 命令数: %d, 阈值: %.2f", commands_.size(), threshold_);
 }
 
 void CustomWakeWord::Stop() {
     running_ = false;
+    ESP_LOGI(TAG, "🛑 唤醒词检测停止 | 检测时长: %.1f 秒", detection_frame_count_ / 31.25f);
 }
 
 void CustomWakeWord::Feed(const std::vector<int16_t>& data) {
     if (multinet_model_data_ == nullptr || !running_) {
         return;
     }
+
+    detection_frame_count_++;
 
     esp_mn_state_t mn_state;
     // If input channels is 2, we need to fetch the left channel data
@@ -168,9 +175,15 @@ void CustomWakeWord::Feed(const std::vector<int16_t>& data) {
     }
     
     if (mn_state == ESP_MN_STATE_DETECTING) {
+        // 第一次进入检测状态（检测开始）
+        if (last_log_frame_ == 0) {
+            ESP_LOGI(TAG, "🔍 本地检测开始");
+            last_log_frame_ = 1;
+        }
         return;
     } else if (mn_state == ESP_MN_STATE_DETECTED) {
         esp_mn_results_t *mn_result = multinet_->get_results(multinet_model_data_);
+        
         for (int i = 0; i < mn_result->num && running_; i++) {
             ESP_LOGI(TAG, "Custom wake word detected: command_id=%d, string=%s, prob=%f", 
                     mn_result->command_id[i], mn_result->string, mn_result->prob[i]);
@@ -186,12 +199,17 @@ void CustomWakeWord::Feed(const std::vector<int16_t>& data) {
         }
         multinet_->clean(multinet_model_data_);
         
+        // 重置计数器
         detection_frame_count_ = 0;
         last_log_frame_ = 0;
         
     } else if (mn_state == ESP_MN_STATE_TIMEOUT) {
-        ESP_LOGD(TAG, "Command word detection timeout, cleaning state");
+        ESP_LOGI(TAG, "⏱️  检测超时 | 耗时: %.1fs", detection_frame_count_ / 31.25f);
         multinet_->clean(multinet_model_data_);
+        
+        // 重置计数器
+        detection_frame_count_ = 0;
+        last_log_frame_ = 0;
     }
 }
 
