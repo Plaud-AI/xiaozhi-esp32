@@ -344,24 +344,65 @@ bool WakeWordManager::LoadFromNVS() {
         ESP_LOGI(TAG, "  text: %s", config.text.c_str());
         ESP_LOGI(TAG, "  display: %s", config.display.c_str());
         
-        // 读取音素数组
+        // 读取音素数组（带验证）
         cJSON* phoneme_item = nullptr;
         int phoneme_index = 0;
+        int invalid_phoneme_count = 0;
         cJSON_ArrayForEach(phoneme_item, phonemes) {
             if (cJSON_IsString(phoneme_item)) {
-                config.phonemes.push_back(phoneme_item->valuestring);
+                std::string phoneme_str = phoneme_item->valuestring;
+                
+                // ⚠️ 验证音素长度（MultiNet 要求 >= 3 字符）
+                if (phoneme_str.length() < 3) {
+                    ESP_LOGW(TAG, "    phoneme[%d]: '%s' (长度: %d) ❌ 太短，跳过", 
+                            phoneme_index + 1, phoneme_str.c_str(), phoneme_str.length());
+                    invalid_phoneme_count++;
+                    continue;
+                }
+                
+                // 验证不能全是空格
+                bool all_spaces = true;
+                for (char c : phoneme_str) {
+                    if (c != ' ' && c != '\t' && c != '\n' && c != '\r') {
+                        all_spaces = false;
+                        break;
+                    }
+                }
+                if (all_spaces) {
+                    ESP_LOGW(TAG, "    phoneme[%d]: 全是空白字符 ❌ 跳过", phoneme_index + 1);
+                    invalid_phoneme_count++;
+                    continue;
+                }
+                
+                config.phonemes.push_back(phoneme_str);
                 phoneme_index++;
-                ESP_LOGI(TAG, "    phoneme[%d]: %s", phoneme_index, phoneme_item->valuestring);
+                ESP_LOGI(TAG, "    phoneme[%d]: %s (长度: %d) ✅", 
+                        phoneme_index, phoneme_str.c_str(), phoneme_str.length());
             }
         }
         
-        if (!config.phonemes.empty()) {
-            wake_words_.push_back(config);
-            ESP_LOGI(TAG, "✅ 加载成功: %s (%d 个音素)", 
-                     config.text.c_str(), config.phonemes.size());
-        } else {
-            ESP_LOGW(TAG, "⚠️  音素列表为空，跳过");
+        // 如果没有有效音素，尝试使用 text 作为默认音素
+        if (config.phonemes.empty()) {
+            if (invalid_phoneme_count > 0) {
+                ESP_LOGW(TAG, "⚠️  所有 %d 个音素都无效（长度 < 3），尝试使用 text 作为默认音素", 
+                        invalid_phoneme_count);
+            }
+            
+            // 验证 text 是否符合要求
+            if (config.text.length() >= 3) {
+                ESP_LOGI(TAG, "💡 使用 text 作为默认音素: '%s' (长度: %d)", 
+                        config.text.c_str(), config.text.length());
+                config.phonemes.push_back(config.text);
+            } else {
+                ESP_LOGE(TAG, "❌ text '%s' 也太短（长度: %d < 3），无法作为默认音素，跳过该唤醒词", 
+                        config.text.c_str(), config.text.length());
+                continue;
+            }
         }
+        
+        wake_words_.push_back(config);
+        ESP_LOGI(TAG, "✅ 加载成功: %s (%d 个有效音素)", 
+                 config.text.c_str(), config.phonemes.size());
     }
     
     cJSON_Delete(root);
