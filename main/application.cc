@@ -926,6 +926,11 @@ void Application::PlaySound(const std::string_view& sound) {
     audio_service_.PlaySound(sound);
 }
 
+void Application::PlaySuccessSound() {
+    ESP_LOGI(TAG, "🔊 播放成功提示音");
+    audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
+}
+
 bool Application::ApplyWakeWordConfig() {
     ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════╗");
     ESP_LOGI(TAG, "║  🔄 Application::ApplyWakeWordConfig                     ║");

@@ -962,6 +962,7 @@ void BLEWiFiProvisioner::HandleSetWakeWordsCommand(cJSON* root) {
         ESP_LOGI(TAG, "   display: %s", config.display.c_str());
         
         // 解析音素数组（可选字段）
+        bool phoneme_format_error = false;
         if (phonemes && cJSON_IsArray(phonemes)) {
             int phonemes_count = cJSON_GetArraySize(phonemes);
             ESP_LOGI(TAG, "   phonemes 数量: %d", phonemes_count);
@@ -970,15 +971,50 @@ void BLEWiFiProvisioner::HandleSetWakeWordsCommand(cJSON* root) {
             int phoneme_index = 0;
             cJSON_ArrayForEach(phoneme_item, phonemes) {
                 if (cJSON_IsString(phoneme_item)) {
-                    config.phonemes.push_back(phoneme_item->valuestring);
+                    std::string phoneme_str = phoneme_item->valuestring;
+                    
+                    // ⚠️ 关键验证：MultiNet 要求音素至少 3 个字符，否则会崩溃！
+                    // 原因：MultiNet 内部 FST 构建时会访问字符串的第3个字符
+                    if (phoneme_str.length() < 3) {
+                        ESP_LOGE(TAG, "      ❌ 音素 '%s' 太短（%d 字符 < 3），不符合 MultiNet 要求", 
+                                phoneme_str.c_str(), phoneme_str.length());
+                        ESP_LOGE(TAG, "         MultiNet 会在 fst_minimize 时崩溃！");
+                        phoneme_format_error = true;
+                        break;
+                    }
+                    
+                    // 验证音素不能全是空格
+                    bool all_spaces = true;
+                    for (char c : phoneme_str) {
+                        if (c != ' ' && c != '\t' && c != '\n' && c != '\r') {
+                            all_spaces = false;
+                            break;
+                        }
+                    }
+                    if (all_spaces) {
+                        ESP_LOGE(TAG, "      ❌ 音素全是空白字符，不符合 MultiNet 要求");
+                        phoneme_format_error = true;
+                        break;
+                    }
+                    
                     phoneme_index++;
-                    ESP_LOGI(TAG, "      [%d] %s", phoneme_index, phoneme_item->valuestring);
+                    config.phonemes.push_back(phoneme_str);
+                    ESP_LOGI(TAG, "      [%d] %s (长度: %d)", phoneme_index, phoneme_str.c_str(), phoneme_str.length());
                 } else {
                     ESP_LOGW(TAG, "      [%d] 跳过非字符串音素", phoneme_index + 1);
                 }
             }
         } else {
             ESP_LOGI(TAG, "   ℹ️  未提供 phonemes 字段");
+        }
+        
+        // 如果音素格式错误，跳过该唤醒词
+        if (phoneme_format_error) {
+            ESP_LOGE(TAG, "❌ 音素格式错误，跳过该唤醒词 '%s'", config.text.c_str());
+            ESP_LOGE(TAG, "   ⚠️ 重要：音素长度必须 >= 3 字符，否则 MultiNet 会崩溃");
+            ESP_LOGE(TAG, "   ✅ 正确示例：'HI PANDA', 'HEY PLAUD', 'HAI PAN DA'");
+            ESP_LOGE(TAG, "   ❌ 错误示例：'hi', 'ok', '你' (太短)");
+            continue;
         }
         
         // 如果 phonemes 为空或不存在，使用 text 作为默认音素
@@ -999,7 +1035,8 @@ void BLEWiFiProvisioner::HandleSetWakeWordsCommand(cJSON* root) {
     // 应用配置
     if (wake_words.empty()) {
         ESP_LOGE(TAG, "❌ 没有有效的唤醒词");
-        SendErrorResponse("set_wake_words", -2, "音素列表为空");
+        SendErrorResponse("set_wake_words", -2, 
+            "音素格式错误：所有音素长度必须 >= 3 字符（例如：'HI PANDA', 'HEY PLAUD'）");
         ESP_LOGI(TAG, "========================================");
         return;
     }
@@ -1053,6 +1090,9 @@ void BLEWiFiProvisioner::HandleSetWakeWordsCommand(cJSON* root) {
         }
         free(json_str);
         cJSON_Delete(response);
+        
+        // 播放成功提示音（与设备 ready 时相同）
+        Application::GetInstance().PlaySuccessSound();
     } else {
         ESP_LOGE(TAG, "❌ 唤醒词配置保存到 NVS 失败");
         SendErrorResponse("set_wake_words", -3, "NVS存储失败");
