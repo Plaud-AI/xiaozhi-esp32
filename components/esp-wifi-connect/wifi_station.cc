@@ -79,6 +79,8 @@ void WifiStation::Stop() {
     password_ = "";
     ip_address_ = "";
     reconnect_count_ = 0;
+    is_scanning_ = false;  // 重置扫描状态
+    is_timer_running_ = false;  // 重置定时器状态
 
     // Reset the WiFi stack
     ESP_ERROR_CHECK(esp_wifi_stop());
@@ -182,6 +184,17 @@ void WifiStation::Start() {
             .skip_unhandled_events = true
         };
         ESP_ERROR_CHECK(esp_timer_create(&timer_args, &timer_handle_));
+    }
+
+    // ⚠️ 修复：在 WiFi 已初始化的情况下（APSTA 模式），手动触发首次扫描
+    // 因为不会有 WIFI_EVENT_STA_START 事件
+    if (wifi_initialized) {
+        ESP_LOGI(TAG, "WiFi 已运行，手动触发首次扫描");
+        is_scanning_ = true;  // 设置扫描状态标志
+        esp_wifi_scan_start(nullptr, false);
+        if (on_scan_begin_) {
+            on_scan_begin_();
+        }
     }
 }
 
@@ -315,6 +328,7 @@ void WifiStation::SetPowerSaveMode(bool enabled) {
 void WifiStation::WifiEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data) {
     auto* this_ = static_cast<WifiStation*>(arg);
     if (event_id == WIFI_EVENT_STA_START) {
+        this_->is_scanning_ = true;  // 设置扫描状态标志
         esp_wifi_scan_start(nullptr, false);
         if (this_->on_scan_begin_) {
             this_->on_scan_begin_();
@@ -335,8 +349,20 @@ void WifiStation::WifiEventHandler(void* arg, esp_event_base_t event_base, int32
             return;
         }
         
-        ESP_LOGI(TAG, "No more AP to connect, wait for next scan");
-        esp_timer_start_once(this_->timer_handle_, 10 * 1000);
+        ESP_LOGD(TAG, "No more AP to connect, scheduling next scan");  // 改为 DEBUG 级别
+        
+        // 只有在定时器未运行时才启动
+        if (!this_->is_timer_running_) {
+            esp_err_t err = esp_timer_start_once(this_->timer_handle_, 10 * 1000);
+            if (err == ESP_OK) {
+                this_->is_timer_running_ = true;
+                ESP_LOGD(TAG, "Scan timer started after disconnect");
+            } else {
+                ESP_LOGW(TAG, "Failed to start scan timer: %s", esp_err_to_name(err));
+            }
+        } else {
+            ESP_LOGD(TAG, "Scan timer already running after disconnect");
+        }
     } else if (event_id == WIFI_EVENT_STA_CONNECTED) {
     }
 }
