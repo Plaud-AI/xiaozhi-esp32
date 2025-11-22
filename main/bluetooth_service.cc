@@ -169,7 +169,7 @@ int BluetoothService::gap_event_handler(struct ble_gap_event *event, void *arg) 
             }
             break;
 
-        case BLE_GAP_EVENT_DISCONNECT:
+        case BLE_GAP_EVENT_DISCONNECT: {
             ESP_LOGI(TAG, "");
             ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
             ESP_LOGI(TAG, "║ 📱 BLE 断开连接事件");
@@ -203,13 +203,14 @@ int BluetoothService::gap_event_handler(struct ble_gap_event *event, void *arg) 
             // 重新开始广播
             g_instance->StartAdvertising();
             break;
+        }
 
         case BLE_GAP_EVENT_ADV_COMPLETE:
             ESP_LOGD(TAG, "📡 广播周期完成，自动重启广播");
             g_instance->StartAdvertising();
             break;
 
-        case BLE_GAP_EVENT_SUBSCRIBE:
+        case BLE_GAP_EVENT_SUBSCRIBE: {
             ESP_LOGI(TAG, "");
             ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
             ESP_LOGI(TAG, "║ 🔔 BLE 特征订阅事件");
@@ -223,8 +224,9 @@ int BluetoothService::gap_event_handler(struct ble_gap_event *event, void *arg) 
             ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
             ESP_LOGI(TAG, "");
             break;
+        }
 
-        case BLE_GAP_EVENT_MTU:
+        case BLE_GAP_EVENT_MTU: {
             ESP_LOGI(TAG, "");
             ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
             ESP_LOGI(TAG, "║ 📏 BLE MTU 更新事件");
@@ -242,6 +244,7 @@ int BluetoothService::gap_event_handler(struct ble_gap_event *event, void *arg) 
             ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
             ESP_LOGI(TAG, "");
             break;
+        }
 
         default:
             ESP_LOGD(TAG, "🔔 BLE 事件: type=%d", event->type);
