@@ -289,9 +289,9 @@ void BLEWiFiProvisioner::HandleReceivedData(const std::string& data) {
             auto ssid_list = ssid_manager.GetSsidList();
             
             bool found = false;
-            for (const auto& saved_ssid : ssid_list) {
-                if (saved_ssid == ssid) {
-                    password = ssid_manager.GetPassword(ssid);
+            for (const auto& saved_item : ssid_list) {
+                if (saved_item.ssid == ssid) {
+                    password = saved_item.password;
                     if (!password.empty()) {
                         ESP_LOGI(TAG, "✅ 找到已保存的 WiFi 配置");
                         found = true;
