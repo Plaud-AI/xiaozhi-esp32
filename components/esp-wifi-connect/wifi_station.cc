@@ -251,6 +251,45 @@ bool WifiStation::ConnectDirectly(const std::string& ssid, const std::string& pa
         return false;
     }
     
+    // ⚠️ 重要：确保事件处理器已注册（修复连接成功但超时的问题）
+    // 如果之前没有调用 Start()，事件处理器可能未注册
+    if (instance_got_ip_ == nullptr) {
+        ESP_LOGI(TAG, "🔧 注册事件处理器...");
+        
+        // 初始化 TCP/IP 栈（如果还没初始化）
+        esp_err_t netif_init_err = esp_netif_init();
+        if (netif_init_err != ESP_OK && netif_init_err != ESP_ERR_INVALID_STATE) {
+            ESP_LOGE(TAG, "❌ TCP/IP 栈初始化失败: %s", esp_err_to_name(netif_init_err));
+            return false;
+        }
+        
+        // 注册 WiFi 事件处理器
+        if (instance_any_id_ == nullptr) {
+            esp_err_t ret = esp_event_handler_instance_register(WIFI_EVENT,
+                                                                ESP_EVENT_ANY_ID,
+                                                                &WifiStation::WifiEventHandler,
+                                                                this,
+                                                                &instance_any_id_);
+            if (ret != ESP_OK) {
+                ESP_LOGE(TAG, "❌ WiFi 事件处理器注册失败: %s", esp_err_to_name(ret));
+                return false;
+            }
+        }
+        
+        // 注册 IP 事件处理器（关键！）
+        esp_err_t ret = esp_event_handler_instance_register(IP_EVENT,
+                                                            IP_EVENT_STA_GOT_IP,
+                                                            &WifiStation::IpEventHandler,
+                                                            this,
+                                                            &instance_got_ip_);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "❌ IP 事件处理器注册失败: %s", esp_err_to_name(ret));
+            return false;
+        }
+        
+        ESP_LOGI(TAG, "✅ 事件处理器注册成功");
+    }
+    
     // 2. 停止任何正在进行的扫描
     ESP_LOGI(TAG, "📡 停止扫描任务...");
     esp_wifi_scan_stop();
