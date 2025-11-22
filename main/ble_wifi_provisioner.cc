@@ -485,19 +485,42 @@ void BLEWiFiProvisioner::HandleWiFiConfigCommand(const std::string& ssid,
     ESP_LOGI(TAG, "");
 
     // 验证密码长度
+    ESP_LOGI(TAG, "🔍 步骤 1: 验证参数...");
     if (!password.empty() && (password.length() < 8 || password.length() > 63)) {
-        ESP_LOGE(TAG, "❌ 密码长度不符合要求（8-63字符）");
+        ESP_LOGE(TAG, "");
+        ESP_LOGE(TAG, "╔════════════════════════════════════════════════════════════");
+        ESP_LOGE(TAG, "║ ❌ 密码长度验证失败");
+        ESP_LOGE(TAG, "╠════════════════════════════════════════════════════════════");
+        ESP_LOGE(TAG, "║ 要求: 8-63 字符");
+        ESP_LOGE(TAG, "║ 实际: %d 字符", password.length());
+        ESP_LOGE(TAG, "╚════════════════════════════════════════════════════════════");
+        ESP_LOGE(TAG, "");
         SendErrorResponse("wifi_config", ERROR_PASSWORD_INCORRECT, 
                          "密码长度必须为8-63字符");
         return;
     }
+    ESP_LOGI(TAG, "✅ 参数验证通过");
 
     // 检查是否已连接到WiFi
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "🔍 步骤 2: 检查当前 WiFi 连接状态...");
     auto& wifi_station = WifiStation::GetInstance();
     if (wifi_station.IsConnected()) {
         std::string current_ssid = wifi_station.GetSsid();
+        ESP_LOGI(TAG, "ℹ️  当前已连接到: %s", current_ssid.c_str());
+        
         if (current_ssid == ssid) {
-            ESP_LOGI(TAG, "⚠️  已经连接到目标WiFi: %s", ssid.c_str());
+            ESP_LOGI(TAG, "");
+            ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
+            ESP_LOGI(TAG, "║ ℹ️  已连接到目标 WiFi");
+            ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════");
+            ESP_LOGI(TAG, "║ SSID: %s", ssid.c_str());
+            ESP_LOGI(TAG, "║ IP: %s", wifi_station.GetIpAddress().c_str());
+            ESP_LOGI(TAG, "║ RSSI: %d dBm", wifi_station.GetRssi());
+            ESP_LOGI(TAG, "║");
+            ESP_LOGI(TAG, "║ 无需重新连接，直接返回成功");
+            ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
+            ESP_LOGI(TAG, "");
             
             // 构建响应（已连接）
             cJSON* root = cJSON_CreateObject();
@@ -519,40 +542,71 @@ void BLEWiFiProvisioner::HandleWiFiConfigCommand(const std::string& ssid,
             cJSON_Delete(root);
             return;
         } else {
-            ESP_LOGI(TAG, "当前已连接到: %s", current_ssid.c_str());
-            ESP_LOGI(TAG, "正在断开当前连接...");
+            ESP_LOGI(TAG, "");
+            ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
+            ESP_LOGI(TAG, "║ ⚠️  需要切换到新 WiFi");
+            ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════");
+            ESP_LOGI(TAG, "║ 当前 WiFi: %s", current_ssid.c_str());
+            ESP_LOGI(TAG, "║ 目标 WiFi: %s", ssid.c_str());
+            ESP_LOGI(TAG, "║");
+            ESP_LOGI(TAG, "║ 🔄 正在断开当前连接...");
+            ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
+            ESP_LOGI(TAG, "");
         }
+    } else {
+        ESP_LOGI(TAG, "ℹ️  当前未连接任何 WiFi");
     }
 
     // 保存WiFi凭证
-    ESP_LOGI(TAG, "保存WiFi凭证到NVS...");
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "🔍 步骤 3: 保存 WiFi 凭证到 NVS...");
     auto& ssid_manager = SsidManager::GetInstance();
     
     // 添加WiFi凭证
     ssid_manager.AddSsid(ssid, password);
-    ESP_LOGI(TAG, "✓ WiFi凭证已保存");
+    ESP_LOGI(TAG, "✅ WiFi 凭证已保存到 NVS");
+    ESP_LOGI(TAG, "   SSID: %s", ssid.c_str());
 
     // 尝试连接WiFi
-    ESP_LOGI(TAG, "正在连接到WiFi: %s", ssid.c_str());
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "║ 🔍 步骤 4: 尝试连接到 WiFi");
+    ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "║ 目标 SSID: %s", ssid.c_str());
+    ESP_LOGI(TAG, "║ 超时时间: 30 秒");
+    ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "");
     
+    ESP_LOGI(TAG, "🔄 停止当前 WiFi Station...");
     wifi_station.Stop();  // 先停止当前连接（如果有）
+    ESP_LOGI(TAG, "✅ WiFi Station 已停止");
     
+    ESP_LOGI(TAG, "⏳ 等待 1 秒...");
     vTaskDelay(pdMS_TO_TICKS(1000));  // 等待停止完成
     
+    ESP_LOGI(TAG, "🚀 启动 WiFi Station...");
     wifi_station.Start();  // 启动WiFi Station
+    ESP_LOGI(TAG, "✅ WiFi Station 已启动");
     
     // 等待连接（超时30秒）
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "⏳ 等待连接到 WiFi（最多 30 秒）...");
+    ESP_LOGI(TAG, "");
     bool connected = wifi_station.WaitForConnected(30 * 1000);
     
     if (connected) {
-        ESP_LOGI(TAG, "========================================");
-        ESP_LOGI(TAG, "✅ WiFi连接成功！");
-        ESP_LOGI(TAG, "========================================");
-        ESP_LOGI(TAG, "SSID: %s", wifi_station.GetSsid().c_str());
-        ESP_LOGI(TAG, "IP地址: %s", wifi_station.GetIpAddress().c_str());
-        ESP_LOGI(TAG, "RSSI: %d dBm", wifi_station.GetRssi());
-        ESP_LOGI(TAG, "信道: %d", wifi_station.GetChannel());
-        ESP_LOGI(TAG, "========================================");
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
+        ESP_LOGI(TAG, "║ ✅✅✅ WiFi 连接成功！");
+        ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════");
+        ESP_LOGI(TAG, "║ 连接信息:");
+        ESP_LOGI(TAG, "║ ─────────────────────────────────────────────────────────");
+        ESP_LOGI(TAG, "║ • SSID: %s", wifi_station.GetSsid().c_str());
+        ESP_LOGI(TAG, "║ • IP 地址: %s", wifi_station.GetIpAddress().c_str());
+        ESP_LOGI(TAG, "║ • RSSI: %d dBm", wifi_station.GetRssi());
+        ESP_LOGI(TAG, "║ • 信道: %d", wifi_station.GetChannel());
+        ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
+        ESP_LOGI(TAG, "");
 
         // 构建成功响应
         cJSON* root = cJSON_CreateObject();
@@ -574,42 +628,86 @@ void BLEWiFiProvisioner::HandleWiFiConfigCommand(const std::string& ssid,
         cJSON_Delete(root);
 
         // 调用成功回调
+        ESP_LOGI(TAG, "🔔 调用配网成功回调...");
         if (provision_success_callback_) {
             provision_success_callback_(ssid, password);
+            ESP_LOGI(TAG, "✅ 配网成功回调已执行");
+        } else {
+            ESP_LOGI(TAG, "ℹ️  未设置配网成功回调");
         }
 
-        // 注意：是否重启由回调函数决定
-        // 在配网模式下，回调会调用 esp_restart()
-        // 在正常模式下，回调只记录信息，不重启
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
+        ESP_LOGI(TAG, "║ 📝 注意事项");
+        ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════");
+        ESP_LOGI(TAG, "║ • 配网模式：设备将重启以应用新配置");
+        ESP_LOGI(TAG, "║ • 正常模式：配置已保存，重启后生效");
+        ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
+        ESP_LOGI(TAG, "");
         
     } else {
-        ESP_LOGE(TAG, "========================================");
-        ESP_LOGE(TAG, "❌ WiFi连接失败");
-        ESP_LOGE(TAG, "========================================");
-        ESP_LOGE(TAG, "可能的原因:");
-        ESP_LOGE(TAG, "  1. 密码错误");
-        ESP_LOGE(TAG, "  2. WiFi信号太弱");
-        ESP_LOGE(TAG, "  3. SSID不存在");
-        ESP_LOGE(TAG, "  4. 路由器拒绝连接");
-        ESP_LOGE(TAG, "========================================");
+        ESP_LOGE(TAG, "");
+        ESP_LOGE(TAG, "╔════════════════════════════════════════════════════════════");
+        ESP_LOGE(TAG, "║ ❌❌❌ WiFi 连接失败");
+        ESP_LOGE(TAG, "╠════════════════════════════════════════════════════════════");
+        ESP_LOGE(TAG, "║ 目标 SSID: %s", ssid.c_str());
+        ESP_LOGE(TAG, "║");
+        ESP_LOGE(TAG, "║ 可能的原因:");
+        ESP_LOGE(TAG, "║ ─────────────────────────────────────────────────────────");
+        ESP_LOGE(TAG, "║ 1️⃣  密码错误");
+        ESP_LOGE(TAG, "║     • 检查密码是否正确");
+        ESP_LOGE(TAG, "║     • 注意区分大小写");
+        ESP_LOGE(TAG, "║");
+        ESP_LOGE(TAG, "║ 2️⃣  WiFi 信号太弱");
+        ESP_LOGE(TAG, "║     • 将设备靠近路由器");
+        ESP_LOGE(TAG, "║     • 检查路由器是否工作正常");
+        ESP_LOGE(TAG, "║");
+        ESP_LOGE(TAG, "║ 3️⃣  SSID 不存在或隐藏");
+        ESP_LOGE(TAG, "║     • 确认 WiFi 名称正确");
+        ESP_LOGE(TAG, "║     • 确认路由器已开启");
+        ESP_LOGE(TAG, "║");
+        ESP_LOGE(TAG, "║ 4️⃣  路由器拒绝连接");
+        ESP_LOGE(TAG, "║     • 检查路由器 MAC 地址过滤");
+        ESP_LOGE(TAG, "║     • 检查路由器设备连接数限制");
+        ESP_LOGE(TAG, "╚════════════════════════════════════════════════════════════");
+        ESP_LOGE(TAG, "");
 
         // 删除刚保存的凭证
+        ESP_LOGW(TAG, "🗑️  清理操作：删除无效的 WiFi 凭证...");
         auto ssid_list = ssid_manager.GetSsidList();
+        bool removed = false;
         for (size_t i = 0; i < ssid_list.size(); i++) {
             if (ssid_list[i].ssid == ssid) {
                 ssid_manager.RemoveSsid(i);
-                ESP_LOGW(TAG, "已删除无效的WiFi凭证");
+                ESP_LOGW(TAG, "✅ 已删除无效的 WiFi 凭证: %s", ssid.c_str());
+                removed = true;
                 break;
             }
         }
+        if (!removed) {
+            ESP_LOGW(TAG, "⚠️  未找到需要删除的凭证");
+        }
 
+        ESP_LOGE(TAG, "");
+        ESP_LOGE(TAG, "📤 发送错误响应到手机...");
         SendErrorResponse("wifi_config", ERROR_CONNECTION_TIMEOUT, 
                          "WiFi连接超时，请检查密码和信号强度");
 
         // 调用失败回调
+        ESP_LOGE(TAG, "");
+        ESP_LOGE(TAG, "🔔 调用配网失败回调...");
         if (provision_failure_callback_) {
             provision_failure_callback_("连接超时");
+            ESP_LOGE(TAG, "✅ 配网失败回调已执行");
+        } else {
+            ESP_LOGE(TAG, "ℹ️  未设置配网失败回调");
         }
+        
+        ESP_LOGE(TAG, "");
+        ESP_LOGE(TAG, "╔════════════════════════════════════════════════════════════");
+        ESP_LOGE(TAG, "║ WiFi 配置流程结束（失败）");
+        ESP_LOGE(TAG, "╚════════════════════════════════════════════════════════════");
+        ESP_LOGE(TAG, "");
     }
 }
 
