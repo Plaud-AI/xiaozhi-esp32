@@ -143,6 +143,14 @@ void WifiBoard::EnterWifiConfigMode() {
             
             // 配网模式下，配网成功后自动重启设备
             vTaskDelay(pdMS_TO_TICKS(2000));
+            
+            // ⚠️ 优化：重启前停止 WiFi，避免触发不必要的重连日志
+            ESP_LOGI(TAG, "🔧 正在停止 WiFi...");
+            auto& wifi_station = WifiStation::GetInstance();
+            wifi_station.Stop();
+            ESP_LOGI(TAG, "✅ WiFi 已停止");
+            
+            ESP_LOGI(TAG, "🔄 正在重启设备...");
             esp_restart();
         });
         
