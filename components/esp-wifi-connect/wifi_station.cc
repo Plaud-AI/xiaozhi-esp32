@@ -186,15 +186,41 @@ void WifiStation::Start() {
         ESP_ERROR_CHECK(esp_timer_create(&timer_args, &timer_handle_));
     }
 
-    // ⚠️ 修复：在 WiFi 已初始化的情况下（APSTA 模式），手动触发首次扫描
-    // 因为不会有 WIFI_EVENT_STA_START 事件
+    // ⚠️ 修复：在 WiFi 已初始化的情况下（APSTA 模式），延迟触发扫描
+    // 避免与其他扫描任务（如 WiFiPeriodicScan）冲突
     if (wifi_initialized) {
-        ESP_LOGI(TAG, "WiFi 已运行，手动触发首次扫描");
-        is_scanning_ = true;  // 设置扫描状态标志
-        esp_wifi_scan_start(nullptr, false);
-        if (on_scan_begin_) {
-            on_scan_begin_();
-        }
+        ESP_LOGI(TAG, "✓ WiFi 已运行在 APSTA 模式，将在 500ms 后触发扫描");
+        ESP_LOGI(TAG, "   说明：延迟启动避免扫描冲突");
+        
+        // 创建一次性延迟任务来触发扫描
+        xTaskCreate([](void* arg) {
+            auto* this_ = static_cast<WifiStation*>(arg);
+            
+            // 等待 500ms，确保之前的扫描完成
+            vTaskDelay(pdMS_TO_TICKS(500));
+            
+            // 尝试最多 3 次触发扫描
+            for (int i = 0; i < 3; i++) {
+                esp_err_t ret = esp_wifi_scan_start(nullptr, false);
+                if (ret == ESP_OK) {
+                    ESP_LOGI(TAG, "✓ 扫描已成功启动");
+                    this_->is_scanning_ = true;
+                    if (this_->on_scan_begin_) {
+                        this_->on_scan_begin_();
+                    }
+                    break;
+                } else if (ret == ESP_ERR_WIFI_STATE) {
+                    ESP_LOGW(TAG, "扫描繁忙，500ms 后重试...");
+                    vTaskDelay(pdMS_TO_TICKS(500));
+                } else {
+                    ESP_LOGE(TAG, "扫描启动失败: %s (0x%x)", esp_err_to_name(ret), ret);
+                    break;
+                }
+            }
+            
+            // 任务完成，删除自己
+            vTaskDelete(NULL);
+        }, "wifi_scan_delayed", 2048, this, 5, NULL);
     }
 }
 
@@ -203,11 +229,114 @@ bool WifiStation::WaitForConnected(int timeout_ms) {
     return (bits & WIFI_EVENT_CONNECTED) != 0;
 }
 
+bool WifiStation::ConnectDirectly(const std::string& ssid, const std::string& password, int timeout_ms) {
+    ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "║ 🚀 直接连接到 WiFi（不扫描）");
+    ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "║ SSID: %s", ssid.c_str());
+    ESP_LOGI(TAG, "║ 超时: %d 秒", timeout_ms / 1000);
+    ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
+    
+    // 1. 验证参数
+    if (ssid.empty()) {
+        ESP_LOGE(TAG, "❌ SSID 不能为空");
+        return false;
+    }
+    if (ssid.length() > 32) {
+        ESP_LOGE(TAG, "❌ SSID 长度超过 32 字符");
+        return false;
+    }
+    if (password.length() > 64) {
+        ESP_LOGE(TAG, "❌ 密码长度超过 64 字符");
+        return false;
+    }
+    
+    // 2. 停止任何正在进行的扫描
+    ESP_LOGI(TAG, "📡 停止扫描任务...");
+    esp_wifi_scan_stop();
+    is_scanning_ = false;
+    
+    // 3. 停止扫描定时器
+    if (timer_handle_ != nullptr && is_timer_running_) {
+        ESP_LOGI(TAG, "⏱️  停止扫描定时器...");
+        esp_timer_stop(timer_handle_);
+        is_timer_running_ = false;
+    }
+    
+    // 4. 清除连接队列
+    connect_queue_.clear();
+    
+    // 5. 清除连接状态标志
+    xEventGroupClearBits(event_group_, WIFI_EVENT_CONNECTED);
+    
+    // 6. 设置 WiFi 配置
+    ESP_LOGI(TAG, "🔧 配置 WiFi 参数...");
+    wifi_config_t wifi_config;
+    bzero(&wifi_config, sizeof(wifi_config));
+    strlcpy((char *)wifi_config.sta.ssid, ssid.c_str(), sizeof(wifi_config.sta.ssid));
+    strlcpy((char *)wifi_config.sta.password, password.c_str(), sizeof(wifi_config.sta.password));
+    wifi_config.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;  // 让 ESP32 自己扫描所有信道找到 AP
+    wifi_config.sta.failure_retry_cnt = 3;  // 失败后自动重试 3 次
+    
+    esp_err_t ret = esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "❌ WiFi 配置失败: %s (0x%x)", esp_err_to_name(ret), ret);
+        return false;
+    }
+    
+    // 7. 发起连接
+    ESP_LOGI(TAG, "🔗 正在连接到 %s...", ssid.c_str());
+    ssid_ = ssid;
+    password_ = password;
+    reconnect_count_ = 0;
+    
+    if (on_connect_) {
+        on_connect_(ssid);
+    }
+    
+    ret = esp_wifi_connect();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "❌ 连接请求失败: %s (0x%x)", esp_err_to_name(ret), ret);
+        return false;
+    }
+    
+    // 8. 等待连接结果
+    ESP_LOGI(TAG, "⏳ 等待连接结果（最多 %d 秒）...", timeout_ms / 1000);
+    bool connected = WaitForConnected(timeout_ms);
+    
+    if (connected) {
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
+        ESP_LOGI(TAG, "║ ✅ WiFi 连接成功！");
+        ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════");
+        ESP_LOGI(TAG, "║ SSID: %s", ssid.c_str());
+        ESP_LOGI(TAG, "║ IP: %s", ip_address_.c_str());
+        ESP_LOGI(TAG, "║ RSSI: %d dBm", GetRssi());
+        ESP_LOGI(TAG, "║ Channel: %d", GetChannel());
+        ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
+    } else {
+        ESP_LOGE(TAG, "");
+        ESP_LOGE(TAG, "╔════════════════════════════════════════════════════════════");
+        ESP_LOGE(TAG, "║ ❌ WiFi 连接失败");
+        ESP_LOGE(TAG, "╠════════════════════════════════════════════════════════════");
+        ESP_LOGE(TAG, "║ SSID: %s", ssid.c_str());
+        ESP_LOGE(TAG, "║ 超时: %d 秒", timeout_ms / 1000);
+        ESP_LOGE(TAG, "╚════════════════════════════════════════════════════════════");
+    }
+    
+    return connected;
+}
+
 void WifiStation::HandleScanResult() {
     is_scanning_ = false;  // 清除扫描状态标志
     
     uint16_t ap_num = 0;
     esp_wifi_scan_get_ap_num(&ap_num);
+    ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "║ 📡 扫描结果处理");
+    ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "║ 发现 %d 个AP", ap_num);
+    
     wifi_ap_record_t *ap_records = (wifi_ap_record_t *)malloc(ap_num * sizeof(wifi_ap_record_t));
     esp_wifi_scan_get_ap_records(&ap_num, ap_records);
     // sort by rssi descending
@@ -215,15 +344,30 @@ void WifiStation::HandleScanResult() {
         return a.rssi > b.rssi;
     });
 
+    // 打印所有扫描到的AP
+    ESP_LOGI(TAG, "║");
+    ESP_LOGI(TAG, "║ 扫描到的所有AP：");
+    for (int i = 0; i < ap_num && i < 10; i++) {  // 只打印前10个
+        ESP_LOGI(TAG, "║   %d. %s (RSSI: %d, CH: %d)", 
+            i+1, (char *)ap_records[i].ssid, ap_records[i].rssi, ap_records[i].primary);
+    }
+    
     auto& ssid_manager = SsidManager::GetInstance();
     auto ssid_list = ssid_manager.GetSsidList();
+    ESP_LOGI(TAG, "║");
+    ESP_LOGI(TAG, "║ SsidManager中保存的SSID（共%d个）：", ssid_list.size());
+    for (size_t i = 0; i < ssid_list.size(); i++) {
+        ESP_LOGI(TAG, "║   %d. %s", i+1, ssid_list[i].ssid.c_str());
+    }
+    ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
+    
     for (int i = 0; i < ap_num; i++) {
         auto ap_record = ap_records[i];
         auto it = std::find_if(ssid_list.begin(), ssid_list.end(), [ap_record](const SsidItem& item) {
             return strcmp((char *)ap_record.ssid, item.ssid.c_str()) == 0;
         });
         if (it != ssid_list.end()) {
-            ESP_LOGI(TAG, "Found AP: %s, BSSID: %02x:%02x:%02x:%02x:%02x:%02x, RSSI: %d, Channel: %d, Authmode: %d",
+            ESP_LOGI(TAG, "✅ 匹配到AP: %s, BSSID: %02x:%02x:%02x:%02x:%02x:%02x, RSSI: %d, Channel: %d, Authmode: %d",
                 (char *)ap_record.ssid, 
                 ap_record.bssid[0], ap_record.bssid[1], ap_record.bssid[2],
                 ap_record.bssid[3], ap_record.bssid[4], ap_record.bssid[5],
@@ -241,11 +385,12 @@ void WifiStation::HandleScanResult() {
     free(ap_records);
 
     if (connect_queue_.empty()) {
-        ESP_LOGD(TAG, "No matching AP found, will retry in 10 seconds");  // 改为 DEBUG 级别
+        ESP_LOGD(TAG, "No matching AP found, will retry in 5 seconds");  // 改为 DEBUG 级别
         
         // 只有在定时器未运行时才启动
+        // 优化：减少扫描间隔从 10 秒到 5 秒，加快发现目标 AP 的速度
         if (!is_timer_running_) {
-            esp_err_t err = esp_timer_start_once(timer_handle_, 10 * 1000);
+            esp_err_t err = esp_timer_start_once(timer_handle_, 5 * 1000);
             if (err == ESP_OK) {
                 is_timer_running_ = true;
                 ESP_LOGD(TAG, "Scan timer started");
@@ -352,8 +497,9 @@ void WifiStation::WifiEventHandler(void* arg, esp_event_base_t event_base, int32
         ESP_LOGD(TAG, "No more AP to connect, scheduling next scan");  // 改为 DEBUG 级别
         
         // 只有在定时器未运行时才启动
+        // 优化：减少扫描间隔从 10 秒到 5 秒
         if (!this_->is_timer_running_) {
-            esp_err_t err = esp_timer_start_once(this_->timer_handle_, 10 * 1000);
+            esp_err_t err = esp_timer_start_once(this_->timer_handle_, 5 * 1000);
             if (err == ESP_OK) {
                 this_->is_timer_running_ = true;
                 ESP_LOGD(TAG, "Scan timer started after disconnect");

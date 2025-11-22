@@ -584,40 +584,35 @@ void BLEWiFiProvisioner::HandleWiFiConfigCommand(const std::string& ssid,
                        (current_mode == WIFI_MODE_AP || current_mode == WIFI_MODE_APSTA));
     
     ESP_LOGI(TAG, "📡 当前 WiFi 模式: %d", current_mode);
+    ESP_LOGI(TAG, "");
     
-    if (is_ap_mode) {
-        ESP_LOGI(TAG, "");
-        ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
-        ESP_LOGI(TAG, "║ ℹ️  检测到 Soft AP 模式（或 APSTA）");
-        ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════");
-        ESP_LOGI(TAG, "║ WiFi 模式: %d", current_mode);
-        ESP_LOGI(TAG, "║ 策略: 不停止 WiFi，确保 Start 已初始化");
-        ESP_LOGI(TAG, "║ 说明: WiFi Station Start() 已支持 APSTA 模式");
-        ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
-        ESP_LOGI(TAG, "");
-        
-        // 在 APSTA 模式下，确保 WiFi Station 已启动（幂等操作）
-        ESP_LOGI(TAG, "🔄 确保 WiFi Station 已初始化...");
-        wifi_station.Start();  // Start() 现在支持幂等调用
-        ESP_LOGI(TAG, "✅ WiFi Station 已就绪（APSTA 模式）");
-    } else {
+    // ⚠️ 重要优化：BLE 配网时直接连接，不扫描！
+    // 用户已经在手机上选择了 WiFi，无需再扫描匹配
+    ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "║ 🎯 BLE 配网优化：直接连接模式");
+    ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "║ • 用户已指定 WiFi，无需扫描");
+    ESP_LOGI(TAG, "║ • 避免与 WiFiPeriodicScan 任务冲突");
+    ESP_LOGI(TAG, "║ • 连接速度更快，成功率更高");
+    ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "");
+    
+    // 确保 WiFi Station 已初始化
+    if (!is_ap_mode) {
         ESP_LOGI(TAG, "🔄 停止当前 WiFi Station...");
-        wifi_station.Stop();  // 先停止当前连接（如果有）
-        ESP_LOGI(TAG, "✅ WiFi Station 已停止");
-        
-        ESP_LOGI(TAG, "⏳ 等待 1 秒...");
-        vTaskDelay(pdMS_TO_TICKS(1000));  // 等待停止完成
+        wifi_station.Stop();
+        vTaskDelay(pdMS_TO_TICKS(500));
         
         ESP_LOGI(TAG, "🚀 启动 WiFi Station...");
-        wifi_station.Start();  // 启动WiFi Station
-        ESP_LOGI(TAG, "✅ WiFi Station 已启动");
+        wifi_station.Start();
+        vTaskDelay(pdMS_TO_TICKS(500));
+    } else {
+        ESP_LOGI(TAG, "ℹ️  WiFi 已在 APSTA 模式运行");
     }
     
-    // 等待连接（超时30秒）
+    // 直接连接到指定的 WiFi（不扫描）
     ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "⏳ 等待连接到 WiFi（最多 30 秒）...");
-    ESP_LOGI(TAG, "");
-    bool connected = wifi_station.WaitForConnected(30 * 1000);
+    bool connected = wifi_station.ConnectDirectly(ssid, password, 30 * 1000);
     
     if (connected) {
         ESP_LOGI(TAG, "");

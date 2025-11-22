@@ -31,6 +31,9 @@ public:
     std::string GetIpAddress() const { return ip_address_; }
     uint8_t GetChannel();
     void SetPowerSaveMode(bool enabled);
+    
+    // 直接连接到指定的 WiFi（用于 BLE 配网，不扫描）
+    bool ConnectDirectly(const std::string& ssid, const std::string& password, int timeout_ms = 30000);
 
     void OnConnect(std::function<void(const std::string& ssid)> on_connect);
     void OnConnected(std::function<void(const std::string& ssid)> on_connected);

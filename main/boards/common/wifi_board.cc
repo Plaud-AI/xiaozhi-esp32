@@ -117,15 +117,15 @@ void WifiBoard::EnterWifiConfigMode() {
         // 永不退出（配网模式持续运行）
     }, "wifi_periodic_scan", 3072, NULL, 5, NULL);
 
-    // ====== 第二步：延迟启动 BLE 配网（15秒后）======
+    // ====== 第二步：快速启动 BLE 配网（1秒后）======
     ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "将在 15 秒后启动 BLE 配网服务...");
+    ESP_LOGI(TAG, "将在 1 秒后启动 BLE 配网服务...");
     ESP_LOGI(TAG, "========================================");
     
     // 创建后台任务来延迟启动 BLE
     xTaskCreate([](void* arg) {
-        // 等待15秒，给用户时间先尝试 Soft AP
-        vTaskDelay(pdMS_TO_TICKS(15000));
+        // 等待1秒，确保 WiFi 扫描任务已启动
+        vTaskDelay(pdMS_TO_TICKS(1000));
         
         ESP_LOGI(TAG, "========================================");
         ESP_LOGI(TAG, "第2步: 启动 BLE WiFi 配网");
@@ -227,7 +227,9 @@ void WifiBoard::StartNetwork() {
     wifi_station.Start();
 
     // Try to connect to WiFi, if failed, launch the WiFi configuration AP
-    if (!wifi_station.WaitForConnected(60 * 1000)) {
+    // 优化：减少等待时间从 60 秒到 20 秒，加快进入配网模式
+    if (!wifi_station.WaitForConnected(20 * 1000)) {
+        ESP_LOGW(TAG, "WiFi连接超时（20秒），进入配网模式");
         wifi_station.Stop();
         wifi_config_mode_ = true;
         EnterWifiConfigMode();
