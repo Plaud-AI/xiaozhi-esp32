@@ -789,6 +789,22 @@ void BLEWiFiProvisioner::HandleDisconnectWiFiCommand() {
     
     ESP_LOGI(TAG, "✅ WiFi 连接已断开");
     
+    // 步骤 2.5：重新启动 WiFi Station（但不连接）
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "🔍 步骤 2.5: 重新启动 WiFi（保持就绪状态）...");
+    ESP_LOGI(TAG, "   目的: 保持 WiFi 驱动就绪，支持后续扫描和配网");
+    
+    // 重新启动 WiFi Station（但没有保存的配置，所以不会自动连接）
+    wifi_station.Start();
+    
+    // 等待启动完成
+    vTaskDelay(pdMS_TO_TICKS(500));
+    
+    ESP_LOGI(TAG, "✅ WiFi 已重新启动（未连接状态）");
+    ESP_LOGI(TAG, "   • WiFi 驱动: 就绪");
+    ESP_LOGI(TAG, "   • 连接状态: 未连接");
+    ESP_LOGI(TAG, "   • 可用功能: scan_wifi, wifi_config");
+    
     // 步骤 3：删除该 WiFi 的保存配置
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "🔍 步骤 3: 删除 WiFi 配置...");
@@ -819,11 +835,13 @@ void BLEWiFiProvisioner::HandleDisconnectWiFiCommand() {
     cJSON* root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "cmd", "disconnect_wifi");
     cJSON_AddStringToObject(root, "status", "success");
-    cJSON_AddStringToObject(root, "message", "WiFi已断开并删除配置");
+    cJSON_AddStringToObject(root, "message", "WiFi已断开，可继续配置新网络");
     
     cJSON* data = cJSON_CreateObject();
     cJSON_AddStringToObject(data, "previous_ssid", current_ssid.c_str());
     cJSON_AddBoolToObject(data, "config_removed", found);
+    cJSON_AddBoolToObject(data, "wifi_ready", true);  // WiFi 驱动就绪
+    cJSON_AddBoolToObject(data, "need_reboot", false);  // 不需要重启
     cJSON_AddItemToObject(root, "data", data);
 
     char* json_str = cJSON_PrintUnformatted(root);
@@ -844,12 +862,14 @@ void BLEWiFiProvisioner::HandleDisconnectWiFiCommand() {
     ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════");
     ESP_LOGI(TAG, "║ • 连接已断开: %s", current_ssid.c_str());
     ESP_LOGI(TAG, "║ • 配置已删除: %s", found ? "是" : "否");
+    ESP_LOGI(TAG, "║ • WiFi 状态: 就绪（未连接）");
     ESP_LOGI(TAG, "║");
     ESP_LOGI(TAG, "║ 📌 说明:");
     ESP_LOGI(TAG, "║   • WiFi 连接已断开");
     ESP_LOGI(TAG, "║   • 保存的配置已删除");
-    ESP_LOGI(TAG, "║   • 设备将无法自动重连该 WiFi");
-    ESP_LOGI(TAG, "║   • 如需重新连接，请重新配置");
+    ESP_LOGI(TAG, "║   • WiFi 驱动保持就绪");
+    ESP_LOGI(TAG, "║   • 可以继续扫描和配置新 WiFi");
+    ESP_LOGI(TAG, "║   • 无需重启设备");
     ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
     ESP_LOGI(TAG, "");
 }
