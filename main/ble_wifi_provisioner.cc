@@ -577,26 +577,29 @@ void BLEWiFiProvisioner::HandleWiFiConfigCommand(const std::string& ssid,
     ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
     ESP_LOGI(TAG, "");
     
-    // ⚠️ 检查是否在 Soft AP 模式下
+    // 检查当前 WiFi 模式
     wifi_mode_t current_mode = WIFI_MODE_NULL;
     esp_err_t mode_err = esp_wifi_get_mode(&current_mode);
     bool is_ap_mode = (mode_err == ESP_OK && 
                        (current_mode == WIFI_MODE_AP || current_mode == WIFI_MODE_APSTA));
     
+    ESP_LOGI(TAG, "📡 当前 WiFi 模式: %d", current_mode);
+    
     if (is_ap_mode) {
         ESP_LOGI(TAG, "");
         ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
-        ESP_LOGI(TAG, "║ ℹ️  检测到 Soft AP 模式");
+        ESP_LOGI(TAG, "║ ℹ️  检测到 Soft AP 模式（或 APSTA）");
         ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════");
-        ESP_LOGI(TAG, "║ WiFi 模式: %d (AP/APSTA)", current_mode);
-        ESP_LOGI(TAG, "║ 策略: 不重启 WiFi，直接连接");
-        ESP_LOGI(TAG, "║ 原因: 避免 netif 冲突");
+        ESP_LOGI(TAG, "║ WiFi 模式: %d", current_mode);
+        ESP_LOGI(TAG, "║ 策略: 不停止 WiFi，确保 Start 已初始化");
+        ESP_LOGI(TAG, "║ 说明: WiFi Station Start() 已支持 APSTA 模式");
         ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
         ESP_LOGI(TAG, "");
         
-        // 在 AP 模式下，不能 Stop/Start，会导致 netif 冲突
-        // 直接尝试连接（WiFi Station 已经在运行）
-        ESP_LOGI(TAG, "🔄 直接连接到新 WiFi（保持 AP 运行）...");
+        // 在 APSTA 模式下，确保 WiFi Station 已启动（幂等操作）
+        ESP_LOGI(TAG, "🔄 确保 WiFi Station 已初始化...");
+        wifi_station.Start();  // Start() 现在支持幂等调用
+        ESP_LOGI(TAG, "✅ WiFi Station 已就绪（APSTA 模式）");
     } else {
         ESP_LOGI(TAG, "🔄 停止当前 WiFi Station...");
         wifi_station.Stop();  // 先停止当前连接（如果有）
