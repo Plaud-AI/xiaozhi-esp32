@@ -64,10 +64,15 @@ int BluetoothService::gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_ha
                     os_mbuf_copydata(ctxt->om, 0, om_len, data);
                     data[om_len] = '\0';
                     
+                    ESP_LOGI(TAG, "");
+                    ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
+                    ESP_LOGI(TAG, "║ 📥 BLE 数据写入事件");
+                    ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════");
+                    ESP_LOGI(TAG, "║ 数据长度: %d 字节", om_len);
+                    
                     // 打印数据内容（显示前50个字符，避免过长）
                     int preview_len = (om_len > 50) ? 50 : om_len;
-                    ESP_LOGI(TAG, "收到数据片段 (长度: %d)", om_len);
-                    ESP_LOGI(TAG, "内容预览: %.*s%s", preview_len, data, 
+                    ESP_LOGI(TAG, "║ 内容预览: %.*s%s", preview_len, data, 
                              (om_len > 50) ? "..." : "");
                     
                     // 显示前16个字节的十六进制表示（用于调试）
@@ -79,8 +84,11 @@ int BluetoothService::gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_ha
                             hex_pos += snprintf(hex_buf + hex_pos, sizeof(hex_buf) - hex_pos, 
                                               "%02X ", (unsigned char)data[i]);
                         }
-                        ESP_LOGD(TAG, "十六进制: %s%s", hex_buf, (om_len > 16) ? "..." : "");
+                        ESP_LOGI(TAG, "║ 十六进制: %s%s", hex_buf, (om_len > 16) ? "..." : "");
                     }
+                    
+                    ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
+                    ESP_LOGI(TAG, "");
                     
                     // 处理接收到的数据片段（支持分包重组）
                     if (g_instance) {
@@ -125,19 +133,69 @@ int BluetoothService::gap_event_handler(struct ble_gap_event *event, void *arg) 
 
     switch (event->type) {
         case BLE_GAP_EVENT_CONNECT:
-            ESP_LOGI(TAG, "连接事件: status=%d", event->connect.status);
+            ESP_LOGI(TAG, "");
+            ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
+            ESP_LOGI(TAG, "║ 📱 BLE 连接事件");
+            ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════");
+            ESP_LOGI(TAG, "║ 连接状态码: %d", event->connect.status);
+            
             if (event->connect.status == 0) {
                 g_instance->connected_ = true;
                 g_instance->conn_handle_ = event->connect.conn_handle;
-                ESP_LOGI(TAG, "客户端已连接，连接句柄: %d", event->connect.conn_handle);
+                
+                ESP_LOGI(TAG, "║ 结果: ✅ 连接成功");
+                ESP_LOGI(TAG, "║ ─────────────────────────────────────────────────────────");
+                ESP_LOGI(TAG, "║ • 连接句柄: %d", event->connect.conn_handle);
+                ESP_LOGI(TAG, "║ • 设备名称: %s", g_instance->device_name_.c_str());
+                ESP_LOGI(TAG, "║ • MAC 地址: %s", g_instance->GetMacAddress().c_str());
+                ESP_LOGI(TAG, "║ • 当前 MTU: %d 字节", g_instance->mtu_);
+                ESP_LOGI(TAG, "║");
+                ESP_LOGI(TAG, "║ 🎉 手机已成功连接！现在可以:");
+                ESP_LOGI(TAG, "║   - 扫描 WiFi 网络");
+                ESP_LOGI(TAG, "║   - 配置 WiFi 连接");
+                ESP_LOGI(TAG, "║   - 查看设备信息");
+                ESP_LOGI(TAG, "║   - 设置唤醒词");
+                ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
+                ESP_LOGI(TAG, "");
             } else {
+                ESP_LOGE(TAG, "║ 结果: ❌ 连接失败");
+                ESP_LOGE(TAG, "║ 错误码: %d", event->connect.status);
+                ESP_LOGE(TAG, "║");
+                ESP_LOGE(TAG, "║ 🔄 自动重新启动广播...");
+                ESP_LOGE(TAG, "╚════════════════════════════════════════════════════════════");
+                ESP_LOGE(TAG, "");
                 // 连接失败，重新开始广播
                 g_instance->StartAdvertising();
             }
             break;
 
         case BLE_GAP_EVENT_DISCONNECT:
-            ESP_LOGI(TAG, "客户端断开连接，原因: %d", event->disconnect.reason);
+            ESP_LOGI(TAG, "");
+            ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
+            ESP_LOGI(TAG, "║ 📱 BLE 断开连接事件");
+            ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════");
+            ESP_LOGI(TAG, "║ 连接句柄: %d", g_instance->conn_handle_);
+            ESP_LOGI(TAG, "║ 断开原因码: %d", event->disconnect.reason);
+            ESP_LOGI(TAG, "║");
+            
+            // 断开原因解释
+            const char* reason_str = "未知原因";
+            switch (event->disconnect.reason) {
+                case 0x08: reason_str = "连接超时"; break;
+                case 0x13: reason_str = "用户主动断开"; break;
+                case 0x16: reason_str = "主机终止连接"; break;
+                case 0x3D: reason_str = "连接参数不可接受"; break;
+                default: break;
+            }
+            ESP_LOGI(TAG, "║ 原因说明: %s", reason_str);
+            ESP_LOGI(TAG, "║");
+            ESP_LOGI(TAG, "║ 🔄 清理操作:");
+            ESP_LOGI(TAG, "║   • 清空接收缓冲区");
+            ESP_LOGI(TAG, "║   • 重置连接状态");
+            ESP_LOGI(TAG, "║   • 重新启动广播");
+            ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
+            ESP_LOGI(TAG, "");
+            
             g_instance->connected_ = false;
             g_instance->conn_handle_ = 0;
             // 清空接收缓冲区
@@ -147,25 +205,46 @@ int BluetoothService::gap_event_handler(struct ble_gap_event *event, void *arg) 
             break;
 
         case BLE_GAP_EVENT_ADV_COMPLETE:
-            ESP_LOGI(TAG, "广播完成");
+            ESP_LOGD(TAG, "📡 广播周期完成，自动重启广播");
             g_instance->StartAdvertising();
             break;
 
         case BLE_GAP_EVENT_SUBSCRIBE:
-            ESP_LOGI(TAG, "订阅事件: conn_handle=%d attr_handle=%d",
-                     event->subscribe.conn_handle,
-                     event->subscribe.attr_handle);
+            ESP_LOGI(TAG, "");
+            ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
+            ESP_LOGI(TAG, "║ 🔔 BLE 特征订阅事件");
+            ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════");
+            ESP_LOGI(TAG, "║ 连接句柄: %d", event->subscribe.conn_handle);
+            ESP_LOGI(TAG, "║ 属性句柄: %d", event->subscribe.attr_handle);
+            ESP_LOGI(TAG, "║");
+            ESP_LOGI(TAG, "║ ℹ️  手机已订阅通知，可以:");
+            ESP_LOGI(TAG, "║   - 接收设备主动推送的数据");
+            ESP_LOGI(TAG, "║   - 接收命令执行结果");
+            ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
+            ESP_LOGI(TAG, "");
             break;
 
         case BLE_GAP_EVENT_MTU:
-            ESP_LOGI(TAG, "MTU更新: conn_handle=%d mtu=%d",
-                     event->mtu.conn_handle,
-                     event->mtu.value);
+            ESP_LOGI(TAG, "");
+            ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
+            ESP_LOGI(TAG, "║ 📏 BLE MTU 更新事件");
+            ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════");
+            ESP_LOGI(TAG, "║ 连接句柄: %d", event->mtu.conn_handle);
+            ESP_LOGI(TAG, "║ 旧 MTU: %d 字节", g_instance->mtu_);
+            ESP_LOGI(TAG, "║ 新 MTU: %d 字节", event->mtu.value);
+            
             g_instance->mtu_ = event->mtu.value;
-            ESP_LOGI(TAG, "✓ MTU已更新为: %d 字节", g_instance->mtu_);
+            
+            ESP_LOGI(TAG, "║");
+            ESP_LOGI(TAG, "║ ℹ️  MTU 说明:");
+            ESP_LOGI(TAG, "║   • 每次最多传输: %d 字节", g_instance->mtu_ - 3);
+            ESP_LOGI(TAG, "║   • 大数据包会自动分片传输");
+            ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
+            ESP_LOGI(TAG, "");
             break;
 
         default:
+            ESP_LOGD(TAG, "🔔 BLE 事件: type=%d", event->type);
             break;
     }
 
