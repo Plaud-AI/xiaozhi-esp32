@@ -736,15 +736,26 @@ void BLEWiFiProvisioner::HandleGetSavedWiFiCommand() {
 }
 
 void BLEWiFiProvisioner::HandleDisconnectWiFiCommand() {
-    ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "断开WiFi连接");
-    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "║ 🔌 断开 WiFi 连接并删除配置");
+    ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "");
 
     auto& wifi_station = WifiStation::GetInstance();
+    auto& ssid_manager = SsidManager::GetInstance();
     
     // 检查是否已连接
+    ESP_LOGI(TAG, "🔍 步骤 1: 检查当前连接状态...");
     if (!wifi_station.IsConnected()) {
-        ESP_LOGW(TAG, "⚠️  当前未连接到任何WiFi");
+        ESP_LOGW(TAG, "");
+        ESP_LOGW(TAG, "╔════════════════════════════════════════════════════════════");
+        ESP_LOGW(TAG, "║ ⚠️  当前未连接到任何 WiFi");
+        ESP_LOGW(TAG, "╠════════════════════════════════════════════════════════════");
+        ESP_LOGW(TAG, "║ 无需断开连接");
+        ESP_LOGW(TAG, "║ WiFi 配置仍然保留");
+        ESP_LOGW(TAG, "╚════════════════════════════════════════════════════════════");
+        ESP_LOGW(TAG, "");
         
         cJSON* root = cJSON_CreateObject();
         cJSON_AddStringToObject(root, "cmd", "disconnect_wifi");
@@ -758,13 +769,17 @@ void BLEWiFiProvisioner::HandleDisconnectWiFiCommand() {
         }
         cJSON_Delete(root);
         
-        ESP_LOGI(TAG, "========================================");
         return;
     }
     
+    // ⚠️ 关键：在 Stop() 之前保存所有需要的信息！
     std::string current_ssid = wifi_station.GetSsid();
-    ESP_LOGI(TAG, "当前连接的WiFi: %s", current_ssid.c_str());
-    ESP_LOGI(TAG, "正在断开连接...");
+    ESP_LOGI(TAG, "✅ 当前连接的 WiFi: %s", current_ssid.c_str());
+    
+    // 步骤 2：断开 WiFi 连接
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "🔍 步骤 2: 断开 WiFi 连接...");
+    ESP_LOGI(TAG, "   目标 SSID: %s", current_ssid.c_str());
     
     // 停止WiFi Station
     wifi_station.Stop();
@@ -772,26 +787,71 @@ void BLEWiFiProvisioner::HandleDisconnectWiFiCommand() {
     // 等待断开完成
     vTaskDelay(pdMS_TO_TICKS(500));
     
-    ESP_LOGI(TAG, "✓ WiFi连接已断开");
+    ESP_LOGI(TAG, "✅ WiFi 连接已断开");
+    
+    // 步骤 3：删除该 WiFi 的保存配置
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "🔍 步骤 3: 删除 WiFi 配置...");
+    ESP_LOGI(TAG, "   目标 SSID: %s", current_ssid.c_str());
+    
+    auto ssid_list = ssid_manager.GetSsidList();
+    bool found = false;
+    for (size_t i = 0; i < ssid_list.size(); i++) {
+        if (ssid_list[i].ssid == current_ssid) {
+            ssid_manager.RemoveSsid(i);
+            ESP_LOGI(TAG, "✅ WiFi 配置已从 NVS 删除");
+            ESP_LOGI(TAG, "   删除的 SSID: %s", current_ssid.c_str());
+            found = true;
+            break;
+        }
+    }
+    
+    if (!found) {
+        ESP_LOGW(TAG, "⚠️  未在 NVS 中找到该 WiFi 配置");
+        ESP_LOGW(TAG, "   （可能已被手动删除）");
+    }
+    
+    // 步骤 4：发送成功响应
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "🔍 步骤 4: 发送响应到手机...");
     
     // 构建成功响应
     cJSON* root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "cmd", "disconnect_wifi");
     cJSON_AddStringToObject(root, "status", "success");
-    cJSON_AddStringToObject(root, "message", "WiFi连接已断开");
+    cJSON_AddStringToObject(root, "message", "WiFi已断开并删除配置");
     
     cJSON* data = cJSON_CreateObject();
     cJSON_AddStringToObject(data, "previous_ssid", current_ssid.c_str());
+    cJSON_AddBoolToObject(data, "config_removed", found);
     cJSON_AddItemToObject(root, "data", data);
 
     char* json_str = cJSON_PrintUnformatted(root);
     if (json_str) {
-        SendResponse(std::string(json_str));
+        bool send_ok = SendResponse(std::string(json_str));
+        if (send_ok) {
+            ESP_LOGI(TAG, "✅ 响应发送成功");
+        } else {
+            ESP_LOGE(TAG, "❌ 响应发送失败");
+        }
         free(json_str);
     }
     cJSON_Delete(root);
 
-    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "║ ✅ 断开 WiFi 完成");
+    ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "║ • 连接已断开: %s", current_ssid.c_str());
+    ESP_LOGI(TAG, "║ • 配置已删除: %s", found ? "是" : "否");
+    ESP_LOGI(TAG, "║");
+    ESP_LOGI(TAG, "║ 📌 说明:");
+    ESP_LOGI(TAG, "║   • WiFi 连接已断开");
+    ESP_LOGI(TAG, "║   • 保存的配置已删除");
+    ESP_LOGI(TAG, "║   • 设备将无法自动重连该 WiFi");
+    ESP_LOGI(TAG, "║   • 如需重新连接，请重新配置");
+    ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "");
 }
 
 void BLEWiFiProvisioner::HandleDeleteWiFiCommand(const std::string& ssid) {

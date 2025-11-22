@@ -286,7 +286,17 @@ const char* WifiBoard::GetNetworkStateIcon() {
     if (!wifi_station.IsConnected()) {
         return FONT_AWESOME_WIFI_SLASH;
     }
+    
+    // ⚠️ 安全性：GetRssi() 现在不会崩溃，但会返回 -127 表示失败
     int8_t rssi = wifi_station.GetRssi();
+    
+    // 检查 RSSI 是否有效
+    if (rssi == -127 || rssi == 0) {
+        // RSSI 无效，WiFi 可能已断开
+        return FONT_AWESOME_WIFI_SLASH;
+    }
+    
+    // 根据 RSSI 强度返回对应图标
     if (rssi >= -60) {
         return FONT_AWESOME_WIFI;
     } else if (rssi >= -70) {
@@ -302,12 +312,16 @@ std::string WifiBoard::GetBoardJson() {
     std::string board_json = R"({)";
     board_json += R"("type":")" + std::string(BOARD_TYPE) + R"(",)";
     board_json += R"("name":")" + std::string(BOARD_NAME) + R"(",)";
-    if (!wifi_config_mode_) {
+    
+    // ⚠️ 安全性：只有在 WiFi 已连接时才添加网络信息
+    // GetRssi() 和 GetChannel() 现在不会崩溃，但在断开时返回无效值
+    if (!wifi_config_mode_ && wifi_station.IsConnected()) {
         board_json += R"("ssid":")" + wifi_station.GetSsid() + R"(",)";
         board_json += R"("rssi":)" + std::to_string(wifi_station.GetRssi()) + R"(,)";
         board_json += R"("channel":)" + std::to_string(wifi_station.GetChannel()) + R"(,)";
         board_json += R"("ip":")" + wifi_station.GetIpAddress() + R"(",)";
     }
+    
     board_json += R"("mac":")" + SystemInfo::GetMacAddress() + R"(")";
     board_json += R"(})";
     return board_json;
