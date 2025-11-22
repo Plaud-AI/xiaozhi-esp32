@@ -46,57 +46,125 @@ bool BLEWiFiProvisioner::Initialize(const std::string& device_name) {
         return true;
     }
 
-    ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "初始化 BLE WiFi Provisioner");
-    ESP_LOGI(TAG, "设备名称: %s", device_name.c_str());
-    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "║ 🔧 初始化 BLE WiFi Provisioner");
+    ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "║ 📱 设备名称: %s", device_name.c_str());
+    ESP_LOGI(TAG, "║ 🎯 功能: WiFi配网 + 设备配置");
+    ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
 
     // 初始化蓝牙服务
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "步骤 1/3: 初始化蓝牙服务...");
     auto& ble_service = BluetoothService::GetInstance();
     if (!ble_service.Initialize(device_name)) {
         ESP_LOGE(TAG, "❌ 蓝牙服务初始化失败");
+        ESP_LOGE(TAG, "可能原因:");
+        ESP_LOGE(TAG, "  - 蓝牙控制器初始化失败");
+        ESP_LOGE(TAG, "  - 内存不足");
+        ESP_LOGE(TAG, "  - NVS 未初始化");
         return false;
     }
 
-    ESP_LOGI(TAG, "✓ 蓝牙服务初始化成功");
-    ESP_LOGI(TAG, "✓ MAC地址: %s", ble_service.GetMacAddress().c_str());
+    ESP_LOGI(TAG, "✅ 步骤 1/3 完成：蓝牙服务初始化成功");
+    ESP_LOGI(TAG, "   设备 MAC 地址: %s", ble_service.GetMacAddress().c_str());
+    ESP_LOGI(TAG, "   设备名称: %s", ble_service.GetDeviceName().c_str());
 
     // 设置数据接收回调
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "步骤 2/3: 设置数据接收回调...");
     ble_service.SetDataReceivedCallback([this](const std::string& data) {
-        ESP_LOGD(TAG, "========================================");
-        ESP_LOGD(TAG, "收到BLE数据（长度: %d字节）", data.length());
-        ESP_LOGD(TAG, "数据内容: %s", data.c_str());
-        ESP_LOGD(TAG, "========================================");
+        ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
+        ESP_LOGI(TAG, "║ 📥 BLE 数据接收事件");
+        ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════");
+        ESP_LOGI(TAG, "║ 数据长度: %d 字节", data.length());
+        ESP_LOGI(TAG, "║ 数据内容: %s", data.c_str());
+        ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
         this->HandleReceivedData(data);
     });
 
-    ESP_LOGI(TAG, "✓ 数据接收回调设置成功");
+    ESP_LOGI(TAG, "✅ 步骤 2/3 完成：数据接收回调设置成功");
 
     initialized_ = true;
-    ESP_LOGI(TAG, "✓ BLE WiFi Provisioner 初始化完成");
+    
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "✅ 步骤 3/3 完成：BLE WiFi Provisioner 初始化完成");
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "║ ✅ 初始化成功摘要");
+    ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "║ 设备名称: %s", device_name.c_str());
+    ESP_LOGI(TAG, "║ MAC 地址: %s", ble_service.GetMacAddress().c_str());
+    ESP_LOGI(TAG, "║ 状态: 已初始化，未启动广播");
+    ESP_LOGI(TAG, "║ 下一步: 调用 Start() 启动 BLE 广播");
+    ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "");
 
     return true;
 }
 
 bool BLEWiFiProvisioner::Start() {
     if (!initialized_) {
-        ESP_LOGE(TAG, "❌ BLE WiFi Provisioner 未初始化");
+        ESP_LOGE(TAG, "");
+        ESP_LOGE(TAG, "╔════════════════════════════════════════════════════════════");
+        ESP_LOGE(TAG, "║ ❌ 启动失败：BLE WiFi Provisioner 未初始化");
+        ESP_LOGE(TAG, "╠════════════════════════════════════════════════════════════");
+        ESP_LOGE(TAG, "║ 请先调用 Initialize() 进行初始化");
+        ESP_LOGE(TAG, "╚════════════════════════════════════════════════════════════");
+        ESP_LOGE(TAG, "");
         return false;
     }
 
-    ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "启动 BLE WiFi Provisioner");
-    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "║ 🚀 启动 BLE WiFi Provisioner");
+    ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "║ 准备启动 BLE 广播...");
+    ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
 
     auto& ble_service = BluetoothService::GetInstance();
+    
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "🔄 正在启动 BLE 广播...");
+    ESP_LOGI(TAG, "   设备名称: %s", ble_service.GetDeviceName().c_str());
+    ESP_LOGI(TAG, "   MAC 地址: %s", ble_service.GetMacAddress().c_str());
+    
     if (!ble_service.StartAdvertising()) {
-        ESP_LOGE(TAG, "❌ BLE广播启动失败");
+        ESP_LOGE(TAG, "");
+        ESP_LOGE(TAG, "╔════════════════════════════════════════════════════════════");
+        ESP_LOGE(TAG, "║ ❌ BLE 广播启动失败");
+        ESP_LOGE(TAG, "╠════════════════════════════════════════════════════════════");
+        ESP_LOGE(TAG, "║ 可能原因:");
+        ESP_LOGE(TAG, "║   1. 蓝牙协议栈未就绪");
+        ESP_LOGE(TAG, "║   2. 广播参数配置错误");
+        ESP_LOGE(TAG, "║   3. 蓝牙资源已被占用");
+        ESP_LOGE(TAG, "╚════════════════════════════════════════════════════════════");
+        ESP_LOGE(TAG, "");
         return false;
     }
 
     is_provisioning_ = true;
-    ESP_LOGI(TAG, "✓ BLE广播已启动，等待手机连接...");
-    ESP_LOGI(TAG, "📱 请在手机App中搜索设备: %s", ble_service.GetDeviceName().c_str());
+    
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "║ ✅ BLE 广播已成功启动！");
+    ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "║ 📱 手机端操作指南:");
+    ESP_LOGI(TAG, "║ ─────────────────────────────────────────────────────────");
+    ESP_LOGI(TAG, "║ 1️⃣  打开手机蓝牙");
+    ESP_LOGI(TAG, "║ 2️⃣  扫描 BLE 设备（不是 WiFi！）");
+    ESP_LOGI(TAG, "║ 3️⃣  查找设备: %s", ble_service.GetDeviceName().c_str());
+    ESP_LOGI(TAG, "║ 4️⃣  点击连接");
+    ESP_LOGI(TAG, "║ ─────────────────────────────────────────────────────────");
+    ESP_LOGI(TAG, "║ 设备信息:");
+    ESP_LOGI(TAG, "║   • 设备名称: %s", ble_service.GetDeviceName().c_str());
+    ESP_LOGI(TAG, "║   • MAC 地址: %s", ble_service.GetMacAddress().c_str());
+    ESP_LOGI(TAG, "║   • 服务 UUID: 0000FFE0-...");
+    ESP_LOGI(TAG, "║   • 特征 UUID: 0000FFE1-...");
+    ESP_LOGI(TAG, "║ ─────────────────────────────────────────────────────────");
+    ESP_LOGI(TAG, "║ ⏳ 等待手机连接中...");
+    ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "");
     
     return true;
 }
@@ -112,42 +180,78 @@ void BLEWiFiProvisioner::Stop() {
 }
 
 void BLEWiFiProvisioner::HandleReceivedData(const std::string& data) {
-    ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "开始处理接收到的数据");
-    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "║ 📨 处理接收到的 BLE 数据");
+    ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "║ 数据长度: %d 字节", data.length());
+    ESP_LOGI(TAG, "║ 原始数据: %s", data.c_str());
+    ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
 
     // 解析JSON
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "🔍 步骤 1: 解析 JSON...");
     cJSON* root = cJSON_Parse(data.c_str());
     if (!root) {
-        ESP_LOGE(TAG, "❌ JSON解析失败");
-        ESP_LOGE(TAG, "原始数据: %s", data.c_str());
+        ESP_LOGE(TAG, "");
+        ESP_LOGE(TAG, "╔════════════════════════════════════════════════════════════");
+        ESP_LOGE(TAG, "║ ❌ JSON 解析失败");
+        ESP_LOGE(TAG, "╠════════════════════════════════════════════════════════════");
+        ESP_LOGE(TAG, "║ 原始数据: %s", data.c_str());
         const char* error_ptr = cJSON_GetErrorPtr();
         if (error_ptr != NULL) {
-            ESP_LOGE(TAG, "JSON错误位置: %s", error_ptr);
+            ESP_LOGE(TAG, "║ 错误位置: %s", error_ptr);
         }
+        ESP_LOGE(TAG, "║");
+        ESP_LOGE(TAG, "║ 可能原因:");
+        ESP_LOGE(TAG, "║   1. JSON 格式不正确");
+        ESP_LOGE(TAG, "║   2. 数据传输不完整");
+        ESP_LOGE(TAG, "║   3. 编码问题");
+        ESP_LOGE(TAG, "╚════════════════════════════════════════════════════════════");
+        ESP_LOGE(TAG, "");
         SendErrorResponse("unknown", ERROR_JSON_PARSE_FAILED, "JSON解析失败");
         return;
     }
+    ESP_LOGI(TAG, "✅ JSON 解析成功");
 
     // 获取命令
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "🔍 步骤 2: 提取命令字段...");
     cJSON* cmd_item = cJSON_GetObjectItem(root, "cmd");
     if (!cmd_item || !cJSON_IsString(cmd_item)) {
-        ESP_LOGE(TAG, "❌ 命令字段缺失或格式错误");
+        ESP_LOGE(TAG, "");
+        ESP_LOGE(TAG, "╔════════════════════════════════════════════════════════════");
+        ESP_LOGE(TAG, "║ ❌ 命令字段缺失或格式错误");
+        ESP_LOGE(TAG, "╠════════════════════════════════════════════════════════════");
+        ESP_LOGE(TAG, "║ 期望: {\"cmd\": \"命令名称\", ...}");
+        ESP_LOGE(TAG, "║ 实际: %s", data.c_str());
+        ESP_LOGE(TAG, "╚════════════════════════════════════════════════════════════");
+        ESP_LOGE(TAG, "");
         cJSON_Delete(root);
         SendErrorResponse("unknown", ERROR_JSON_PARSE_FAILED, "命令字段缺失");
         return;
     }
 
     std::string cmd = cmd_item->valuestring;
-    ESP_LOGI(TAG, "📥 收到命令: %s", cmd.c_str());
+    ESP_LOGI(TAG, "✅ 命令提取成功: %s", cmd.c_str());
+    ESP_LOGI(TAG, "");
 
     // 根据命令类型处理
+    ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "║ 🎯 分发命令处理");
+    ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "║ 命令类型: %s", cmd.c_str());
+    ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "");
+    
     if (cmd == "scan_wifi") {
-        ESP_LOGI(TAG, "➜ 执行: WiFi扫描命令");
+        ESP_LOGI(TAG, "🔍 执行命令: WiFi 扫描");
+        ESP_LOGI(TAG, "─────────────────────────────────────────────────────────");
         HandleScanWiFiCommand();
     } 
     else if (cmd == "wifi_config") {
-        ESP_LOGI(TAG, "➜ 执行: WiFi配置命令");
+        ESP_LOGI(TAG, "📡 执行命令: WiFi 配置");
+        ESP_LOGI(TAG, "─────────────────────────────────────────────────────────");
         
         cJSON* data_item = cJSON_GetObjectItem(root, "data");
         if (!data_item || !cJSON_IsObject(data_item)) {
@@ -368,11 +472,17 @@ void BLEWiFiProvisioner::HandleScanWiFiCommand() {
 void BLEWiFiProvisioner::HandleWiFiConfigCommand(const std::string& ssid, 
                                                   const std::string& password,
                                                   const std::string& bssid) {
-    ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "开始WiFi配置");
-    ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "目标SSID: %s", ssid.c_str());
-    ESP_LOGI(TAG, "密码长度: %d", password.length());
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "║ 📡 WiFi 配置流程开始");
+    ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "║ 目标 SSID: %s", ssid.c_str());
+    ESP_LOGI(TAG, "║ 密码长度: %d 字符", password.length());
+    if (!bssid.empty()) {
+        ESP_LOGI(TAG, "║ BSSID: %s", bssid.c_str());
+    }
+    ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "");
 
     // 验证密码长度
     if (!password.empty() && (password.length() < 8 || password.length() > 63)) {
