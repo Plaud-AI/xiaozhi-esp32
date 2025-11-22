@@ -265,17 +265,48 @@ void BLEWiFiProvisioner::HandleReceivedData(const std::string& data) {
         cJSON* password_item = cJSON_GetObjectItem(data_item, "password");
         cJSON* bssid_item = cJSON_GetObjectItem(data_item, "bssid");
 
-        if (!ssid_item || !cJSON_IsString(ssid_item) ||
-            !password_item || !cJSON_IsString(password_item)) {
-            ESP_LOGE(TAG, "❌ ssid或password字段缺失或格式错误");
+        // SSID 是必需的
+        if (!ssid_item || !cJSON_IsString(ssid_item)) {
+            ESP_LOGE(TAG, "❌ ssid字段缺失或格式错误");
             cJSON_Delete(root);
-            SendErrorResponse(cmd, ERROR_JSON_PARSE_FAILED, "ssid或password字段缺失");
+            SendErrorResponse(cmd, ERROR_JSON_PARSE_FAILED, "ssid字段缺失");
             return;
         }
 
         std::string ssid = ssid_item->valuestring;
-        std::string password = password_item->valuestring;
+        std::string password = "";
         std::string bssid = "";
+        
+        // Password 是可选的（已保存的 WiFi 可以不提供密码）
+        if (password_item && cJSON_IsString(password_item)) {
+            password = password_item->valuestring;
+        }
+        
+        // 如果没有提供密码，尝试从已保存的配置中获取
+        if (password.empty()) {
+            ESP_LOGI(TAG, "📋 未提供密码，尝试从已保存配置中查找...");
+            auto& ssid_manager = SsidManager::GetInstance();
+            auto ssid_list = ssid_manager.GetSsidList();
+            
+            bool found = false;
+            for (const auto& saved_ssid : ssid_list) {
+                if (saved_ssid == ssid) {
+                    password = ssid_manager.GetPassword(ssid);
+                    if (!password.empty()) {
+                        ESP_LOGI(TAG, "✅ 找到已保存的 WiFi 配置");
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            
+            if (!found) {
+                ESP_LOGE(TAG, "❌ 该 WiFi 未保存，请提供密码");
+                cJSON_Delete(root);
+                SendErrorResponse(cmd, ERROR_JSON_PARSE_FAILED, "该 WiFi 未保存，请提供密码");
+                return;
+            }
+        }
         
         if (bssid_item && cJSON_IsString(bssid_item)) {
             bssid = bssid_item->valuestring;
@@ -283,6 +314,7 @@ void BLEWiFiProvisioner::HandleReceivedData(const std::string& data) {
 
         ESP_LOGI(TAG, "WiFi配置参数:");
         ESP_LOGI(TAG, "  SSID: %s", ssid.c_str());
+        ESP_LOGI(TAG, "  密码来源: %s", password_item ? "用户提供" : "已保存配置");
         ESP_LOGI(TAG, "  密码长度: %d字符", password.length());
         if (!bssid.empty()) {
             ESP_LOGI(TAG, "  BSSID: %s", bssid.c_str());
