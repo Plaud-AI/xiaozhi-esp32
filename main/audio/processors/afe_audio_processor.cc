@@ -100,10 +100,25 @@ void AfeAudioProcessor::Start() {
 }
 
 void AfeAudioProcessor::Stop() {
+    ESP_LOGI(TAG, "Stopping AfeAudioProcessor...");
+    
+    // 1. 清除事件位，通知任务停止
     xEventGroupClearBits(event_group_, PROCESSOR_RUNNING);
-    if (afe_data_ != nullptr) {
+    
+    // 2. 重置 AFE 缓冲区，中断可能阻塞的 fetch()
+    if (afe_data_ != nullptr && afe_iface_ != nullptr) {
         afe_iface_->reset_buffer(afe_data_);
     }
+    
+    // 3. 等待一小段时间，让任务真正停止
+    vTaskDelay(pdMS_TO_TICKS(50));
+    
+    // 4. 再次重置缓冲区（以防万一）
+    if (afe_data_ != nullptr && afe_iface_ != nullptr) {
+        afe_iface_->reset_buffer(afe_data_);
+    }
+    
+    ESP_LOGI(TAG, "AfeAudioProcessor stopped");
 }
 
 bool AfeAudioProcessor::IsRunning() {
@@ -127,14 +142,13 @@ void AfeAudioProcessor::AudioProcessorTask() {
     while (true) {
         xEventGroupWaitBits(event_group_, PROCESSOR_RUNNING, pdFALSE, pdTRUE, portMAX_DELAY);
 
-        auto res = afe_iface_->fetch_with_delay(afe_data_, portMAX_DELAY);
+        // 使用较短的超时时间进行 fetch，这样可以及时响应 Stop() 调用
+        auto res = afe_iface_->fetch_with_delay(afe_data_, pdMS_TO_TICKS(100));
         if ((xEventGroupGetBits(event_group_) & PROCESSOR_RUNNING) == 0) {
             continue;
         }
         if (res == nullptr || res->ret_value == ESP_FAIL) {
-            if (res != nullptr) {
-                ESP_LOGI(TAG, "Error code: %d", res->ret_value);
-            }
+            // 超时或失败，继续等待（不打印日志避免刷屏）
             continue;
         }
 

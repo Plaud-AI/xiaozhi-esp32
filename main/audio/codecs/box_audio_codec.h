@@ -20,6 +20,7 @@ private:
     esp_codec_dev_handle_t output_dev_ = nullptr;
     esp_codec_dev_handle_t input_dev_ = nullptr;
     std::mutex data_if_mutex_;
+    bool input_device_permanently_open_ = false;  // 双工模式优化：输入设备保持打开
 
     void CreateDuplexChannels(gpio_num_t mclk, gpio_num_t bclk, gpio_num_t ws, gpio_num_t dout, gpio_num_t din);
 
@@ -35,6 +36,7 @@ public:
     virtual void SetOutputVolume(int volume) override;
     virtual void EnableInput(bool enable) override;
     virtual void EnableOutput(bool enable) override;
+    virtual void Start() override;
 };
 
 #endif // _BOX_AUDIO_CODEC_H

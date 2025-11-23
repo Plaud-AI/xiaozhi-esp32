@@ -27,8 +27,9 @@ static uint16_t g_char_val_handle;
 static BluetoothService* g_instance = nullptr;
 
 BluetoothService::BluetoothService() 
-    : initialized_(false), connected_(false), conn_handle_(0) {
+    : initialized_(false), connected_(false), conn_handle_(0), mtu_(23), receive_buffer_("") {
     g_instance = this;
+    ESP_LOGI(TAG, "BluetoothService构造，默认MTU: %d", mtu_);
 }
 
 BluetoothService::~BluetoothService() {
@@ -63,15 +64,36 @@ int BluetoothService::gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_ha
                     os_mbuf_copydata(ctxt->om, 0, om_len, data);
                     data[om_len] = '\0';
                     
-                    ESP_LOGI(TAG, "收到数据: %s (长度: %d)", data, om_len);
+                    ESP_LOGI(TAG, "");
+                    ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
+                    ESP_LOGI(TAG, "║ 📥 BLE 数据写入事件");
+                    ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════");
+                    ESP_LOGI(TAG, "║ 数据长度: %d 字节", om_len);
                     
-                    if (g_instance->data_received_callback_) {
-                        g_instance->data_received_callback_(std::string(data, om_len));
+                    // 打印数据内容（显示前50个字符，避免过长）
+                    int preview_len = (om_len > 50) ? 50 : om_len;
+                    ESP_LOGI(TAG, "║ 内容预览: %.*s%s", preview_len, data, 
+                             (om_len > 50) ? "..." : "");
+                    
+                    // 显示前16个字节的十六进制表示（用于调试）
+                    if (om_len > 0) {
+                        char hex_buf[64];
+                        int hex_len = (om_len > 16) ? 16 : om_len;
+                        int hex_pos = 0;
+                        for (int i = 0; i < hex_len && hex_pos < 60; i++) {
+                            hex_pos += snprintf(hex_buf + hex_pos, sizeof(hex_buf) - hex_pos, 
+                                              "%02X ", (unsigned char)data[i]);
+                        }
+                        ESP_LOGI(TAG, "║ 十六进制: %s%s", hex_buf, (om_len > 16) ? "..." : "");
                     }
                     
-                    // 自动回复
-                    std::string reply = "收到: " + std::string(data, om_len);
-                    g_instance->SendData(reply);
+                    ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
+                    ESP_LOGI(TAG, "");
+                    
+                    // 处理接收到的数据片段（支持分包重组）
+                    if (g_instance) {
+                        g_instance->ProcessReceivedData(std::string(data, om_len));
+                    }
                     
                     free(data);
                 }
@@ -111,43 +133,121 @@ int BluetoothService::gap_event_handler(struct ble_gap_event *event, void *arg) 
 
     switch (event->type) {
         case BLE_GAP_EVENT_CONNECT:
-            ESP_LOGI(TAG, "连接事件: status=%d", event->connect.status);
+            ESP_LOGI(TAG, "");
+            ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
+            ESP_LOGI(TAG, "║ 📱 BLE 连接事件");
+            ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════");
+            ESP_LOGI(TAG, "║ 连接状态码: %d", event->connect.status);
+            
             if (event->connect.status == 0) {
                 g_instance->connected_ = true;
                 g_instance->conn_handle_ = event->connect.conn_handle;
-                ESP_LOGI(TAG, "客户端已连接，连接句柄: %d", event->connect.conn_handle);
+                
+                ESP_LOGI(TAG, "║ 结果: ✅ 连接成功");
+                ESP_LOGI(TAG, "║ ─────────────────────────────────────────────────────────");
+                ESP_LOGI(TAG, "║ • 连接句柄: %d", event->connect.conn_handle);
+                ESP_LOGI(TAG, "║ • 设备名称: %s", g_instance->device_name_.c_str());
+                ESP_LOGI(TAG, "║ • MAC 地址: %s", g_instance->GetMacAddress().c_str());
+                ESP_LOGI(TAG, "║ • 当前 MTU: %d 字节", g_instance->mtu_);
+                ESP_LOGI(TAG, "║");
+                ESP_LOGI(TAG, "║ 🎉 手机已成功连接！现在可以:");
+                ESP_LOGI(TAG, "║   - 扫描 WiFi 网络");
+                ESP_LOGI(TAG, "║   - 配置 WiFi 连接");
+                ESP_LOGI(TAG, "║   - 查看设备信息");
+                ESP_LOGI(TAG, "║   - 设置唤醒词");
+                ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
+                ESP_LOGI(TAG, "");
             } else {
+                ESP_LOGE(TAG, "║ 结果: ❌ 连接失败");
+                ESP_LOGE(TAG, "║ 错误码: %d", event->connect.status);
+                ESP_LOGE(TAG, "║");
+                ESP_LOGE(TAG, "║ 🔄 自动重新启动广播...");
+                ESP_LOGE(TAG, "╚════════════════════════════════════════════════════════════");
+                ESP_LOGE(TAG, "");
                 // 连接失败，重新开始广播
                 g_instance->StartAdvertising();
             }
             break;
 
-        case BLE_GAP_EVENT_DISCONNECT:
-            ESP_LOGI(TAG, "客户端断开连接，原因: %d", event->disconnect.reason);
+        case BLE_GAP_EVENT_DISCONNECT: {
+            ESP_LOGI(TAG, "");
+            ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
+            ESP_LOGI(TAG, "║ 📱 BLE 断开连接事件");
+            ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════");
+            ESP_LOGI(TAG, "║ 连接句柄: %d", g_instance->conn_handle_);
+            ESP_LOGI(TAG, "║ 断开原因码: %d", event->disconnect.reason);
+            ESP_LOGI(TAG, "║");
+            
+            // 断开原因解释
+            const char* reason_str = "未知原因";
+            switch (event->disconnect.reason) {
+                case 0x08: reason_str = "连接超时"; break;
+                case 0x13: reason_str = "用户主动断开"; break;
+                case 0x16: reason_str = "主机终止连接"; break;
+                case 0x3D: reason_str = "连接参数不可接受"; break;
+                default: break;
+            }
+            ESP_LOGI(TAG, "║ 原因说明: %s", reason_str);
+            ESP_LOGI(TAG, "║");
+            ESP_LOGI(TAG, "║ 🔄 清理操作:");
+            ESP_LOGI(TAG, "║   • 清空接收缓冲区");
+            ESP_LOGI(TAG, "║   • 重置连接状态");
+            ESP_LOGI(TAG, "║   • 重新启动广播");
+            ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
+            ESP_LOGI(TAG, "");
+            
             g_instance->connected_ = false;
             g_instance->conn_handle_ = 0;
+            // 清空接收缓冲区
+            g_instance->receive_buffer_.clear();
             // 重新开始广播
             g_instance->StartAdvertising();
             break;
+        }
 
         case BLE_GAP_EVENT_ADV_COMPLETE:
-            ESP_LOGI(TAG, "广播完成");
+            ESP_LOGD(TAG, "📡 广播周期完成，自动重启广播");
             g_instance->StartAdvertising();
             break;
 
-        case BLE_GAP_EVENT_SUBSCRIBE:
-            ESP_LOGI(TAG, "订阅事件: conn_handle=%d attr_handle=%d",
-                     event->subscribe.conn_handle,
-                     event->subscribe.attr_handle);
+        case BLE_GAP_EVENT_SUBSCRIBE: {
+            ESP_LOGI(TAG, "");
+            ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
+            ESP_LOGI(TAG, "║ 🔔 BLE 特征订阅事件");
+            ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════");
+            ESP_LOGI(TAG, "║ 连接句柄: %d", event->subscribe.conn_handle);
+            ESP_LOGI(TAG, "║ 属性句柄: %d", event->subscribe.attr_handle);
+            ESP_LOGI(TAG, "║");
+            ESP_LOGI(TAG, "║ ℹ️  手机已订阅通知，可以:");
+            ESP_LOGI(TAG, "║   - 接收设备主动推送的数据");
+            ESP_LOGI(TAG, "║   - 接收命令执行结果");
+            ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
+            ESP_LOGI(TAG, "");
             break;
+        }
 
-        case BLE_GAP_EVENT_MTU:
-            ESP_LOGI(TAG, "MTU更新: conn_handle=%d mtu=%d",
-                     event->mtu.conn_handle,
-                     event->mtu.value);
+        case BLE_GAP_EVENT_MTU: {
+            ESP_LOGI(TAG, "");
+            ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
+            ESP_LOGI(TAG, "║ 📏 BLE MTU 更新事件");
+            ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════");
+            ESP_LOGI(TAG, "║ 连接句柄: %d", event->mtu.conn_handle);
+            ESP_LOGI(TAG, "║ 旧 MTU: %d 字节", g_instance->mtu_);
+            ESP_LOGI(TAG, "║ 新 MTU: %d 字节", event->mtu.value);
+            
+            g_instance->mtu_ = event->mtu.value;
+            
+            ESP_LOGI(TAG, "║");
+            ESP_LOGI(TAG, "║ ℹ️  MTU 说明:");
+            ESP_LOGI(TAG, "║   • 每次最多传输: %d 字节", g_instance->mtu_ - 3);
+            ESP_LOGI(TAG, "║   • 大数据包会自动分片传输");
+            ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
+            ESP_LOGI(TAG, "");
             break;
+        }
 
         default:
+            ESP_LOGD(TAG, "🔔 BLE 事件: type=%d", event->type);
             break;
     }
 
@@ -246,6 +346,12 @@ bool BluetoothService::StartAdvertising() {
         return false;
     }
 
+    // 检查是否已经在广播
+    if (ble_gap_adv_active()) {
+        ESP_LOGW(TAG, "BLE广播已在运行，跳过重复启动");
+        return true;  // 返回成功，因为广播确实在运行
+    }
+
     struct ble_gap_adv_params adv_params;
     struct ble_hs_adv_fields fields;
     const char *name;
@@ -302,23 +408,180 @@ bool BluetoothService::SendData(const std::string& data) {
         return false;
     }
 
-    struct os_mbuf *om = ble_hs_mbuf_from_flat(data.c_str(), data.length());
-    if (!om) {
-        ESP_LOGE(TAG, "分配mbuf失败");
-        return false;
-    }
+    // 添加换行符作为数据结束标记
+    std::string data_with_end = data + "\n";
+    size_t total_length = data_with_end.length();
+    
+    // BLE ATT协议开销是3字节，所以实际可用MTU是 (mtu - 3)
+    size_t max_chunk_size = (mtu_ > 3) ? (mtu_ - 3) : 20;
+    
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "准备发送数据");
+    ESP_LOGI(TAG, "数据长度: %d 字节 (含结束符)", total_length);
+    ESP_LOGI(TAG, "当前MTU: %d 字节", mtu_);
+    ESP_LOGI(TAG, "分包大小: %d 字节", max_chunk_size);
+    
+    // 如果数据小于等于单个包大小，直接发送
+    if (total_length <= max_chunk_size) {
+        ESP_LOGI(TAG, "数据适合单包传输，直接发送");
+        
+        struct os_mbuf *om = ble_hs_mbuf_from_flat(data_with_end.c_str(), total_length);
+        if (!om) {
+            ESP_LOGE(TAG, "❌ 分配mbuf失败");
+            return false;
+        }
 
-    int rc = ble_gatts_notify_custom(conn_handle_, g_char_val_handle, om);
-    if (rc != 0) {
-        ESP_LOGE(TAG, "发送通知失败: %d", rc);
-        return false;
-    }
+        int rc = ble_gatts_notify_custom(conn_handle_, g_char_val_handle, om);
+        if (rc != 0) {
+            ESP_LOGE(TAG, "❌ 发送通知失败: %d", rc);
+            return false;
+        }
 
-    ESP_LOGI(TAG, "已发送数据: %s", data.c_str());
+        ESP_LOGI(TAG, "✓ 数据发送成功");
+        ESP_LOGI(TAG, "========================================");
+        return true;
+    }
+    
+    // 需要分包发送
+    size_t chunks_count = (total_length + max_chunk_size - 1) / max_chunk_size;
+    ESP_LOGI(TAG, "数据需要分 %d 个包发送", chunks_count);
+    
+    size_t offset = 0;
+    size_t chunk_index = 0;
+    
+    while (offset < total_length) {
+        size_t chunk_size = std::min(max_chunk_size, total_length - offset);
+        chunk_index++;
+        
+        ESP_LOGD(TAG, "发送第 %d/%d 包，大小: %d 字节", 
+                 chunk_index, chunks_count, chunk_size);
+        
+        struct os_mbuf *om = ble_hs_mbuf_from_flat(
+            data_with_end.c_str() + offset, 
+            chunk_size
+        );
+        
+        if (!om) {
+            ESP_LOGE(TAG, "❌ 分配mbuf失败 (第 %d 包)", chunk_index);
+            return false;
+        }
+
+        int rc = ble_gatts_notify_custom(conn_handle_, g_char_val_handle, om);
+        if (rc != 0) {
+            ESP_LOGE(TAG, "❌ 发送第 %d 包失败: %d", chunk_index, rc);
+            return false;
+        }
+        
+        offset += chunk_size;
+        
+        // 在发送包之间添加小延迟，避免数据拥塞
+        if (offset < total_length) {
+            vTaskDelay(pdMS_TO_TICKS(10));  // 10ms延迟
+        }
+    }
+    
+    ESP_LOGI(TAG, "✓ 所有数据包发送成功 (%d 包)", chunks_count);
+    ESP_LOGI(TAG, "========================================");
     return true;
 }
 
 void BluetoothService::SetDataReceivedCallback(std::function<void(const std::string&)> callback) {
     data_received_callback_ = callback;
+}
+
+void BluetoothService::ProcessReceivedData(const std::string& data) {
+    // 将接收到的数据片段添加到缓冲区
+    receive_buffer_ += data;
+    
+    ESP_LOGI(TAG, "累积缓冲区大小: %d 字节", receive_buffer_.length());
+    
+    // 添加调试：显示缓冲区的首尾字符
+    if (!receive_buffer_.empty()) {
+        ESP_LOGI(TAG, "缓冲区首字符: '%c' (0x%02X)", 
+                 receive_buffer_[0], (unsigned char)receive_buffer_[0]);
+        ESP_LOGI(TAG, "缓冲区尾字符: '%c' (0x%02X)", 
+                 receive_buffer_[receive_buffer_.length()-1], 
+                 (unsigned char)receive_buffer_[receive_buffer_.length()-1]);
+    }
+    
+    // 查找换行符（消息结束标记）
+    size_t newline_pos = receive_buffer_.find('\n');
+    
+    // 情况1：找到换行符（标准分包传输场景）
+    while (newline_pos != std::string::npos) {
+        // 提取完整的消息（不包含换行符）
+        std::string complete_message = receive_buffer_.substr(0, newline_pos);
+        
+        ESP_LOGI(TAG, "========================================");
+        ESP_LOGI(TAG, "📦 接收到完整消息（带换行符）");
+        ESP_LOGI(TAG, "消息长度: %d 字节", complete_message.length());
+        ESP_LOGI(TAG, "消息内容: %s", complete_message.c_str());
+        ESP_LOGI(TAG, "========================================");
+        
+        // 调用数据接收回调
+        if (data_received_callback_) {
+            data_received_callback_(complete_message);
+        }
+        
+        // 从缓冲区中移除已处理的消息（包括换行符）
+        receive_buffer_.erase(0, newline_pos + 1);
+        
+        // 查找下一个换行符（可能同时收到多条消息）
+        newline_pos = receive_buffer_.find('\n');
+    }
+    
+    // 情况2：没有换行符，检查是否是完整JSON消息
+    // 如果收到的数据以 { 开头且以 } 结尾，可能是完整的JSON消息（无换行符）
+    if (!receive_buffer_.empty()) {
+        // 去除首尾空白字符
+        size_t start = 0;
+        size_t end = receive_buffer_.length();
+        
+        // 跳过开头的空白字符
+        while (start < end && std::isspace((unsigned char)receive_buffer_[start])) {
+            start++;
+        }
+        
+        // 跳过结尾的空白字符
+        while (end > start && std::isspace((unsigned char)receive_buffer_[end - 1])) {
+            end--;
+        }
+        
+        // 检查是否是完整的JSON（以 { 开头且以 } 结尾）
+        if (end > start && 
+            receive_buffer_[start] == '{' && 
+            receive_buffer_[end - 1] == '}') {
+            
+            std::string trimmed = receive_buffer_.substr(start, end - start);
+            
+            ESP_LOGI(TAG, "========================================");
+            ESP_LOGI(TAG, "📦 接收到完整JSON消息（无换行符）");
+            ESP_LOGI(TAG, "消息长度: %d 字节", trimmed.length());
+            ESP_LOGI(TAG, "消息内容: %s", trimmed.c_str());
+            ESP_LOGI(TAG, "========================================");
+            
+            // 调用数据接收回调
+            if (data_received_callback_) {
+                data_received_callback_(trimmed);
+            }
+            
+            // 清空缓冲区
+            receive_buffer_.clear();
+        } else {
+            // 不是完整的JSON，等待更多数据
+            if (end > start) {
+                ESP_LOGD(TAG, "等待更多数据... (首字符: '%c', 尾字符: '%c')", 
+                         receive_buffer_[start], receive_buffer_[end - 1]);
+            }
+        }
+    }
+    
+    // 检查缓冲区是否过大（防止内存溢出）
+    if (receive_buffer_.length() > 4096) {
+        ESP_LOGW(TAG, "⚠️  接收缓冲区过大(%d 字节)，可能数据格式错误，清空缓冲区", 
+                 receive_buffer_.length());
+        ESP_LOGW(TAG, "缓冲区内容: %s", receive_buffer_.c_str());
+        receive_buffer_.clear();
+    }
 }
 

@@ -46,11 +46,19 @@ public:
     void StopAdvertising();
 
     /**
-     * @brief 发送数据到已连接的客户端
+     * @brief 发送数据到已连接的客户端（自动分包）
      * @param data 要发送的数据
      * @return true 发送成功，false 发送失败
+     * 
+     * 注意：此函数会自动根据MTU大小分包发送，并在末尾添加换行符作为结束标记
      */
     bool SendData(const std::string& data);
+    
+    /**
+     * @brief 获取当前MTU大小
+     * @return MTU大小（字节）
+     */
+    uint16_t GetMTU() const { return mtu_; }
 
     /**
      * @brief 设置数据接收回调
@@ -86,7 +94,17 @@ private:
     bool initialized_;
     bool connected_;
     uint16_t conn_handle_;
+    uint16_t mtu_;  // 当前MTU大小
     std::function<void(const std::string&)> data_received_callback_;
+    
+    // 分包接收缓冲区
+    std::string receive_buffer_;  // 累积接收到的数据片段
+    
+    /**
+     * @brief 处理接收到的数据片段（支持分包重组）
+     * @param data 接收到的数据片段
+     */
+    void ProcessReceivedData(const std::string& data);
 };
 
 #endif // BLUETOOTH_SERVICE_H

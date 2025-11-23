@@ -16,6 +16,7 @@
 
 #include "audio_codec.h"
 #include "wake_word.h"
+#include "wake_word_constants.h"
 
 class CustomWakeWord : public WakeWord {
 public:
@@ -32,6 +33,12 @@ public:
     bool GetWakeWordOpus(std::vector<uint8_t>& opus);
     const std::string& GetLastDetectedWakeWord() const { return last_detected_wake_word_; }
 
+    // 动态命令管理接口（支持运行时更新唤醒词）
+    void ClearCommands();
+    void AddCommand(const std::string& command, const std::string& text, const std::string& action);
+    void SetThreshold(float threshold);
+    bool UpdateCommands();
+
 private:
     struct Command {
         std::string command;
@@ -46,13 +53,17 @@ private:
     char* mn_name_ = nullptr;
     std::string language_ = "cn";
     int duration_ = 3000;
-    float threshold_ = 0.2;
+    float threshold_ = DEFAULT_WAKE_WORD_THRESHOLD;
     std::deque<Command> commands_;
  
     std::function<void(const std::string& wake_word)> wake_word_detected_callback_;
     AudioCodec* codec_ = nullptr;
     std::string last_detected_wake_word_;
     std::atomic<bool> running_ = false;
+    
+    // 检测状态日志相关
+    uint32_t detection_frame_count_ = 0;
+    uint32_t last_log_frame_ = 0;
 
     TaskHandle_t wake_word_encode_task_ = nullptr;
     StaticTask_t* wake_word_encode_task_buffer_ = nullptr;

@@ -1,6 +1,7 @@
 #include "es8389_audio_codec.h"
 
 #include <esp_log.h>
+#include <cstring>
 
 static const char TAG[] = "Es8389AudioCodec";
 
@@ -190,15 +191,31 @@ void Es8389AudioCodec::EnableOutput(bool enable) {
 }
 
 int Es8389AudioCodec::Read(int16_t* dest, int samples) {
-    if (input_enabled_) {
-        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_read(input_dev_, (void*)dest, samples * sizeof(int16_t)));
+    std::lock_guard<std::mutex> lock(data_if_mutex_);
+    if (!input_enabled_) {
+        memset(dest, 0, samples * sizeof(int16_t));
+        return samples;
+    }
+    
+    esp_err_t ret = esp_codec_dev_read(input_dev_, (void*)dest, samples * sizeof(int16_t));
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Read failed: %s (0x%x), input_enabled=%d", 
+                 esp_err_to_name(ret), ret, input_enabled_);
+        memset(dest, 0, samples * sizeof(int16_t));
     }
     return samples;
 }
 
 int Es8389AudioCodec::Write(const int16_t* data, int samples) {
-    if (output_enabled_) {
-        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_write(output_dev_, (void*)data, samples * sizeof(int16_t)));
+    std::lock_guard<std::mutex> lock(data_if_mutex_);
+    if (!output_enabled_) {
+        return samples;
+    }
+    
+    esp_err_t ret = esp_codec_dev_write(output_dev_, (void*)data, samples * sizeof(int16_t));
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Write failed: %s (0x%x), output_enabled=%d", 
+                 esp_err_to_name(ret), ret, output_enabled_);
     }
     return samples;
 }

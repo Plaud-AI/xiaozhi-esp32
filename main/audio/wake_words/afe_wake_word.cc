@@ -128,8 +128,11 @@ void AfeWakeWord::Start() {
 }
 
 void AfeWakeWord::Stop() {
+    // 清除检测运行标志位
     xEventGroupClearBits(event_group_, DETECTION_RUNNING_EVENT);
-    if (afe_data_ != nullptr) {
+    
+    // 重置 AFE 缓冲区（幂等操作，可以重复调用）
+    if (afe_data_ != nullptr && afe_iface_ != nullptr) {
         afe_iface_->reset_buffer(afe_data_);
     }
 }
@@ -176,13 +179,13 @@ void AfeWakeWord::AudioDetectionTask() {
 
     int loop_count = 0;
     while (true) {
+        // 等待检测启用事件，超时时间设置为 portMAX_DELAY 表示一直等待
         xEventGroupWaitBits(event_group_, DETECTION_RUNNING_EVENT, pdFALSE, pdTRUE, portMAX_DELAY);
 
-        auto res = afe_iface_->fetch_with_delay(afe_data_, portMAX_DELAY);
+        // 使用较短的超时时间进行 fetch，这样可以及时响应 Stop() 调用
+        auto res = afe_iface_->fetch_with_delay(afe_data_, pdMS_TO_TICKS(100));
         if (res == nullptr || res->ret_value == ESP_FAIL) {
-            ESP_LOGW(TAG, "AFE fetch failed, res=%p, ret_value=%d", 
-                     res, res ? res->ret_value : -1);
-            continue;;
+            continue;
         }
 
         // 每处理 100 次打印一次日志，证明检测任务在运行

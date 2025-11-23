@@ -89,18 +89,32 @@ bool Ota::CheckVersion() {
     std::string method = data.length() > 0 ? "POST" : "GET";
     http->SetContent(std::move(data));
 
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "正在连接 OTA 服务器...");
+    ESP_LOGI(TAG, "URL: %s", url.c_str());
+    ESP_LOGI(TAG, "方法: %s", method.c_str());
+    ESP_LOGI(TAG, "========================================");
+
     if (!http->Open(method, url)) {
-        ESP_LOGE(TAG, "Failed to open HTTP connection");
+        ESP_LOGE(TAG, "❌ 无法连接到 OTA 服务器");
+        ESP_LOGE(TAG, "请检查网络连接和服务器状态");
         return false;
     }
 
     auto status_code = http->GetStatusCode();
+    ESP_LOGI(TAG, "✅ OTA 服务器连接成功");
+    ESP_LOGI(TAG, "HTTP 状态码: %d", status_code);
+    
     if (status_code != 200) {
-        ESP_LOGE(TAG, "Failed to check version, status code: %d", status_code);
+        ESP_LOGE(TAG, "❌ 服务器返回错误状态码: %d", status_code);
         return false;
     }
 
     data = http->ReadAll();
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "服务器响应内容:");
+    ESP_LOGI(TAG, "%s", data.c_str());
+    ESP_LOGI(TAG, "========================================");
     http->Close();
 
     // Response: { "firmware": { "version": "1.0.0", "url": "http://" } }
@@ -117,24 +131,39 @@ bool Ota::CheckVersion() {
     has_activation_challenge_ = false;
     cJSON *activation = cJSON_GetObjectItem(root, "activation");
     if (cJSON_IsObject(activation)) {
+        ESP_LOGI(TAG, "========================================");
+        ESP_LOGI(TAG, "📱 发现激活信息");
+        ESP_LOGI(TAG, "========================================");
+        
         cJSON* message = cJSON_GetObjectItem(activation, "message");
         if (cJSON_IsString(message)) {
             activation_message_ = message->valuestring;
+            ESP_LOGI(TAG, "激活消息: %s", activation_message_.c_str());
         }
         cJSON* code = cJSON_GetObjectItem(activation, "code");
         if (cJSON_IsString(code)) {
             activation_code_ = code->valuestring;
             has_activation_code_ = true;
+            ESP_LOGI(TAG, "╔════════════════════════════════════════╗");
+            ESP_LOGI(TAG, "║   🔑 激活码（调试输出）               ║");
+            ESP_LOGI(TAG, "╠════════════════════════════════════════╣");
+            ESP_LOGI(TAG, "║   %s   ║", activation_code_.c_str());
+            ESP_LOGI(TAG, "╚════════════════════════════════════════╝");
         }
         cJSON* challenge = cJSON_GetObjectItem(activation, "challenge");
         if (cJSON_IsString(challenge)) {
             activation_challenge_ = challenge->valuestring;
             has_activation_challenge_ = true;
+            ESP_LOGI(TAG, "挑战码: %s", activation_challenge_.c_str());
         }
         cJSON* timeout_ms = cJSON_GetObjectItem(activation, "timeout_ms");
         if (cJSON_IsNumber(timeout_ms)) {
             activation_timeout_ms_ = timeout_ms->valueint;
+            ESP_LOGI(TAG, "激活超时: %d ms", activation_timeout_ms_);
         }
+        ESP_LOGI(TAG, "========================================");
+    } else {
+        ESP_LOGI(TAG, "✓ 无需激活（设备已激活或无激活要求）");
     }
 
     has_mqtt_config_ = false;
@@ -440,7 +469,7 @@ std::string Ota::GetActivationPayload() {
 
 esp_err_t Ota::Activate() {
     if (!has_activation_challenge_) {
-        ESP_LOGW(TAG, "No activation challenge found");
+        ESP_LOGW(TAG, "⚠️  无激活挑战码，跳过激活");
         return ESP_FAIL;
     }
 
@@ -451,25 +480,41 @@ esp_err_t Ota::Activate() {
         url += "activate";
     }
 
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "正在发送激活请求...");
+    ESP_LOGI(TAG, "激活 URL: %s", url.c_str());
+    ESP_LOGI(TAG, "========================================");
+
     auto http = SetupHttp();
 
     std::string data = GetActivationPayload();
     http->SetContent(std::move(data));
 
     if (!http->Open("POST", url)) {
-        ESP_LOGE(TAG, "Failed to open HTTP connection");
+        ESP_LOGE(TAG, "❌ 无法连接到激活服务器");
+        ESP_LOGE(TAG, "请检查网络连接");
         return ESP_FAIL;
     }
     
     auto status_code = http->GetStatusCode();
+    ESP_LOGI(TAG, "激活响应状态码: %d", status_code);
+    
     if (status_code == 202) {
+        ESP_LOGW(TAG, "⏳ 激活请求已接受，等待服务器处理...");
         return ESP_ERR_TIMEOUT;
     }
     if (status_code != 200) {
-        ESP_LOGE(TAG, "Failed to activate, code: %d, body: %s", status_code, http->ReadAll().c_str());
+        std::string response_body = http->ReadAll();
+        ESP_LOGE(TAG, "❌ 激活失败");
+        ESP_LOGE(TAG, "状态码: %d", status_code);
+        ESP_LOGE(TAG, "响应内容: %s", response_body.c_str());
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "Activation successful");
+    std::string response_body = http->ReadAll();
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "✅ 激活成功！");
+    ESP_LOGI(TAG, "响应内容: %s", response_body.c_str());
+    ESP_LOGI(TAG, "========================================");
     return ESP_OK;
 }

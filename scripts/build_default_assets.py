@@ -154,8 +154,8 @@ def copy_directory(src, dst):
         return False
 
 
-def process_sr_models(wakenet_model_dirs, multinet_model_dirs, build_dir, assets_dir):
-    """Process SR models (wakenet and multinet) and generate srmodels.bin"""
+def process_sr_models(wakenet_model_dirs, multinet_model_dirs, build_dir, assets_dir, esp_sr_model_path=None):
+    """Process SR models (wakenet, multinet, and nsnet) and generate srmodels.bin"""
     if not wakenet_model_dirs and not multinet_model_dirs:
         return None
     
@@ -184,6 +184,17 @@ def process_sr_models(wakenet_model_dirs, multinet_model_dirs, build_dir, assets
             if copy_directory(multinet_model_dir, multinet_dst):
                 models_processed += 1
                 print(f"Added multinet model: {multinet_name}")
+    
+    # Copy NSNet2 model if available (for noise suppression)
+    if esp_sr_model_path:
+        nsnet2_model_dir = os.path.join(esp_sr_model_path, 'nsnet_model', 'nsnet2')
+        if os.path.exists(nsnet2_model_dir):
+            nsnet2_dst = os.path.join(sr_models_build_dir, 'nsnet2')
+            if copy_directory(nsnet2_model_dir, nsnet2_dst):
+                models_processed += 1
+                print(f"Added NSNet2 model: nsnet2")
+        else:
+            print(f"Warning: NSNet2 model not found at {nsnet2_model_dir}")
     
     if models_processed == 0:
         print("Warning: No SR models were successfully processed")
@@ -715,8 +726,9 @@ def build_assets_integrated(wakenet_model_paths, multinet_model_paths, text_font
         
         print("Starting to build assets...")
         
-        # Process each component
-        srmodels = process_sr_models(wakenet_model_paths, multinet_model_paths, temp_build_dir, assets_dir) if (wakenet_model_paths or multinet_model_paths) else None
+        # Process each component (pass esp_sr_model_path for NSNet2)
+        esp_sr_path = os.path.dirname(os.path.dirname(wakenet_model_paths[0])) if wakenet_model_paths else (os.path.dirname(os.path.dirname(multinet_model_paths[0])) if multinet_model_paths else None)
+        srmodels = process_sr_models(wakenet_model_paths, multinet_model_paths, temp_build_dir, assets_dir, esp_sr_path) if (wakenet_model_paths or multinet_model_paths) else None
         text_font = process_text_font(text_font_path, assets_dir) if text_font_path else None
         emoji_collection = process_emoji_collection(emoji_collection_path, assets_dir) if emoji_collection_path else None
         extra_files = process_extra_files(extra_files_path, assets_dir) if extra_files_path else None

@@ -26,3 +26,4 @@ components/**/.vscode/
 components/**/.git/
 components/**/test_app/
 components/**/tests/
+.cursorrules

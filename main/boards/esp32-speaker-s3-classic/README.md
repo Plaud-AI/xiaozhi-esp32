@@ -200,7 +200,5 @@ idf.py flash monitor
 3. 硬件连接照片（如有）
 4. 使用的 ESP-IDF 版本
 
-**Created by**: PLAUD AI Team  
-**Date**: 2025-11-11  
-**Version**: 1.0.0
+
 

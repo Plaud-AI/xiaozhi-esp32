@@ -9,7 +9,7 @@
 
 #include "application.h"
 #include "system_info.h"
-#include "bluetooth_example.h"
+#include "ble_wifi_provisioner.h"
 
 #define TAG "main"
 
@@ -27,8 +27,8 @@ extern "C" void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    // 初始化蓝牙服务
-    InitializeBluetoothService();
+    // BLE WiFi配网服务将在进入配网模式时按需启动（延迟启动以优先Soft AP）
+    ESP_LOGI(TAG, "BLE配网服务将在需要时启动（优先使用Soft AP配网）");
 
     // Launch the application
     auto& app = Application::GetInstance();

@@ -95,6 +95,7 @@ public:
     bool IsWakeWordRunning() const { return xEventGroupGetBits(event_group_) & AS_EVENT_WAKE_WORD_RUNNING; }
     bool IsAudioProcessorRunning() const { return xEventGroupGetBits(event_group_) & AS_EVENT_AUDIO_PROCESSOR_RUNNING; }
     bool IsAfeWakeWord();
+    WakeWord* GetWakeWord() { return wake_word_.get(); }  // 获取 WakeWord 指针（用于运行时配置）
 
     void EnableWakeWordDetection(bool enable);
     void EnableVoiceProcessing(bool enable);

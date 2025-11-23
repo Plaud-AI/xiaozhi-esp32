@@ -29,6 +29,8 @@ set(SOURCES "audio/audio_codec.cc"
             "protocols/mqtt_protocol.cc"
             "protocols/websocket_protocol.cc"
             "bluetooth_service.cc"
+            "ble_wifi_provisioner.cc"
+            "wake_word_manager.cc"
             "mcp_server.cc"
             "system_info.cc"
             "application.cc"
@@ -45,6 +47,31 @@ set(INCLUDE_DIRS "." "display" "display/lvgl_display" "display/lvgl_display/jpg"
 file(GLOB BOARD_COMMON_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/boards/common/*.cc)
 list(APPEND SOURCES ${BOARD_COMMON_SOURCES})
 list(APPEND INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/boards/common)
+
+# Add doll interaction modules if enabled
+if(CONFIG_ENABLE_DOLL_INTERACTION)
+    list(APPEND SOURCES
+        "doll/doll_service.cc"
+        "doll/nfc_reader.cc"
+        "doll/pressure_sensor.cc"
+        "doll/touch_sensor.cc"
+        "doll/doll_interaction_manager.cc"
+        "doll/doll_mcp_tools.cc"
+        "motor/motor_controller.cc"
+        "motor/motor.cc"
+        "motion/motion_engine.cc"
+        "template/template_manager.cc"
+        "template/template_parser.cc"
+        "template/template_executor.cc"
+    )
+    list(APPEND INCLUDE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}/doll
+        ${CMAKE_CURRENT_SOURCE_DIR}/motor
+        ${CMAKE_CURRENT_SOURCE_DIR}/motion
+        ${CMAKE_CURRENT_SOURCE_DIR}/template
+    )
+    message(STATUS "Doll interaction features enabled")
+endif()
 
 idf_build_get_property(build_components BUILD_COMPONENTS)
 # Function to find component dynamically by pattern
@@ -605,8 +632,8 @@ endif()
 idf_component_register(SRCS ${SOURCES}
                     EMBED_FILES ${LANG_SOUNDS} ${COMMON_SOUNDS}
                     INCLUDE_DIRS ${INCLUDE_DIRS}
-                    REQUIRES spi_flash esp_psram esp_app_format app_update efuse bootloader_support esp-opus-encoder
-                    PRIV_REQUIRES bt
+                    REQUIRES spi_flash esp_psram esp_app_format app_update efuse bootloader_support esp-opus-encoder nvs_flash esp-wifi-connect
+                    PRIV_REQUIRES bt esp-tflite-micro
                     WHOLE_ARCHIVE
                     )
 

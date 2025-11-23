@@ -3,6 +3,10 @@
 #include <esp_log.h>
 #include <driver/i2c_master.h>
 #include <driver/i2s_tdm.h>
+#include <cstring>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include "settings.h"
 
 #define TAG "BoxAudioCodec"
 
@@ -14,7 +18,7 @@ BoxAudioCodec::BoxAudioCodec(void* i2c_master_handle, int input_sample_rate, int
     input_channels_ = input_reference_ ? 2 : 1; // 输入通道数
     input_sample_rate_ = input_sample_rate;
     output_sample_rate_ = output_sample_rate;
-    input_gain_ = 42;  // 增加麦克风增益从 30 到 42（范围 0-47）
+    input_gain_ = 45;  // 进一步增加麦克风增益（范围 0-47，适用于远场识别）
     
     ESP_LOGI(TAG, "BoxAudioCodec constructor: input_sample_rate=%d, output_sample_rate=%d, input_reference=%d, input_channels=%d, input_gain=%d",
              input_sample_rate_, output_sample_rate_, input_reference_, input_channels_, input_gain_);
@@ -76,6 +80,37 @@ BoxAudioCodec::BoxAudioCodec(void* i2c_master_handle, int input_sample_rate, int
     dev_cfg.codec_if = in_codec_if_;
     input_dev_ = esp_codec_dev_new(&dev_cfg);
     assert(input_dev_ != NULL);
+
+    // 关键修复：在双工模式下，input_dev 和 output_dev 共享同一个 data_if_
+    // 防止 close 一个设备时禁用底层的 I2S 通道，影响另一个设备
+    esp_codec_set_disable_when_closed(output_dev_, false);
+    esp_codec_set_disable_when_closed(input_dev_, false);
+    
+    // 双工模式优化：在初始化时就打开输入设备，保持打开状态
+    // 避免频繁 close/open 导致的 I2S 状态问题
+    uint16_t input_channel_mask = ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0);
+    if (input_reference_) {
+        input_channel_mask |= ESP_CODEC_DEV_MAKE_CHANNEL_MASK(1);
+    }
+    esp_codec_dev_sample_info_t input_fs = {
+        .bits_per_sample = 16,
+        .channel = 4,
+        .channel_mask = input_channel_mask,
+        .sample_rate = (uint32_t)output_sample_rate_,
+        .mclk_multiple = 0,
+    };
+    esp_err_t ret = esp_codec_dev_open(input_dev_, &input_fs);
+    if (ret == ESP_OK) {
+        // 设置所有通道的增益
+        for (int ch = 0; ch < 4; ch++) {
+            esp_codec_dev_set_in_channel_gain(input_dev_, ESP_CODEC_DEV_MAKE_CHANNEL_MASK(ch), input_gain_);
+        }
+        input_device_permanently_open_ = true;
+        ESP_LOGI(TAG, "Input device opened and will remain open (duplex mode optimization)");
+    } else {
+        ESP_LOGW(TAG, "Failed to pre-open input device: %s, will use dynamic open/close", esp_err_to_name(ret));
+        input_device_permanently_open_ = false;
+    }
 
     ESP_LOGI(TAG, "BoxAudioDevice initialized");
 }
@@ -182,7 +217,33 @@ void BoxAudioCodec::CreateDuplexChannels(gpio_num_t mclk, gpio_num_t bclk, gpio_
     ESP_LOGI(TAG, "Duplex channels created");
 }
 
+void BoxAudioCodec::Start() {
+    // 如果输入设备永久打开，I2S 通道已经全部 enabled（双工模式共享 I2S 接口）
+    if (input_device_permanently_open_) {
+        ESP_LOGI(TAG, "Starting audio codec (I2S channels already enabled in duplex mode)");
+        
+        // 读取音量设置（与父类 AudioCodec::Start() 相同）
+        Settings settings("audio", false);
+        output_volume_ = settings.GetInt("output_volume", output_volume_);
+        if (output_volume_ <= 0) {
+            ESP_LOGW(TAG, "Output volume value (%d) is too small, setting to default (10)", output_volume_);
+            output_volume_ = 10;
+        }
+        
+        // 不需要 enable 任何 I2S 通道，esp_codec_dev_open(input_dev_) 已经 enable 了
+        // rx_handle_ 和 tx_handle_（因为它们共享同一个 I2S 接口）
+        
+        EnableInput(true);
+        EnableOutput(true);
+        ESP_LOGI(TAG, "Audio codec started");
+    } else {
+        // 回退到标准实现
+        AudioCodec::Start();
+    }
+}
+
 void BoxAudioCodec::SetOutputVolume(int volume) {
+    ESP_LOGI(TAG, "🔊 设置音量: %d -> %d", output_volume_, volume);
     ESP_ERROR_CHECK(esp_codec_dev_set_out_vol(output_dev_, volume));
     AudioCodec::SetOutputVolume(volume);
 }
@@ -192,7 +253,20 @@ void BoxAudioCodec::EnableInput(bool enable) {
     if (enable == input_enabled_) {
         return;
     }
+    
+    // 双工模式优化：如果输入设备永久打开，不做实际的 close/open
+    if (input_device_permanently_open_) {
+        ESP_LOGI(TAG, "Input device permanently open, only updating enabled flag: %d -> %d", 
+                 input_enabled_, enable);
+        AudioCodec::EnableInput(enable);
+        return;
+    }
+    
+    // 原有逻辑：动态 open/close（作为 fallback）
     if (enable) {
+        // 在双工模式下，给硬件一些时间稳定（避免快速 close/open）
+        vTaskDelay(pdMS_TO_TICKS(10));  // 10ms 延迟
+        
         esp_codec_dev_sample_info_t fs = {
             .bits_per_sample = 16,
             .channel = 4,
@@ -205,15 +279,23 @@ void BoxAudioCodec::EnableInput(bool enable) {
         }
         ESP_LOGI(TAG, "EnableInput: sample_rate=%d (output_sample_rate), channel=4, channel_mask=0x%x, input_gain=%d, input_reference=%d",
                  fs.sample_rate, fs.channel_mask, input_gain_, input_reference_);
-        ESP_ERROR_CHECK(esp_codec_dev_open(input_dev_, &fs));
+        
+        esp_err_t ret = esp_codec_dev_open(input_dev_, &fs);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to open input device: %s (0x%x)", esp_err_to_name(ret), ret);
+            return;  // 失败时不更新状态
+        }
+        
         // 设置所有通道的增益
         for (int ch = 0; ch < 4; ch++) {
             ESP_ERROR_CHECK(esp_codec_dev_set_in_channel_gain(input_dev_, ESP_CODEC_DEV_MAKE_CHANNEL_MASK(ch), input_gain_));
             ESP_LOGI(TAG, "Set channel %d gain to %d dB", ch, input_gain_);
         }
-        ESP_LOGI(TAG, "Input device opened, actual input_sample_rate_=%d", input_sample_rate_);
+        ESP_LOGI(TAG, "Input device opened successfully, actual input_sample_rate_=%d", input_sample_rate_);
     } else {
         ESP_ERROR_CHECK(esp_codec_dev_close(input_dev_));
+        // 关闭后给硬件时间稳定
+        vTaskDelay(pdMS_TO_TICKS(10));  // 10ms 延迟
     }
     AudioCodec::EnableInput(enable);
 }
@@ -224,6 +306,9 @@ void BoxAudioCodec::EnableOutput(bool enable) {
         return;
     }
     if (enable) {
+        // 在双工模式下，给硬件一些时间稳定（避免快速 close/open）
+        vTaskDelay(pdMS_TO_TICKS(10));  // 10ms 延迟
+        
         // Play 16bit 1 channel
         esp_codec_dev_sample_info_t fs = {
             .bits_per_sample = 16,
@@ -232,24 +317,52 @@ void BoxAudioCodec::EnableOutput(bool enable) {
             .sample_rate = (uint32_t)output_sample_rate_,
             .mclk_multiple = 0,
         };
-        ESP_ERROR_CHECK(esp_codec_dev_open(output_dev_, &fs));
+        
+        esp_err_t ret = esp_codec_dev_open(output_dev_, &fs);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to open output device: %s (0x%x)", esp_err_to_name(ret), ret);
+            return;  // 失败时不更新状态
+        }
+        
         ESP_ERROR_CHECK(esp_codec_dev_set_out_vol(output_dev_, output_volume_));
+        ESP_LOGI(TAG, "🔊 音频输出已启用: 采样率=%d Hz, 音量=%d/100", output_sample_rate_, output_volume_);
     } else {
+        ESP_LOGI(TAG, "🔇 音频输出已关闭");
         ESP_ERROR_CHECK(esp_codec_dev_close(output_dev_));
+        // 关闭后给硬件时间稳定
+        vTaskDelay(pdMS_TO_TICKS(10));  // 10ms 延迟
     }
     AudioCodec::EnableOutput(enable);
 }
 
 int BoxAudioCodec::Read(int16_t* dest, int samples) {
-    if (input_enabled_) {
-        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_read(input_dev_, (void*)dest, samples * sizeof(int16_t)));
+    std::lock_guard<std::mutex> lock(data_if_mutex_);
+    if (!input_enabled_) {
+        // 输入未启用，返回静音数据
+        memset(dest, 0, samples * sizeof(int16_t));
+        return samples;
+    }
+    
+    esp_err_t ret = esp_codec_dev_read(input_dev_, (void*)dest, samples * sizeof(int16_t));
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Read failed: %s (0x%x), input_enabled=%d", 
+                 esp_err_to_name(ret), ret, input_enabled_);
+        memset(dest, 0, samples * sizeof(int16_t));
     }
     return samples;
 }
 
 int BoxAudioCodec::Write(const int16_t* data, int samples) {
-    if (output_enabled_) {
-        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_write(output_dev_, (void*)data, samples * sizeof(int16_t)));
+    std::lock_guard<std::mutex> lock(data_if_mutex_);
+    if (!output_enabled_) {
+        // 输出未启用，静默丢弃数据
+        return samples;
+    }
+    
+    esp_err_t ret = esp_codec_dev_write(output_dev_, (void*)data, samples * sizeof(int16_t));
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Write failed: %s (0x%x), output_enabled=%d", 
+                 esp_err_to_name(ret), ret, output_enabled_);
     }
     return samples;
 }
