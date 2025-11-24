@@ -61,29 +61,31 @@ bool MicroWakeWord::Initialize(AudioCodec *codec, srmodel_list_t *models_list) {
 
   ESP_LOGI(TAG, "Micro Wake Word initialized");
 
-  // Configure audio frontend
+  // Configure audio frontend with relaxed noise reduction for ES7210 4-mic TDM
   this->frontend_config_.window.size_ms = FEATURE_DURATION_MS;
   this->frontend_config_.window.step_size_ms = this->features_step_size_;
   this->frontend_config_.filterbank.num_channels = PREPROCESSOR_FEATURE_SIZE;
   this->frontend_config_.filterbank.lower_band_limit = 125.0;
   this->frontend_config_.filterbank.upper_band_limit = 7500.0;
   
-  // 🔧 实验：禁用噪声抑制，查看是否是噪声处理导致的问题
-  this->frontend_config_.noise_reduction.smoothing_bits = 0;  // 禁用
-  this->frontend_config_.noise_reduction.even_smoothing = 0.0;
-  this->frontend_config_.noise_reduction.odd_smoothing = 0.0;
-  this->frontend_config_.noise_reduction.min_signal_remaining = 1.0;  // 保留全部信号
+  // Relaxed noise reduction settings (original: 0.05 was too aggressive for our hardware)
+  this->frontend_config_.noise_reduction.smoothing_bits = 10;
+  this->frontend_config_.noise_reduction.even_smoothing = 0.025;
+  this->frontend_config_.noise_reduction.odd_smoothing = 0.06;
+  this->frontend_config_.noise_reduction.min_signal_remaining = 0.40;  // Increased from 0.05
   
-  // 🔧 实验：禁用 PCAN 增益控制
-  this->frontend_config_.pcan_gain_control.enable_pcan = 0;  // 禁用 PCAN
-  this->frontend_config_.pcan_gain_control.strength = 0.0;
-  this->frontend_config_.pcan_gain_control.offset = 0.0;
-  this->frontend_config_.pcan_gain_control.gain_bits = 0;
+  // Relaxed PCAN gain control (original: 0.95 was too aggressive)
+  this->frontend_config_.pcan_gain_control.enable_pcan = 1;
+  this->frontend_config_.pcan_gain_control.strength = 0.65;  // Reduced from 0.95
+  this->frontend_config_.pcan_gain_control.offset = 80.0;
+  this->frontend_config_.pcan_gain_control.gain_bits = 21;
   
   this->frontend_config_.log_scale.enable_log = 1;
   this->frontend_config_.log_scale.scale_shift = 6;
   
-  ESP_LOGI(TAG, "🎛️  Frontend config: NOISE_REDUCTION=DISABLED, PCAN=DISABLED (testing mode)");
+  ESP_LOGI(TAG, "🎛️  Frontend config: noise.min_signal=%.2f, pcan.strength=%.2f (relaxed for 4-mic TDM)",
+           this->frontend_config_.noise_reduction.min_signal_remaining,
+           this->frontend_config_.pcan_gain_control.strength);
 
   return true;
 }
@@ -295,16 +297,22 @@ size_t MicroWakeWord::write_to_ring_buffer_(const int16_t *buffer, size_t sample
 bool MicroWakeWord::allocate_buffers_() {
   ExternalRAMAllocator<int16_t> audio_samples_allocator(ExternalRAMAllocator<int16_t>::ALLOW_FAILURE);
 
-  // 🔧 Google Audio Frontend 需要内部 SRAM，不能用 PSRAM！
+  // ⚠️ CRITICAL: Google Audio Frontend has cache coherency issues with PSRAM
+  // Must allocate preprocessor_audio_buffer from internal SRAM to avoid
+  // intermittent failures where Frontend outputs all zeros.
   if (this->preprocessor_audio_buffer_ == nullptr) {
     size_t buffer_size = this->new_samples_to_get_() * sizeof(int16_t);
-    this->preprocessor_audio_buffer_ = static_cast<int16_t*>(malloc(buffer_size));
+    // Force allocation from internal SRAM using heap_caps_malloc
+    this->preprocessor_audio_buffer_ = static_cast<int16_t*>(
+        heap_caps_malloc(buffer_size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    
     if (this->preprocessor_audio_buffer_ == nullptr) {
-      ESP_LOGE(TAG, "❌ Could not allocate the audio preprocessor's buffer from SRAM (%u bytes).", 
-               (unsigned)buffer_size);
+      ESP_LOGE(TAG, "❌ Could not allocate preprocessor buffer (%u bytes) from SRAM", 
+               (unsigned int)buffer_size);
       return false;
     }
-    ESP_LOGI(TAG, "✅ Preprocessor buffer (%u bytes) allocated from internal SRAM", (unsigned)buffer_size);
+    ESP_LOGI(TAG, "✅ Preprocessor buffer (%u bytes) allocated from internal SRAM (forced)", 
+             (unsigned int)buffer_size);
   }
 
   if (this->ring_buffer_ == nullptr) {
@@ -334,8 +342,8 @@ bool MicroWakeWord::allocate_buffers_() {
 void MicroWakeWord::deallocate_buffers_() {
   ExternalRAMAllocator<int16_t> audio_samples_allocator(ExternalRAMAllocator<int16_t>::ALLOW_FAILURE);
   
-  // 🔧 Preprocessor buffer 是用 malloc 分配的，不是 ExternalRAMAllocator
   if (this->preprocessor_audio_buffer_ != nullptr) {
+    // Preprocessor buffer was allocated with heap_caps_malloc, use free()
     free(this->preprocessor_audio_buffer_);
     this->preprocessor_audio_buffer_ = nullptr;
   }
