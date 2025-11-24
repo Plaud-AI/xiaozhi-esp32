@@ -53,7 +53,7 @@ class MicroWakeWord : public WakeWord {
   AudioCodec *codec_{nullptr};
   State state_{State::IDLE};
 
-  std::vector<WakeWordModel> wake_word_models_;
+  std::vector<std::unique_ptr<WakeWordModel>> wake_word_models_;
 
   tflite::MicroMutableOpResolver<20> streaming_op_resolver_;
 
