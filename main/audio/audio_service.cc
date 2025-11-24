@@ -14,6 +14,10 @@
 #include "wake_words/custom_wake_word.h"
 #include "wake_words/tf_custom_wake_word.h"
 #include "wake_words/micro/micro_wake_word.h"
+#if CONFIG_USE_MICRO_WAKE_WORD
+// 在文件顶部包含模型数据，避免在函数中 include 导致的临界区冲突
+#include "wake_words/micro/hey_jarvis.h"
+#endif
 #else
 #include "wake_words/esp_wake_word.h"
 #endif
@@ -724,9 +728,6 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
     } else {
         ESP_LOGI(TAG, "✅ MicroWakeWord initialized successfully");
         
-        // 包含默认模型 (hey_jarvis)
-        #include "wake_words/micro/hey_jarvis.h"
-        
         // 从配置读取参数
         float threshold = CONFIG_MICRO_WAKE_WORD_THRESHOLD / 100.0f;  // 转换为 0.0-1.0
         size_t sliding_window = CONFIG_MICRO_WAKE_WORD_SLIDING_WINDOW;
@@ -739,9 +740,9 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
         ESP_LOGI(TAG, "   - Sliding Window: %zu", sliding_window);
         ESP_LOGI(TAG, "   - Tensor Arena: %zu bytes", tensor_arena);
         
-        // 添加模型
+        // 添加模型（模型数据在文件顶部已 include）
         micro_ww->add_wake_word_model(
-            hey_jarvis_tflite,
+            hey_jarvis_tflite,  // 全局数组，无命名空间
             threshold,
             sliding_window,
             "hey jarvis",
