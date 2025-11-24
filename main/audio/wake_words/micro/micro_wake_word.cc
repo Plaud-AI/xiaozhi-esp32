@@ -2,7 +2,7 @@
 
 #include <esp_log.h>
 #include "tensorflow/lite/experimental/microfrontend/lib/frontend.h"
-#include <frontend_util.h>
+#include "tensorflow/lite/experimental/microfrontend/lib/frontend_util.h"
 #include <opus_encoder.h>
 #include <cmath>
 #include <algorithm>
