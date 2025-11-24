@@ -35,6 +35,14 @@ class StreamingModel {
   /// @brief Destroys the TFLite interpreter and frees the tensor and variable arenas' memory
   void unload_model();
 
+  /// @brief Get the probability cutoff threshold
+  /// @return The probability cutoff value
+  float get_probability_cutoff() const { return probability_cutoff_; }
+
+  /// @brief Get the current sliding window average probability
+  /// @return The average probability over the sliding window
+  float get_sliding_window_average() const;
+
  protected:
   uint8_t current_stride_step_{0};
 

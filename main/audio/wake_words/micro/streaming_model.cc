@@ -97,6 +97,19 @@ void StreamingModel::unload_model() {
   this->var_arena_ = nullptr;
 }
 
+float StreamingModel::get_sliding_window_average() const {
+  if (this->recent_streaming_probabilities_.empty()) {
+    return 0.0f;
+  }
+  
+  float sum = 0.0f;
+  for (uint8_t val : this->recent_streaming_probabilities_) {
+    sum += static_cast<float>(val) / 255.0f;
+  }
+  
+  return sum / this->recent_streaming_probabilities_.size();
+}
+
 bool StreamingModel::perform_streaming_inference(const int8_t features[PREPROCESSOR_FEATURE_SIZE]) {
   if (this->interpreter_ != nullptr) {
     TfLiteTensor *input = this->interpreter_->input(0);

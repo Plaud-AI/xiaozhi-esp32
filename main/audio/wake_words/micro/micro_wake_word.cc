@@ -74,8 +74,19 @@ bool MicroWakeWord::Initialize(AudioCodec *codec, srmodel_list_t *models_list) {
 }
 
 void MicroWakeWord::Feed(const std::vector<int16_t> &data) {
+  static uint32_t feed_count = 0;
+  feed_count++;
+  
   if (state_ != State::DETECTING_WAKE_WORD) {
+    if (feed_count % 100 == 0) {
+      ESP_LOGD(TAG, "Feed #%lu: Not in detecting state (current state: %d)", feed_count, (int)state_);
+    }
     return;
+  }
+
+  if (feed_count % 100 == 0) {
+    ESP_LOGD(TAG, "Feed #%lu: Received %zu samples, ring buffer available: %zu", 
+             feed_count, data.size(), ring_buffer_available_);
   }
 
   // Store data for wake word recording
@@ -87,20 +98,33 @@ void MicroWakeWord::Feed(const std::vector<int16_t> &data) {
   }
 
   // Write audio data to ring buffer
-  write_to_ring_buffer_(data.data(), data.size());
+  size_t written = write_to_ring_buffer_(data.data(), data.size());
+  if (written < data.size()) {
+    ESP_LOGW(TAG, "Ring buffer partial write: %zu/%zu samples", written, data.size());
+  }
 
   // Process audio and detect wake words
+  int process_count = 0;
   while (has_enough_samples_()) {
+    process_count++;
+    ESP_LOGD(TAG, "Processing audio window #%d", process_count);
     update_model_probabilities_();
     if (detect_wake_words_()) {
-      ESP_LOGI(TAG, "Wake Word '%s' Detected", detected_wake_word_.c_str());
+      ESP_LOGI(TAG, "🎯 Wake Word '%s' Detected!", detected_wake_word_.c_str());
       detected_ = true;
       set_state_(State::DETECTED);
       if (detection_callback_) {
+        ESP_LOGI(TAG, "Calling detection callback...");
         detection_callback_(detected_wake_word_);
+      } else {
+        ESP_LOGW(TAG, "Detection callback is not set!");
       }
       break;
     }
+  }
+  
+  if (process_count > 0 && feed_count % 50 == 0) {
+    ESP_LOGD(TAG, "Processed %d audio windows in this feed cycle", process_count);
   }
 }
 
@@ -109,20 +133,35 @@ void MicroWakeWord::OnWakeWordDetected(std::function<void(const std::string &)> 
 }
 
 void MicroWakeWord::Start() {
-  ESP_LOGI(TAG, "Starting MicroWakeWord detection");
+  ESP_LOGI(TAG, "🚀 Starting MicroWakeWord detection");
+  ESP_LOGI(TAG, "  - Wake word models: %zu", wake_word_models_.size());
+  ESP_LOGI(TAG, "  - Sample rate: %zu Hz", SAMPLE_RATE_HZ);
+  ESP_LOGI(TAG, "  - Feature duration: %d ms", FEATURE_DURATION_MS);
 
   if (state_ != State::IDLE) {
-    ESP_LOGW(TAG, "Wake word is already running");
+    ESP_LOGW(TAG, "Wake word is already running (state: %d)", (int)state_);
     return;
   }
 
-  if (!load_models_() || !allocate_buffers_()) {
-    ESP_LOGE(TAG, "Failed to load models or allocate buffers");
+  if (wake_word_models_.empty()) {
+    ESP_LOGE(TAG, "❌ No wake word models configured!");
+    return;
+  }
+
+  ESP_LOGI(TAG, "Loading models and allocating buffers...");
+  if (!load_models_()) {
+    ESP_LOGE(TAG, "❌ Failed to load models");
+    return;
+  }
+  
+  if (!allocate_buffers_()) {
+    ESP_LOGE(TAG, "❌ Failed to allocate buffers");
     return;
   }
 
   reset_states_();
   set_state_(State::DETECTING_WAKE_WORD);
+  ESP_LOGI(TAG, "✅ MicroWakeWord detection started successfully");
 }
 
 void MicroWakeWord::Stop() {
@@ -182,7 +221,8 @@ void MicroWakeWord::add_wake_word_model(const uint8_t *model_start, float probab
   this->wake_word_models_.push_back(
       std::make_unique<WakeWordModel>(model_start, probability_cutoff, sliding_window_average_size, wake_word,
                                        tensor_arena_size));
-  ESP_LOGI(TAG, "Added wake word model: %s", wake_word.c_str());
+  ESP_LOGI(TAG, "➕ Added wake word model: '%s' (threshold: %.3f, window: %zu, arena: %zu bytes)", 
+           wake_word.c_str(), probability_cutoff, sliding_window_average_size, tensor_arena_size);
 }
 
 void MicroWakeWord::set_state_(State state) {
@@ -263,23 +303,31 @@ void MicroWakeWord::deallocate_buffers_() {
 }
 
 bool MicroWakeWord::load_models_() {
+  ESP_LOGI(TAG, "🔧 Loading %zu wake word models...", wake_word_models_.size());
+  
   // Setup preprocessor feature generator
+  ESP_LOGI(TAG, "Initializing audio frontend (sample rate: %d Hz)...", AUDIO_SAMPLE_FREQUENCY);
   if (!FrontendPopulateState(&this->frontend_config_, &this->frontend_state_, AUDIO_SAMPLE_FREQUENCY)) {
-    ESP_LOGE(TAG, "Failed to populate frontend state");
+    ESP_LOGE(TAG, "❌ Failed to populate frontend state");
     FrontendFreeStateContents(&this->frontend_state_);
     return false;
   }
+  ESP_LOGI(TAG, "✅ Audio frontend initialized");
 
   // Setup streaming models
+  int model_idx = 0;
   for (auto &model : this->wake_word_models_) {
+    model_idx++;
+    ESP_LOGI(TAG, "Loading model #%d: '%s'...", model_idx, model->get_wake_word().c_str());
     if (!model->load_model(this->streaming_op_resolver_)) {
-      ESP_LOGE(TAG, "Failed to initialize a wake word model %s.", model->get_wake_word().c_str());
+      ESP_LOGE(TAG, "❌ Failed to initialize wake word model '%s'", model->get_wake_word().c_str());
       return false;
     }
     model->log_model_config();
+    ESP_LOGI(TAG, "✅ Model '%s' loaded successfully", model->get_wake_word().c_str());
   }
 
-  ESP_LOGI(TAG, "Models loaded successfully");
+  ESP_LOGI(TAG, "✅ All %d models loaded successfully", model_idx);
   return true;
 }
 
@@ -294,47 +342,88 @@ void MicroWakeWord::unload_models_() {
 }
 
 void MicroWakeWord::update_model_probabilities_() {
+  static uint32_t update_count = 0;
+  update_count++;
+  
   int8_t audio_features[PREPROCESSOR_FEATURE_SIZE];
 
   if (!this->generate_features_for_window_(audio_features)) {
+    if (update_count % 50 == 0) {
+      ESP_LOGD(TAG, "Update #%lu: Failed to generate features (not enough samples)", update_count);
+    }
     return;
+  }
+
+  if (update_count % 100 == 0) {
+    ESP_LOGD(TAG, "Update #%lu: Generated features, performing inference on %zu models", 
+             update_count, wake_word_models_.size());
   }
 
   // Increase the counter since the last positive detection
   this->ignore_windows_ = std::min<int16_t>(this->ignore_windows_ + 1, 0);
 
-  for (auto &model : this->wake_word_models_) {
+  for (size_t i = 0; i < this->wake_word_models_.size(); i++) {
+    auto &model = this->wake_word_models_[i];
     // Perform inference
     model->perform_streaming_inference(audio_features);
+    
+    if (update_count % 100 == 0) {
+      float prob = model->get_sliding_window_average();
+      ESP_LOGD(TAG, "  Model '%s': probability %.3f (threshold: %.3f)", 
+               model->get_wake_word().c_str(), prob, model->get_probability_cutoff());
+    }
   }
 }
 
 bool MicroWakeWord::detect_wake_words_() {
+  static uint32_t detect_count = 0;
+  detect_count++;
+  
   // Verify we have processed samples since the last positive detection
   if (this->ignore_windows_ < 0) {
+    if (detect_count % 100 == 0) {
+      ESP_LOGD(TAG, "Detect #%lu: Still in ignore period (%d windows remaining)", 
+               detect_count, -this->ignore_windows_);
+    }
     return false;
   }
 
-  for (auto &model : this->wake_word_models_) {
+  for (size_t i = 0; i < this->wake_word_models_.size(); i++) {
+    auto &model = this->wake_word_models_[i];
     if (model->determine_detected()) {
       this->detected_wake_word_ = model->get_wake_word();
+      float prob = model->get_sliding_window_average();
+      ESP_LOGI(TAG, "🎉 Model '%s' detected! (probability: %.3f, threshold: %.3f)", 
+               this->detected_wake_word_.c_str(), prob, model->get_probability_cutoff());
       return true;
     }
+  }
+
+  if (detect_count % 100 == 0) {
+    ESP_LOGV(TAG, "Detect #%lu: No wake word detected", detect_count);
   }
 
   return false;
 }
 
 bool MicroWakeWord::generate_features_for_window_(int8_t features[PREPROCESSOR_FEATURE_SIZE]) {
+  static uint32_t feature_count = 0;
+  feature_count++;
+  
   // Ensure we have enough new audio samples in the ring buffer for a full window
   if (!this->has_enough_samples_()) {
+    if (feature_count % 100 == 0) {
+      ESP_LOGD(TAG, "Feature #%lu: Not enough samples (available: %zu, needed: %d)", 
+               feature_count, ring_buffer_available_, this->new_samples_to_get_());
+    }
     return false;
   }
 
   size_t samples_read = this->read_from_ring_buffer_(this->preprocessor_audio_buffer_, this->new_samples_to_get_());
 
   if (samples_read < this->new_samples_to_get_()) {
-    ESP_LOGD(TAG, "Partial read of data: got %zu samples, needed %d", samples_read, this->new_samples_to_get_());
+    ESP_LOGW(TAG, "Feature #%lu: Partial read of data: got %zu samples, needed %d", 
+             feature_count, samples_read, this->new_samples_to_get_());
     return false;
   }
 
@@ -342,6 +431,11 @@ bool MicroWakeWord::generate_features_for_window_(int8_t features[PREPROCESSOR_F
   struct FrontendOutput frontend_output =
       FrontendProcessSamples(&this->frontend_state_, this->preprocessor_audio_buffer_, this->new_samples_to_get_(),
                              &num_samples_read);
+
+  if (feature_count % 100 == 0) {
+    ESP_LOGD(TAG, "Feature #%lu: Frontend processed %zu samples, output size: %zu", 
+             feature_count, num_samples_read, frontend_output.size);
+  }
 
   for (size_t i = 0; i < frontend_output.size; ++i) {
     // These scaling values are set to match the TFLite audio frontend int8 output.
