@@ -92,7 +92,9 @@ void Application::CheckAssetsVersion() {
             ESP_LOGI(TAG, "Built-in models loaded, calling SetModelsList");
             audio_service_.SetModelsList(models_list);
         } else {
-            ESP_LOGE(TAG, "Failed to load built-in models!");
+            ESP_LOGW(TAG, "Failed to load built-in models, but calling SetModelsList(nullptr) anyway");
+            ESP_LOGI(TAG, "MicroWakeWord and other wake word implementations don't require MultiNet models");
+            audio_service_.SetModelsList(nullptr);
         }
         return;
     }
