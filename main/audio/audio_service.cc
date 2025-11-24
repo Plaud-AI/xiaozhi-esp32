@@ -730,6 +730,10 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
     
     auto micro_ww = std::make_unique<micro_wake_word::MicroWakeWord>();
     
+    // 设置特征步长（必须在 Initialize 之前调用！）
+    micro_ww->set_features_step_size(10);  // 10ms step size to match model training
+    ESP_LOGI(TAG, "⚙️  Feature step size set to 10ms");
+    
     // 初始化（不依赖 models_list）
     if (!micro_ww->Initialize(codec_, nullptr)) {
         ESP_LOGE(TAG, "❌ Failed to initialize MicroWakeWord");

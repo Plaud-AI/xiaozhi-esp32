@@ -121,6 +121,13 @@ float StreamingModel::get_sliding_window_average() const {
 bool StreamingModel::perform_streaming_inference(const int8_t features[PREPROCESSOR_FEATURE_SIZE]) {
   if (this->interpreter_ != nullptr) {
     TfLiteTensor *input = this->interpreter_->input(0);
+    
+    static bool logged_once = false;
+    if (!logged_once) {
+      ESP_LOGI(TAG, "📐 Model input tensor shape: [%d, %d, %d]", 
+               input->dims->data[0], input->dims->data[1], input->dims->data[2]);
+      logged_once = true;
+    }
 
     std::memmove((int8_t *)(tflite::GetTensorData<int8_t>(input)) +
                      PREPROCESSOR_FEATURE_SIZE * this->current_stride_step_,
@@ -139,11 +146,19 @@ bool StreamingModel::perform_streaming_inference(const int8_t features[PREPROCES
       }
 
       TfLiteTensor *output = this->interpreter_->output(0);
+      
+      uint8_t raw_output = output->data.uint8[0];
+      static uint32_t invoke_count = 0;
+      invoke_count++;
+      if (invoke_count % 100 == 0) {
+        ESP_LOGI(TAG, "🔍 Invoke #%u: raw model output = %u (%.3f)", 
+                 (unsigned int)invoke_count, raw_output, raw_output / 255.0f);
+      }
 
       ++this->last_n_index_;
       if (this->last_n_index_ == this->sliding_window_size_)
         this->last_n_index_ = 0;
-      this->recent_streaming_probabilities_[this->last_n_index_] = output->data.uint8[0];  // probability;
+      this->recent_streaming_probabilities_[this->last_n_index_] = raw_output;
     }
     return true;
   }
