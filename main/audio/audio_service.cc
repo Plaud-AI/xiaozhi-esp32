@@ -544,7 +544,9 @@ void AudioService::EnableWakeWordDetection(bool enable) {
             wake_word_initialized_ = true;
             ESP_LOGI(TAG, "Wake word initialized successfully, feed_size=%d", wake_word_->GetFeedSize());
             
-            // 初始化完成后，尝试从 NVS 加载保存的唤醒词配置
+#if CONFIG_USE_CUSTOM_WAKE_WORD
+            // 只有 CustomWakeWord 需要从 NVS 加载配置
+            // MicroWakeWord 使用编译时配置，不需要 WakeWordManager
             ESP_LOGI(TAG, "");
             ESP_LOGI(TAG, "🔄 尝试从 NVS 加载保存的唤醒词配置...");
             auto& manager = WakeWordManager::GetInstance();
@@ -569,6 +571,10 @@ void AudioService::EnableWakeWordDetection(bool enable) {
                 ESP_LOGI(TAG, "ℹ️  NVS 中没有保存的唤醒词配置，使用默认配置");
             }
             ESP_LOGI(TAG, "");
+#else
+            // MicroWakeWord 或其他唤醒词引擎不需要 WakeWordManager
+            ESP_LOGD(TAG, "Using built-in wake word model, WakeWordManager not needed");
+#endif
         }
         wake_word_->Start();
         xEventGroupSetBits(event_group_, AS_EVENT_WAKE_WORD_RUNNING);
