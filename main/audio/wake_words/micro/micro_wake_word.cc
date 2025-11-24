@@ -68,22 +68,24 @@ bool MicroWakeWord::Initialize(AudioCodec *codec, srmodel_list_t *models_list) {
   this->frontend_config_.filterbank.lower_band_limit = 125.0;
   this->frontend_config_.filterbank.upper_band_limit = 7500.0;
   
-  // Relaxed noise reduction settings (original: 0.05 was too aggressive for our hardware)
+  // ⚠️ 关键发现：TFLite Micro C 实现的 frontend 与 TensorFlow Python frontend_op 行为不完全一致
+  // 训练时使用 min_signal_remaining=0.05，但在 ESP32 的 C 实现中会过度抑制信号
+  // 测试记录：0.15 -> zero_count=10-40/40, 0.25 -> zero_count=8-29/40，仍需放宽
   this->frontend_config_.noise_reduction.smoothing_bits = 10;
   this->frontend_config_.noise_reduction.even_smoothing = 0.025;
   this->frontend_config_.noise_reduction.odd_smoothing = 0.06;
-  this->frontend_config_.noise_reduction.min_signal_remaining = 0.40;  // Increased from 0.05
+  this->frontend_config_.noise_reduction.min_signal_remaining = 0.40;  // 进一步放宽（8倍训练值）
   
-  // Relaxed PCAN gain control (original: 0.95 was too aggressive)
+  // PCAN gain control - 进一步放宽以减少信号抑制
   this->frontend_config_.pcan_gain_control.enable_pcan = 1;
-  this->frontend_config_.pcan_gain_control.strength = 0.65;  // Reduced from 0.95
+  this->frontend_config_.pcan_gain_control.strength = 0.55;  // 进一步降低（was 0.70）
   this->frontend_config_.pcan_gain_control.offset = 80.0;
   this->frontend_config_.pcan_gain_control.gain_bits = 21;
   
   this->frontend_config_.log_scale.enable_log = 1;
   this->frontend_config_.log_scale.scale_shift = 6;
   
-  ESP_LOGI(TAG, "🎛️  Frontend config: noise.min_signal=%.2f, pcan.strength=%.2f (relaxed for 4-mic TDM)",
+  ESP_LOGI(TAG, "🎛️  Frontend config: noise.min_signal=%.2f, pcan.strength=%.2f (adjusted for TFLite Micro C impl)",
            this->frontend_config_.noise_reduction.min_signal_remaining,
            this->frontend_config_.pcan_gain_control.strength);
 
