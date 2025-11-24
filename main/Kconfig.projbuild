@@ -574,6 +574,14 @@ choice WAKE_WORD_TYPE
         help
             TensorFlow Lite based wake word detection, requires ESP32 S3 and PSRAM
 
+    config USE_MICRO_WAKE_WORD
+        bool "Micro Wake Word (TFLite Micro Streaming)"
+        depends on (IDF_TARGET_ESP32S3 || IDF_TARGET_ESP32P4) && SPIRAM
+        help
+            Lightweight TensorFlow Lite Micro based wake word detection with Google Audio Frontend.
+            Supports custom models, streaming inference, and PSRAM optimization.
+            Requires ESP32 S3/P4 and PSRAM.
+
 endchoice
 
 config CUSTOM_WAKE_WORD
@@ -598,10 +606,51 @@ config CUSTOM_WAKE_WORD_THRESHOLD
     help
         Custom Wake Word Threshold, range 1-99, the smaller the more sensitive, default 20
 
+config MICRO_WAKE_WORD_MODEL
+    string "Micro Wake Word Model Name"
+    default "hey_jarvis"
+    depends on USE_MICRO_WAKE_WORD
+    help
+        Name of the wake word model to use (without .h extension).
+        The model file should be in main/audio/wake_words/micro/
+        For example: "hey_jarvis" will include "hey_jarvis.h"
+
+config MICRO_WAKE_WORD_THRESHOLD
+    int "Micro Wake Word Detection Threshold (%)"
+    default 50
+    range 1 99
+    depends on USE_MICRO_WAKE_WORD
+    help
+        Detection probability threshold (1-99). 
+        Higher values = stricter detection, fewer false positives
+        Lower values = more sensitive, more false positives
+        Default: 50
+
+config MICRO_WAKE_WORD_SLIDING_WINDOW
+    int "Micro Wake Word Sliding Window Size"
+    default 10
+    range 5 20
+    depends on USE_MICRO_WAKE_WORD
+    help
+        Number of recent predictions to average for detection.
+        Larger window = more stable but slightly slower response
+        Smaller window = faster but may be less stable
+        Default: 10
+
+config MICRO_WAKE_WORD_TENSOR_ARENA_SIZE
+    int "Micro Wake Word Tensor Arena Size (bytes)"
+    default 30000
+    range 20000 100000
+    depends on USE_MICRO_WAKE_WORD
+    help
+        Memory allocated for TFLite model inference (in bytes).
+        Increase if model loading fails. Uses PSRAM preferentially.
+        Default: 30000 (30KB)
+
 config SEND_WAKE_WORD_DATA
     bool "Send Wake Word Data"
     default y
-    depends on USE_AFE_WAKE_WORD || USE_CUSTOM_WAKE_WORD || USE_TFLITE_WAKE_WORD
+    depends on USE_AFE_WAKE_WORD || USE_CUSTOM_WAKE_WORD || USE_TFLITE_WAKE_WORD || USE_MICRO_WAKE_WORD
     help
         Send wake word data to the server as the first message of the conversation and wait for response
 

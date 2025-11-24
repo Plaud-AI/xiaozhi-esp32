@@ -13,6 +13,7 @@
 #include "wake_words/afe_wake_word.h"
 #include "wake_words/custom_wake_word.h"
 #include "wake_words/tf_custom_wake_word.h"
+#include "wake_words/micro/micro_wake_word.h"
 #else
 #include "wake_words/esp_wake_word.h"
 #endif
@@ -709,7 +710,49 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
 
 #if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4
     
-#if CONFIG_USE_TFLITE_WAKE_WORD
+#if CONFIG_USE_MICRO_WAKE_WORD
+    ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════╗");
+    ESP_LOGI(TAG, "║  Creating MicroWakeWord (TFLite Micro Streaming)        ║");
+    ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════╝");
+    
+    auto micro_ww = std::make_unique<micro_wake_word::MicroWakeWord>();
+    
+    // 初始化（不依赖 models_list）
+    if (!micro_ww->Initialize(codec_, nullptr)) {
+        ESP_LOGE(TAG, "❌ Failed to initialize MicroWakeWord");
+        wake_word_ = nullptr;
+    } else {
+        ESP_LOGI(TAG, "✅ MicroWakeWord initialized successfully");
+        
+        // 包含默认模型 (hey_jarvis)
+        #include "wake_words/micro/hey_jarvis.h"
+        
+        // 从配置读取参数
+        float threshold = CONFIG_MICRO_WAKE_WORD_THRESHOLD / 100.0f;  // 转换为 0.0-1.0
+        size_t sliding_window = CONFIG_MICRO_WAKE_WORD_SLIDING_WINDOW;
+        size_t tensor_arena = CONFIG_MICRO_WAKE_WORD_TENSOR_ARENA_SIZE;
+        std::string model_name = CONFIG_MICRO_WAKE_WORD_MODEL;
+        
+        ESP_LOGI(TAG, "📊 Model Configuration:");
+        ESP_LOGI(TAG, "   - Model: %s", model_name.c_str());
+        ESP_LOGI(TAG, "   - Threshold: %.2f", threshold);
+        ESP_LOGI(TAG, "   - Sliding Window: %zu", sliding_window);
+        ESP_LOGI(TAG, "   - Tensor Arena: %zu bytes", tensor_arena);
+        
+        // 添加模型
+        micro_ww->add_wake_word_model(
+            hey_jarvis_tflite,
+            threshold,
+            sliding_window,
+            "hey jarvis",
+            tensor_arena
+        );
+        
+        ESP_LOGI(TAG, "✅ Wake word model loaded successfully");
+        
+        wake_word_ = std::move(micro_ww);
+    }
+#elif CONFIG_USE_TFLITE_WAKE_WORD
     ESP_LOGI(TAG, "Creating TFCustomWakeWord (TFLite implementation)");
     wake_word_ = std::make_unique<TFCustomWakeWord>();
 #elif CONFIG_USE_CUSTOM_WAKE_WORD
