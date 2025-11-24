@@ -67,16 +67,23 @@ bool MicroWakeWord::Initialize(AudioCodec *codec, srmodel_list_t *models_list) {
   this->frontend_config_.filterbank.num_channels = PREPROCESSOR_FEATURE_SIZE;
   this->frontend_config_.filterbank.lower_band_limit = 125.0;
   this->frontend_config_.filterbank.upper_band_limit = 7500.0;
-  this->frontend_config_.noise_reduction.smoothing_bits = 10;
-  this->frontend_config_.noise_reduction.even_smoothing = 0.025;
-  this->frontend_config_.noise_reduction.odd_smoothing = 0.06;
-  this->frontend_config_.noise_reduction.min_signal_remaining = 0.05;
-  this->frontend_config_.pcan_gain_control.enable_pcan = 1;
-  this->frontend_config_.pcan_gain_control.strength = 0.95;
-  this->frontend_config_.pcan_gain_control.offset = 80.0;
-  this->frontend_config_.pcan_gain_control.gain_bits = 21;
+  
+  // 🔧 实验：禁用噪声抑制，查看是否是噪声处理导致的问题
+  this->frontend_config_.noise_reduction.smoothing_bits = 0;  // 禁用
+  this->frontend_config_.noise_reduction.even_smoothing = 0.0;
+  this->frontend_config_.noise_reduction.odd_smoothing = 0.0;
+  this->frontend_config_.noise_reduction.min_signal_remaining = 1.0;  // 保留全部信号
+  
+  // 🔧 实验：禁用 PCAN 增益控制
+  this->frontend_config_.pcan_gain_control.enable_pcan = 0;  // 禁用 PCAN
+  this->frontend_config_.pcan_gain_control.strength = 0.0;
+  this->frontend_config_.pcan_gain_control.offset = 0.0;
+  this->frontend_config_.pcan_gain_control.gain_bits = 0;
+  
   this->frontend_config_.log_scale.enable_log = 1;
   this->frontend_config_.log_scale.scale_shift = 6;
+  
+  ESP_LOGI(TAG, "🎛️  Frontend config: NOISE_REDUCTION=DISABLED, PCAN=DISABLED (testing mode)");
 
   return true;
 }
@@ -288,12 +295,16 @@ size_t MicroWakeWord::write_to_ring_buffer_(const int16_t *buffer, size_t sample
 bool MicroWakeWord::allocate_buffers_() {
   ExternalRAMAllocator<int16_t> audio_samples_allocator(ExternalRAMAllocator<int16_t>::ALLOW_FAILURE);
 
+  // 🔧 Google Audio Frontend 需要内部 SRAM，不能用 PSRAM！
   if (this->preprocessor_audio_buffer_ == nullptr) {
-    this->preprocessor_audio_buffer_ = audio_samples_allocator.allocate(this->new_samples_to_get_());
+    size_t buffer_size = this->new_samples_to_get_() * sizeof(int16_t);
+    this->preprocessor_audio_buffer_ = static_cast<int16_t*>(malloc(buffer_size));
     if (this->preprocessor_audio_buffer_ == nullptr) {
-      ESP_LOGE(TAG, "Could not allocate the audio preprocessor's buffer.");
+      ESP_LOGE(TAG, "❌ Could not allocate the audio preprocessor's buffer from SRAM (%u bytes).", 
+               (unsigned)buffer_size);
       return false;
     }
+    ESP_LOGI(TAG, "✅ Preprocessor buffer (%u bytes) allocated from internal SRAM", (unsigned)buffer_size);
   }
 
   if (this->ring_buffer_ == nullptr) {
@@ -323,8 +334,9 @@ bool MicroWakeWord::allocate_buffers_() {
 void MicroWakeWord::deallocate_buffers_() {
   ExternalRAMAllocator<int16_t> audio_samples_allocator(ExternalRAMAllocator<int16_t>::ALLOW_FAILURE);
   
+  // 🔧 Preprocessor buffer 是用 malloc 分配的，不是 ExternalRAMAllocator
   if (this->preprocessor_audio_buffer_ != nullptr) {
-    audio_samples_allocator.deallocate(this->preprocessor_audio_buffer_, this->new_samples_to_get_());
+    free(this->preprocessor_audio_buffer_);
     this->preprocessor_audio_buffer_ = nullptr;
   }
 
@@ -460,12 +472,44 @@ bool MicroWakeWord::generate_features_for_window_(int8_t features[PREPROCESSOR_F
     return false;
   }
 
+  // 🔍 诊断：检查输入到 Frontend 的音频数据
+  if (feature_count % 100 == 0) {
+    int32_t input_sum = 0;
+    int16_t input_max = 0, input_min = 32767;
+    int input_zero_count = 0;
+    for (size_t i = 0; i < this->new_samples_to_get_(); ++i) {
+      int16_t sample = this->preprocessor_audio_buffer_[i];
+      input_sum += abs(sample);
+      if (sample == 0) input_zero_count++;
+      if (abs(sample) > input_max) input_max = abs(sample);
+      if (abs(sample) < abs(input_min)) input_min = sample;
+    }
+    int16_t input_avg = this->new_samples_to_get_() > 0 ? input_sum / this->new_samples_to_get_() : 0;
+    ESP_LOGI(TAG, "  🎤 Input to Frontend (count #%u): size=%u, avg=%d, min=%d, max=%d, zeros=%d/%u", 
+             feature_count, (unsigned)this->new_samples_to_get_(), 
+             input_avg, input_min, input_max, input_zero_count, (unsigned)this->new_samples_to_get_());
+  }
+
   size_t num_samples_read;
   struct FrontendOutput frontend_output =
       FrontendProcessSamples(&this->frontend_state_, this->preprocessor_audio_buffer_, this->new_samples_to_get_(),
                              &num_samples_read);
 
   if (feature_count % 100 == 0) {
+    // 🔍 关键诊断：打印 Frontend 原始输出值
+    int64_t raw_sum = 0;
+    int16_t raw_max = 0, raw_min = 32767;
+    int zero_count = 0;
+    
+    for (size_t i = 0; i < frontend_output.size; ++i) {
+      int16_t raw_val = frontend_output.values[i];
+      raw_sum += raw_val;
+      if (raw_val == 0) zero_count++;
+      if (raw_val > raw_max) raw_max = raw_val;
+      if (raw_val < raw_min) raw_min = raw_val;
+    }
+    int16_t raw_avg = frontend_output.size > 0 ? raw_sum / frontend_output.size : 0;
+    
     // Calculate feature statistics to check if we're getting valid features
     int32_t feature_sum = 0;
     int8_t feature_max = -128, feature_min = 127;
@@ -479,8 +523,11 @@ bool MicroWakeWord::generate_features_for_window_(int8_t features[PREPROCESSOR_F
     }
     int8_t feature_avg = frontend_output.size > 0 ? feature_sum / frontend_output.size : 0;
     
-    ESP_LOGI(TAG, "Feature #%lu: Frontend processed %u samples, output: %u, features [avg: %d, min: %d, max: %d]", 
-             feature_count, (unsigned)num_samples_read, (unsigned)frontend_output.size,
+    ESP_LOGI(TAG, "Feature #%lu: Frontend processed %u samples, output: %u", 
+             feature_count, (unsigned)num_samples_read, (unsigned)frontend_output.size);
+    ESP_LOGI(TAG, "  🎛️  Raw frontend values: avg=%d, min=%d, max=%d, zero_count=%d/40", 
+             raw_avg, raw_min, raw_max, zero_count);
+    ESP_LOGI(TAG, "  📊 Scaled features: avg=%d, min=%d, max=%d", 
              feature_avg, feature_min, feature_max);
   }
 

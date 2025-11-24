@@ -126,9 +126,32 @@ bool StreamingModel::perform_streaming_inference(const int8_t features[PREPROCES
     if (!logged_once) {
       ESP_LOGI(TAG, "📐 Model input tensor shape: [%d, %d, %d]", 
                input->dims->data[0], input->dims->data[1], input->dims->data[2]);
+      ESP_LOGI(TAG, "   Input quantization: scale=%f, zero_point=%d",
+               input->params.scale, input->params.zero_point);
+      
+      TfLiteTensor *output = this->interpreter_->output(0);
+      ESP_LOGI(TAG, "   Output quantization: scale=%f, zero_point=%d",
+               output->params.scale, output->params.zero_point);
       logged_once = true;
     }
 
+    // 🔍 诊断：打印输入特征统计
+    static int copy_count = 0;
+    if (++copy_count % 300 == 0) {  // 每300次打印一次
+      int32_t sum = 0, count_neg128 = 0;
+      int8_t min_val = 127, max_val = -128;
+      for (int i = 0; i < PREPROCESSOR_FEATURE_SIZE; ++i) {
+        int8_t val = features[i];
+        sum += val;
+        if (val == -128) count_neg128++;
+        if (val < min_val) min_val = val;
+        if (val > max_val) max_val = val;
+      }
+      int8_t avg = sum / PREPROCESSOR_FEATURE_SIZE;
+      ESP_LOGI(TAG, "🎯 Copying features #%d (stride step %d): avg=%d, min=%d, max=%d, -128 count=%d/40",
+               copy_count, this->current_stride_step_, avg, min_val, max_val, count_neg128);
+    }
+    
     std::memmove((int8_t *)(tflite::GetTensorData<int8_t>(input)) +
                      PREPROCESSOR_FEATURE_SIZE * this->current_stride_step_,
                  features, PREPROCESSOR_FEATURE_SIZE);
@@ -138,6 +161,26 @@ bool StreamingModel::perform_streaming_inference(const int8_t features[PREPROCES
 
     if (this->current_stride_step_ >= stride) {
       this->current_stride_step_ = 0;
+
+      // 🔍 实验：在推理前打印完整的输入张量（每 100 次）
+      static uint32_t pre_invoke_count = 0;
+      pre_invoke_count++;
+      if (pre_invoke_count % 100 == 0) {
+        ESP_LOGI(TAG, "🔬 Pre-Invoke #%u: Dumping full input tensor [stride=%d]...", pre_invoke_count, stride);
+        int8_t *input_data = tflite::GetTensorData<int8_t>(input);
+        for (int s = 0; s < stride; ++s) {
+          int32_t sum = 0;
+          int8_t min_val = 127, max_val = -128;
+          for (int i = 0; i < PREPROCESSOR_FEATURE_SIZE; ++i) {
+            int8_t val = input_data[s * PREPROCESSOR_FEATURE_SIZE + i];
+            sum += val;
+            if (val < min_val) min_val = val;
+            if (val > max_val) max_val = val;
+          }
+          int8_t avg = sum / PREPROCESSOR_FEATURE_SIZE;
+          ESP_LOGI(TAG, "   Stride[%d]: avg=%d, min=%d, max=%d", s, avg, min_val, max_val);
+        }
+      }
 
       TfLiteStatus invoke_status = this->interpreter_->Invoke();
       if (invoke_status != kTfLiteOk) {
