@@ -737,8 +737,8 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
         ESP_LOGI(TAG, "📊 Model Configuration:");
         ESP_LOGI(TAG, "   - Model: %s", model_name.c_str());
         ESP_LOGI(TAG, "   - Threshold: %.2f", threshold);
-        ESP_LOGI(TAG, "   - Sliding Window: %zu", sliding_window);
-        ESP_LOGI(TAG, "   - Tensor Arena: %zu bytes", tensor_arena);
+        ESP_LOGI(TAG, "   - Sliding Window: %u", (unsigned int)sliding_window);
+        ESP_LOGI(TAG, "   - Tensor Arena: %u bytes", (unsigned int)tensor_arena);
         
         // 添加模型（模型数据在文件顶部已 include）
         micro_ww->add_wake_word_model(
