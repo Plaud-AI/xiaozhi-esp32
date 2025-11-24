@@ -221,8 +221,8 @@ void MicroWakeWord::add_wake_word_model(const uint8_t *model_start, float probab
   this->wake_word_models_.push_back(
       std::make_unique<WakeWordModel>(model_start, probability_cutoff, sliding_window_average_size, wake_word,
                                        tensor_arena_size));
-  ESP_LOGI(TAG, "➕ Added wake word model: '%s' (threshold: %.3f, window: %zu, arena: %zu bytes)", 
-           wake_word.c_str(), probability_cutoff, sliding_window_average_size, tensor_arena_size);
+  ESP_LOGI(TAG, "➕ Added wake word model: '%s' (threshold: %.3f, window: %u, arena: %u bytes)", 
+           wake_word.c_str(), probability_cutoff, (unsigned int)sliding_window_average_size, (unsigned int)tensor_arena_size);
 }
 
 void MicroWakeWord::set_state_(State state) {
@@ -277,11 +277,24 @@ bool MicroWakeWord::allocate_buffers_() {
     }
   }
 
-  if (this->ring_buffer_.empty()) {
-    this->ring_buffer_.resize(RING_BUFFER_SIZE);
+  if (this->ring_buffer_ == nullptr) {
+    this->ring_buffer_ = audio_samples_allocator.allocate(RING_BUFFER_SIZE);
+    if (this->ring_buffer_ == nullptr) {
+      ESP_LOGE(TAG, "Could not allocate the ring buffer.");
+      return false;
+    }
+    this->ring_buffer_size_ = RING_BUFFER_SIZE;
     ring_buffer_read_pos_ = 0;
     ring_buffer_write_pos_ = 0;
     ring_buffer_available_ = 0;
+    
+    // Check allocation location
+    if (esp_ptr_external_ram(this->ring_buffer_)) {
+      ESP_LOGI(TAG, "✅ Ring buffer (%zu bytes) allocated from PSRAM", RING_BUFFER_SIZE * sizeof(int16_t));
+    } else {
+      ESP_LOGW(TAG, "⚠️  Ring buffer (%zu bytes) allocated from SRAM! This will cause memory issues.", 
+               RING_BUFFER_SIZE * sizeof(int16_t));
+    }
   }
 
   ESP_LOGI(TAG, "Buffers allocated successfully");
@@ -296,7 +309,12 @@ void MicroWakeWord::deallocate_buffers_() {
     this->preprocessor_audio_buffer_ = nullptr;
   }
 
-  this->ring_buffer_.clear();
+  if (this->ring_buffer_ != nullptr) {
+    audio_samples_allocator.deallocate(this->ring_buffer_, this->ring_buffer_size_);
+    this->ring_buffer_ = nullptr;
+    this->ring_buffer_size_ = 0;
+  }
+  
   ring_buffer_read_pos_ = 0;
   ring_buffer_write_pos_ = 0;
   ring_buffer_available_ = 0;

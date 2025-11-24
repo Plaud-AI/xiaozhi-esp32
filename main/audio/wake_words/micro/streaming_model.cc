@@ -1,5 +1,7 @@
 #include "streaming_model.h"
 #include <esp_log.h>
+#include <esp_heap_caps.h>
+#include <esp_memory_utils.h>
 #include <cstring>
 
 static const char *const TAG = "micro_wake_word";
@@ -26,6 +28,12 @@ bool StreamingModel::load_model(tflite::MicroMutableOpResolver<20> &op_resolver)
     if (this->tensor_arena_ == nullptr) {
       ESP_LOGE(TAG, "Could not allocate the streaming model's tensor arena.");
       return false;
+    }
+    // Check if allocation is from PSRAM or SRAM
+    if (esp_ptr_external_ram(this->tensor_arena_)) {
+      ESP_LOGI(TAG, "✅ Tensor Arena (%zu bytes) allocated from PSRAM", this->tensor_arena_size_);
+    } else {
+      ESP_LOGW(TAG, "⚠️  Tensor Arena (%zu bytes) allocated from SRAM! This will cause memory issues.", this->tensor_arena_size_);
     }
   }
 

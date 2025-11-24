@@ -67,8 +67,9 @@ class MicroWakeWord : public WakeWord {
 
   uint8_t features_step_size_{20};  // Default 20ms step
 
-  // Ring buffer for audio samples
-  std::vector<int16_t> ring_buffer_;
+  // Ring buffer for audio samples (allocated from PSRAM)
+  int16_t *ring_buffer_{nullptr};
+  size_t ring_buffer_size_{0};
   size_t ring_buffer_write_pos_{0};
   size_t ring_buffer_read_pos_{0};
   size_t ring_buffer_available_{0};

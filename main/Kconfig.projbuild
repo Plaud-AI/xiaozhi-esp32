@@ -639,13 +639,14 @@ config MICRO_WAKE_WORD_SLIDING_WINDOW
 
 config MICRO_WAKE_WORD_TENSOR_ARENA_SIZE
     int "Micro Wake Word Tensor Arena Size (bytes)"
-    default 30000
-    range 20000 100000
+    default 20000
+    range 10000 100000
     depends on USE_MICRO_WAKE_WORD
     help
         Memory allocated for TFLite model inference (in bytes).
         Increase if model loading fails. Uses PSRAM preferentially.
-        Default: 30000 (30KB)
+        Minimum 10000 bytes, recommended 20000-23000 bytes.
+        Default: 20000 (20KB)
 
 config SEND_WAKE_WORD_DATA
     bool "Send Wake Word Data"
