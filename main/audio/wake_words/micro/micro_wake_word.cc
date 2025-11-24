@@ -87,14 +87,23 @@ void MicroWakeWord::Feed(const std::vector<int16_t> &data) {
   
   if (state_ != State::DETECTING_WAKE_WORD) {
     if (feed_count % 100 == 0) {
-      ESP_LOGD(TAG, "Feed #%lu: Not in detecting state (current state: %d)", feed_count, (int)state_);
+      ESP_LOGI(TAG, "Feed #%lu: Not in detecting state (current state: %d)", feed_count, (int)state_);
     }
     return;
   }
 
   if (feed_count % 100 == 0) {
-    ESP_LOGD(TAG, "Feed #%lu: Received %zu samples, ring buffer available: %zu", 
-             feed_count, data.size(), ring_buffer_available_);
+    // Calculate audio level to check if we're receiving valid data
+    int32_t sum = 0;
+    int16_t max_val = 0;
+    for (size_t i = 0; i < std::min(data.size(), (size_t)100); i++) {
+      sum += abs(data[i]);
+      if (abs(data[i]) > max_val) max_val = abs(data[i]);
+    }
+    int16_t avg = data.size() > 0 ? sum / std::min(data.size(), (size_t)100) : 0;
+    
+    ESP_LOGI(TAG, "Feed #%lu: Received %u samples, ring buffer: %u, avg_level: %d, max: %d", 
+             feed_count, (unsigned)data.size(), (unsigned)ring_buffer_available_, avg, max_val);
   }
 
   // Store data for wake word recording
@@ -115,7 +124,9 @@ void MicroWakeWord::Feed(const std::vector<int16_t> &data) {
   int process_count = 0;
   while (has_enough_samples_()) {
     process_count++;
-    ESP_LOGD(TAG, "Processing audio window #%d", process_count);
+    if (feed_count % 100 == 0) {
+      ESP_LOGI(TAG, "Processing audio window #%d", process_count);
+    }
     update_model_probabilities_();
     if (detect_wake_words_()) {
       ESP_LOGI(TAG, "🎯 Wake Word '%s' Detected!", detected_wake_word_.c_str());
@@ -132,7 +143,7 @@ void MicroWakeWord::Feed(const std::vector<int16_t> &data) {
   }
   
   if (process_count > 0 && feed_count % 50 == 0) {
-    ESP_LOGD(TAG, "Processed %d audio windows in this feed cycle", process_count);
+    ESP_LOGI(TAG, "Processed %d audio windows in this feed cycle", process_count);
   }
 }
 
@@ -375,14 +386,14 @@ void MicroWakeWord::update_model_probabilities_() {
 
   if (!this->generate_features_for_window_(audio_features)) {
     if (update_count % 50 == 0) {
-      ESP_LOGD(TAG, "Update #%lu: Failed to generate features (not enough samples)", update_count);
+      ESP_LOGI(TAG, "Update #%lu: Failed to generate features (not enough samples)", update_count);
     }
     return;
   }
 
   if (update_count % 100 == 0) {
-    ESP_LOGD(TAG, "Update #%lu: Generated features, performing inference on %zu models", 
-             update_count, wake_word_models_.size());
+    ESP_LOGI(TAG, "Update #%lu: Generated features, performing inference on %u models", 
+             update_count, (unsigned)wake_word_models_.size());
   }
 
   // Increase the counter since the last positive detection
@@ -395,7 +406,7 @@ void MicroWakeWord::update_model_probabilities_() {
     
     if (update_count % 100 == 0) {
       float prob = model->get_sliding_window_average();
-      ESP_LOGD(TAG, "  Model '%s': probability %.3f (threshold: %.3f)", 
+      ESP_LOGI(TAG, "  Model '%s': probability %.3f (threshold: %.3f)", 
                model->get_wake_word().c_str(), prob, model->get_probability_cutoff());
     }
   }
@@ -408,7 +419,7 @@ bool MicroWakeWord::detect_wake_words_() {
   // Verify we have processed samples since the last positive detection
   if (this->ignore_windows_ < 0) {
     if (detect_count % 100 == 0) {
-      ESP_LOGD(TAG, "Detect #%lu: Still in ignore period (%d windows remaining)", 
+      ESP_LOGI(TAG, "Detect #%lu: Still in ignore period (%d windows remaining)", 
                detect_count, -this->ignore_windows_);
     }
     return false;
@@ -425,10 +436,6 @@ bool MicroWakeWord::detect_wake_words_() {
     }
   }
 
-  if (detect_count % 100 == 0) {
-    ESP_LOGV(TAG, "Detect #%lu: No wake word detected", detect_count);
-  }
-
   return false;
 }
 
@@ -438,18 +445,18 @@ bool MicroWakeWord::generate_features_for_window_(int8_t features[PREPROCESSOR_F
   
   // Ensure we have enough new audio samples in the ring buffer for a full window
   if (!this->has_enough_samples_()) {
-    if (feature_count % 100 == 0) {
-      ESP_LOGD(TAG, "Feature #%lu: Not enough samples (available: %zu, needed: %d)", 
-               feature_count, ring_buffer_available_, this->new_samples_to_get_());
-    }
+  if (feature_count % 100 == 0) {
+    ESP_LOGI(TAG, "Feature #%lu: Not enough samples (available: %u, needed: %u)", 
+               feature_count, (unsigned)ring_buffer_available_, (unsigned)this->new_samples_to_get_());
+  }
     return false;
   }
 
   size_t samples_read = this->read_from_ring_buffer_(this->preprocessor_audio_buffer_, this->new_samples_to_get_());
 
   if (samples_read < this->new_samples_to_get_()) {
-    ESP_LOGW(TAG, "Feature #%lu: Partial read of data: got %zu samples, needed %d", 
-             feature_count, samples_read, this->new_samples_to_get_());
+    ESP_LOGW(TAG, "Feature #%lu: Partial read of data: got %u samples, needed %u", 
+             feature_count, (unsigned)samples_read, (unsigned)this->new_samples_to_get_());
     return false;
   }
 
@@ -459,8 +466,22 @@ bool MicroWakeWord::generate_features_for_window_(int8_t features[PREPROCESSOR_F
                              &num_samples_read);
 
   if (feature_count % 100 == 0) {
-    ESP_LOGD(TAG, "Feature #%lu: Frontend processed %zu samples, output size: %zu", 
-             feature_count, num_samples_read, frontend_output.size);
+    // Calculate feature statistics to check if we're getting valid features
+    int32_t feature_sum = 0;
+    int8_t feature_max = -128, feature_min = 127;
+    for (size_t i = 0; i < frontend_output.size; ++i) {
+      int32_t value = ((frontend_output.values[i] * 256) + (666 / 2)) / 666 - 128;
+      if (value < -128) value = -128;
+      if (value > 127) value = 127;
+      feature_sum += value;
+      if (value > feature_max) feature_max = value;
+      if (value < feature_min) feature_min = value;
+    }
+    int8_t feature_avg = frontend_output.size > 0 ? feature_sum / frontend_output.size : 0;
+    
+    ESP_LOGI(TAG, "Feature #%lu: Frontend processed %u samples, output: %u, features [avg: %d, min: %d, max: %d]", 
+             feature_count, (unsigned)num_samples_read, (unsigned)frontend_output.size,
+             feature_avg, feature_min, feature_max);
   }
 
   for (size_t i = 0; i < frontend_output.size; ++i) {

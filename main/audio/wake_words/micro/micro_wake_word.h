@@ -66,7 +66,7 @@ class MicroWakeWord : public WakeWord {
   // feature slices before accepting a positive detection
   int16_t ignore_windows_{-MIN_SLICES_BEFORE_DETECTION};
 
-  uint8_t features_step_size_{20};  // Default 20ms step
+  uint8_t features_step_size_{10};  // Default 10ms step (must match model training!)
 
   // Ring buffer for audio samples (allocated from PSRAM)
   int16_t *ring_buffer_{nullptr};

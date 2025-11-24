@@ -293,11 +293,29 @@ bool BluetoothService::Initialize(const std::string& device_name) {
     
     ESP_LOGI(TAG, "初始化蓝牙服务: %s", device_name_.c_str());
 
-    // 初始化NimBLE
-    int ret = nimble_port_init();
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "NimBLE端口初始化失败: %d", ret);
-        return false;
+    // 检查 NimBLE 是否已在 main.cc 中初始化
+    // 如果 BLE 堆栈已经运行，ble_hs_is_enabled() 会返回 true
+    // 如果尚未初始化，我们需要初始化它
+    static bool nimble_port_initialized = false;
+    
+    if (!nimble_port_initialized) {
+        ESP_LOGI(TAG, "初始化 NimBLE 端口...");
+        int ret = nimble_port_init();
+        if (ret != ESP_OK) {
+            // 如果返回 ESP_ERR_INVALID_STATE，说明已经初始化过了
+            if (ret == ESP_ERR_INVALID_STATE) {
+                ESP_LOGI(TAG, "NimBLE 端口已在启动时初始化");
+                nimble_port_initialized = true;
+            } else {
+                ESP_LOGE(TAG, "NimBLE端口初始化失败: %d", ret);
+                return false;
+            }
+        } else {
+            ESP_LOGI(TAG, "✅ NimBLE 端口初始化成功");
+            nimble_port_initialized = true;
+        }
+    } else {
+        ESP_LOGI(TAG, "✓ NimBLE 端口已初始化，跳过");
     }
 
     // 初始化GAP和GATT服务
@@ -305,7 +323,7 @@ bool BluetoothService::Initialize(const std::string& device_name) {
     ble_svc_gatt_init();
 
     // 设置设备名称
-    ret = ble_svc_gap_device_name_set(device_name_.c_str());
+    int ret = ble_svc_gap_device_name_set(device_name_.c_str());
     if (ret != 0) {
         ESP_LOGE(TAG, "设置设备名称失败: %d", ret);
         return false;

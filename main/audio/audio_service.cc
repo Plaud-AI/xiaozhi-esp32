@@ -238,7 +238,16 @@ void AudioService::AudioInputTask() {
             int samples = wake_word_->GetFeedSize();
             if (samples > 0) {
                 if (ReadAudioData(data, 16000, samples)) {
-                    wake_word_->Feed(data);
+                    // If input channels is 2, extract only the mic channel (left channel)
+                    if (codec_->input_channels() == 2) {
+                        auto mono_data = std::vector<int16_t>(data.size() / 2);
+                        for (size_t i = 0, j = 0; i < mono_data.size(); ++i, j += 2) {
+                            mono_data[i] = data[j];
+                        }
+                        wake_word_->Feed(mono_data);
+                    } else {
+                        wake_word_->Feed(data);
+                    }
                     continue;
                 } else {
                     ESP_LOGW(TAG, "Failed to read audio data for wake word!");

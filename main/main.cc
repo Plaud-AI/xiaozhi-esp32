@@ -6,6 +6,7 @@
 #include <esp_event.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <nimble/nimble_port.h>
 
 #include "application.h"
 #include "system_info.h"
@@ -27,8 +28,23 @@ extern "C" void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    // BLE WiFi配网服务将在进入配网模式时按需启动（延迟启动以优先Soft AP）
-    ESP_LOGI(TAG, "BLE配网服务将在需要时启动（优先使用Soft AP配网）");
+    // ====== 提前初始化蓝牙控制器（WiFi/BLE 共存要求）======
+    // ESP32-S3 要求蓝牙控制器必须在 WiFi 之前初始化
+    // 这样可以让 WiFi 和 BLE 正确共存
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "🔧 提前初始化蓝牙控制器（WiFi/BLE共存）");
+    ESP_LOGI(TAG, "========================================");
+    
+    ret = nimble_port_init();
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "✅ 蓝牙控制器初始化成功");
+        ESP_LOGI(TAG, "   - WiFi 和 BLE 现在可以共存");
+        ESP_LOGI(TAG, "   - BLE 服务将在需要时启动");
+    } else {
+        ESP_LOGE(TAG, "❌ 蓝牙控制器初始化失败: %d", ret);
+        ESP_LOGW(TAG, "   - 将继续启动，但 BLE 功能将不可用");
+    }
+    ESP_LOGI(TAG, "========================================");
 
     // Launch the application
     auto& app = Application::GetInstance();
