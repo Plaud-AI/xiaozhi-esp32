@@ -1,8 +1,9 @@
 #include "micro_wake_word.h"
 
 #include <esp_log.h>
-#include "tensorflow/lite/experimental/microfrontend/lib/frontend.h"
-#include "tensorflow/lite/experimental/microfrontend/lib/frontend_util.h"
+// ✅ Using ESPMicroSpeechFeatures library (v1.1.0) - same as ESPHome
+#include "frontend.h"
+#include "frontend_util.h"
 #include <opus_encoder.h>
 #include <cmath>
 #include <algorithm>
