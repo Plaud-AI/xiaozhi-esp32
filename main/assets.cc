@@ -167,10 +167,15 @@ bool Assets::Apply() {
                 auto& app = Application::GetInstance();
                 app.GetAudioService().SetModelsList(models_list_);
             } else {
-                ESP_LOGE(TAG, "Failed to load built-in models!");
-#if CONFIG_USE_TFLITE_WAKE_WORD
-                // TFLite 模式下，即使没有 ESP-SR 模型也要调用 SetModelsList
-                ESP_LOGI(TAG, "TFLite wake word enabled, calling SetModelsList with NULL");
+                ESP_LOGW(TAG, "Failed to load built-in models, but calling SetModelsList(nullptr) anyway");
+#if CONFIG_USE_TFLITE_WAKE_WORD || CONFIG_USE_MICRO_WAKE_WORD
+                // TFLite/MicroWakeWord 模式下，即使没有 ESP-SR 模型也要调用 SetModelsList
+                ESP_LOGI(TAG, "TFLite/MicroWakeWord enabled, these implementations don't require MultiNet models");
+                auto& app = Application::GetInstance();
+                app.GetAudioService().SetModelsList(nullptr);
+#else
+                // 其他唤醒词实现也应该尝试初始化
+                ESP_LOGI(TAG, "Calling SetModelsList(nullptr) to allow wake word initialization");
                 auto& app = Application::GetInstance();
                 app.GetAudioService().SetModelsList(nullptr);
 #endif
