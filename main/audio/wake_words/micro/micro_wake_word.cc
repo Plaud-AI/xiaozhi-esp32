@@ -179,8 +179,9 @@ const std::string &MicroWakeWord::GetLastDetectedWakeWord() const {
 void MicroWakeWord::add_wake_word_model(const uint8_t *model_start, float probability_cutoff,
                                         size_t sliding_window_average_size, const std::string &wake_word,
                                         size_t tensor_arena_size) {
-  this->wake_word_models_.emplace_back(model_start, probability_cutoff, sliding_window_average_size, wake_word,
-                                       tensor_arena_size);
+  this->wake_word_models_.push_back(
+      std::make_unique<WakeWordModel>(model_start, probability_cutoff, sliding_window_average_size, wake_word,
+                                       tensor_arena_size));
   ESP_LOGI(TAG, "Added wake word model: %s", wake_word.c_str());
 }
 
@@ -271,11 +272,11 @@ bool MicroWakeWord::load_models_() {
 
   // Setup streaming models
   for (auto &model : this->wake_word_models_) {
-    if (!model.load_model(this->streaming_op_resolver_)) {
-      ESP_LOGE(TAG, "Failed to initialize a wake word model %s.", model.get_wake_word().c_str());
+    if (!model->load_model(this->streaming_op_resolver_)) {
+      ESP_LOGE(TAG, "Failed to initialize a wake word model %s.", model->get_wake_word().c_str());
       return false;
     }
-    model.log_model_config();
+    model->log_model_config();
   }
 
   ESP_LOGI(TAG, "Models loaded successfully");
@@ -286,7 +287,7 @@ void MicroWakeWord::unload_models_() {
   FrontendFreeStateContents(&this->frontend_state_);
 
   for (auto &model : this->wake_word_models_) {
-    model.unload_model();
+    model->unload_model();
   }
   
   ESP_LOGI(TAG, "Models unloaded");
@@ -300,11 +301,11 @@ void MicroWakeWord::update_model_probabilities_() {
   }
 
   // Increase the counter since the last positive detection
-  this->ignore_windows_ = std::min(this->ignore_windows_ + 1, (int16_t)0);
+  this->ignore_windows_ = std::min<int16_t>(this->ignore_windows_ + 1, 0);
 
   for (auto &model : this->wake_word_models_) {
     // Perform inference
-    model.perform_streaming_inference(audio_features);
+    model->perform_streaming_inference(audio_features);
   }
 }
 
@@ -315,8 +316,8 @@ bool MicroWakeWord::detect_wake_words_() {
   }
 
   for (auto &model : this->wake_word_models_) {
-    if (model.determine_detected()) {
-      this->detected_wake_word_ = model.get_wake_word();
+    if (model->determine_detected()) {
+      this->detected_wake_word_ = model->get_wake_word();
       return true;
     }
   }
@@ -380,7 +381,7 @@ void MicroWakeWord::reset_states_() {
   this->ignore_windows_ = -MIN_SLICES_BEFORE_DETECTION;
   
   for (auto &model : this->wake_word_models_) {
-    model.reset_probabilities();
+    model->reset_probabilities();
   }
   
   wake_word_pcm_.clear();
