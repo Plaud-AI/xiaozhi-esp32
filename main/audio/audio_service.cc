@@ -167,21 +167,82 @@ bool AudioService::ReadAudioData(std::vector<int16_t>& data, int sample_rate, in
                 data[j] = resampled_mic[i];
                 data[j + 1] = resampled_reference[i];
             }
+        } else if (codec_->input_channels() == 4) {
+            // 🔧 ES7210 TDM 4通道模式：先提取 Ch0，再重采样
+            auto ch0_channel = std::vector<int16_t>(data.size() / 4);
+            
+            // 🔍 调试：重采样前的信号幅度
+            static int resample_count = 0;
+            int64_t sum_before = 0;
+            int max_before = 0;
+            
+            for (size_t i = 0, j = 0; i < ch0_channel.size(); ++i, j += 4) {
+                ch0_channel[i] = data[j];  // 提取 Ch0
+                sum_before += abs(data[j]);
+                if (abs(data[j]) > max_before) max_before = abs(data[j]);
+            }
+            
+            auto resampled_ch0 = std::vector<int16_t>(input_resampler_.GetOutputSamples(ch0_channel.size()));
+            input_resampler_.Process(ch0_channel.data(), ch0_channel.size(), resampled_ch0.data());
+            
+            // 🔍 调试：重采样后的信号幅度
+            if (++resample_count % 100 == 0) {
+                int64_t sum_after = 0;
+                int max_after = 0;
+                for (const auto& val : resampled_ch0) {
+                    sum_after += abs(val);
+                    if (abs(val) > max_after) max_after = abs(val);
+                }
+                int avg_before = ch0_channel.empty() ? 0 : sum_before / ch0_channel.size();
+                int avg_after = resampled_ch0.empty() ? 0 : sum_after / resampled_ch0.size();
+                ESP_LOGI(TAG, "📊 Resample Stats (count #%d):", resample_count);
+                ESP_LOGI(TAG, "  Before (24kHz Ch0): size=%u, avg=%d, max=%d", 
+                         (unsigned int)ch0_channel.size(), avg_before, max_before);
+                ESP_LOGI(TAG, "  After  (16kHz):     size=%u, avg=%d, max=%d", 
+                         (unsigned int)resampled_ch0.size(), avg_after, max_after);
+            }
+            
+            data = std::move(resampled_ch0);
         } else {
+            // 单通道或其他情况：直接重采样
             auto resampled = std::vector<int16_t>(input_resampler_.GetOutputSamples(data.size()));
             input_resampler_.Process(data.data(), data.size(), resampled.data());
             data = std::move(resampled);
         }
     } else {
+        // 采样率匹配，不需要重采样
         data.resize(samples * codec_->input_channels());
         if (!codec_->InputData(data)) {
             return false;
+        }
+        
+        // 🔧 如果是 4 通道，提取 Ch0
+        if (codec_->input_channels() == 4) {
+            auto ch0_channel = std::vector<int16_t>(data.size() / 4);
+            for (size_t i = 0, j = 0; i < ch0_channel.size(); ++i, j += 4) {
+                ch0_channel[i] = data[j];  // 提取 Ch0
+            }
+            data = std::move(ch0_channel);
         }
     }
 
     /* Update the last input time */
     last_input_time_ = std::chrono::steady_clock::now();
     debug_statistics_.input_count++;
+    
+    // 🔍 调试：ReadAudioData 返回前的数据统计
+    static int read_count = 0;
+    if (++read_count % 100 == 0 && sample_rate == 16000) {
+        int64_t sum = 0;
+        int max_val = 0;
+        for (const auto& val : data) {
+            sum += abs(val);
+            if (abs(val) > max_val) max_val = abs(val);
+        }
+        int avg = data.empty() ? 0 : sum / data.size();
+        ESP_LOGI(TAG, "🔎 ReadAudioData返回前 (count #%d, 16kHz): size=%u, avg=%d, max=%d", 
+                 read_count, (unsigned int)data.size(), avg, max_val);
+    }
 
 #if CONFIG_USE_AUDIO_DEBUGGER
     // 音频调试：发送原始音频数据
@@ -238,16 +299,9 @@ void AudioService::AudioInputTask() {
             int samples = wake_word_->GetFeedSize();
             if (samples > 0) {
                 if (ReadAudioData(data, 16000, samples)) {
-                    // If input channels is 2, extract only the mic channel (left channel)
-                    if (codec_->input_channels() == 2) {
-                        auto mono_data = std::vector<int16_t>(data.size() / 2);
-                        for (size_t i = 0, j = 0; i < mono_data.size(); ++i, j += 2) {
-                            mono_data[i] = data[j];
-                        }
-                        wake_word_->Feed(mono_data);
-                    } else {
-                        wake_word_->Feed(data);
-                    }
+                    // ✅ ReadAudioData 已经在 4 通道模式下提取了 Ch0 并重采样
+                    // data 现在是单通道 16kHz 数据，可以直接 Feed
+                    wake_word_->Feed(data);
                     continue;
                 } else {
                     ESP_LOGW(TAG, "Failed to read audio data for wake word!");
