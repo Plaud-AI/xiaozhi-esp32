@@ -1,0 +1,28 @@
+#!/bin/bash
+# 恢复 WiFi 原配置（只保留 BLE 优化）
+
+echo "恢复 WiFi 缓冲区到原始配置..."
+
+cd "$(dirname "$0")"
+
+# 恢复 WiFi 缓冲区配置
+sed -i.bak 's/CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=2/CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=3/' sdkconfig
+sed -i.bak 's/CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=8/CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=6/' sdkconfig
+sed -i.bak 's/CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=6/CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=16/' sdkconfig
+sed -i.bak 's/CONFIG_ESP_WIFI_CACHE_TX_BUFFER_NUM=16/CONFIG_ESP_WIFI_CACHE_TX_BUFFER_NUM=32/' sdkconfig
+sed -i.bak 's/CONFIG_ESP_WIFI_MGMT_SBUF_NUM=16/CONFIG_ESP_WIFI_MGMT_SBUF_NUM=32/' sdkconfig
+sed -i.bak 's/CONFIG_ESP_WIFI_RX_MGMT_BUF_NUM_DEF=3/CONFIG_ESP_WIFI_RX_MGMT_BUF_NUM_DEF=5/' sdkconfig
+
+# 对应的 ESP32 旧配置
+sed -i.bak 's/CONFIG_ESP32_WIFI_STATIC_RX_BUFFER_NUM=2/CONFIG_ESP32_WIFI_STATIC_RX_BUFFER_NUM=3/' sdkconfig
+sed -i.bak 's/CONFIG_ESP32_WIFI_DYNAMIC_RX_BUFFER_NUM=8/CONFIG_ESP32_WIFI_DYNAMIC_RX_BUFFER_NUM=6/' sdkconfig
+sed -i.bak 's/CONFIG_ESP32_WIFI_STATIC_TX_BUFFER_NUM=6/CONFIG_ESP32_WIFI_STATIC_TX_BUFFER_NUM=16/' sdkconfig
+sed -i.bak 's/CONFIG_ESP32_WIFI_CACHE_TX_BUFFER_NUM=16/CONFIG_ESP32_WIFI_CACHE_TX_BUFFER_NUM=32/' sdkconfig
+
+rm -f sdkconfig.bak
+
+echo "✅ WiFi 配置已恢复到原始值"
+echo "✅ BLE PSRAM 优化已保留"
+echo ""
+echo "请运行: idf.py build"
+
