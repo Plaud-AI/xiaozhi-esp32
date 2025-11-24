@@ -5,7 +5,7 @@
 #include "preprocessor_settings.h"
 #include "helpers.h"
 
-#include <frontend_util.h>
+#include "tensorflow/lite/experimental/microfrontend/lib/frontend_util.h"
 #include <tensorflow/lite/core/c/common.h>
 #include <tensorflow/lite/micro/micro_interpreter.h>
 #include <tensorflow/lite/micro/micro_mutable_op_resolver.h>

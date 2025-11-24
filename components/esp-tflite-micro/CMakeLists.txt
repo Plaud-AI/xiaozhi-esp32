@@ -38,6 +38,19 @@ file(GLOB src_micro_frontend
           "${tfmicro_frontend_dir}/*.c"
           "${tfmicro_frontend_dir}/*.cc")
 
+# 排除测试文件和工具文件
+list(REMOVE_ITEM src_micro_frontend
+          "${tfmicro_frontend_dir}/frontend_main.c"
+          "${tfmicro_frontend_dir}/frontend_memmap_generator.c"
+          "${tfmicro_frontend_dir}/frontend_memmap_main.c"
+          "${tfmicro_frontend_dir}/fft_test.cc"
+          "${tfmicro_frontend_dir}/filterbank_test.cc"
+          "${tfmicro_frontend_dir}/frontend_test.cc"
+          "${tfmicro_frontend_dir}/log_scale_test.cc"
+          "${tfmicro_frontend_dir}/noise_reduction_test.cc"
+          "${tfmicro_frontend_dir}/pcan_gain_control_test.cc"
+          "${tfmicro_frontend_dir}/window_test.cc")
+
 file(GLOB srcs_tflite_bridge
           "${tfmicro_dir}/tflite_bridge/*.c"
           "${tfmicro_dir}/tflite_bridge/*.cc")

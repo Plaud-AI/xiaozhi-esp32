@@ -1,7 +1,7 @@
 #include "micro_wake_word.h"
 
 #include <esp_log.h>
-#include <frontend.h>
+#include "tensorflow/lite/experimental/microfrontend/lib/frontend.h"
 #include <frontend_util.h>
 #include <opus_encoder.h>
 #include <cmath>
