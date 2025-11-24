@@ -69,23 +69,24 @@ bool MicroWakeWord::Initialize(AudioCodec *codec, srmodel_list_t *models_list) {
   this->frontend_config_.filterbank.lower_band_limit = 125.0;
   this->frontend_config_.filterbank.upper_band_limit = 7500.0;
   
-  // 🔧 CRITICAL: These parameters MUST match the model training configuration!
-  // Using esphome standard parameters (verified working)
+  // 🚨 临时测试：完全禁用 noise reduction
+  // Frontend 行为异常（输出经常全零），先彻底禁用 noise reduction 测试
+  // 如果能识别，说明问题在 noise reduction；如果还不行，说明问题在其他地方
   this->frontend_config_.noise_reduction.smoothing_bits = 10;
-  this->frontend_config_.noise_reduction.even_smoothing = 0.025;
-  this->frontend_config_.noise_reduction.odd_smoothing = 0.06;
-  this->frontend_config_.noise_reduction.min_signal_remaining = 0.05;  // Standard training value
+  this->frontend_config_.noise_reduction.even_smoothing = 0.0;     // 禁用
+  this->frontend_config_.noise_reduction.odd_smoothing = 0.0;      // 禁用  
+  this->frontend_config_.noise_reduction.min_signal_remaining = 1.0;  // 禁用（保留100%信号）
   
-  // PCAN gain control - standard training parameters
+  // PCAN gain control - 保持标准训练参数
   this->frontend_config_.pcan_gain_control.enable_pcan = 1;
-  this->frontend_config_.pcan_gain_control.strength = 0.95;  // Standard training value
+  this->frontend_config_.pcan_gain_control.strength = 0.95;  // 标准值
   this->frontend_config_.pcan_gain_control.offset = 80.0;
   this->frontend_config_.pcan_gain_control.gain_bits = 21;
   
   this->frontend_config_.log_scale.enable_log = 1;
   this->frontend_config_.log_scale.scale_shift = 6;
   
-  ESP_LOGI(TAG, "🎛️  Frontend config: noise.min_signal=%.2f, pcan.strength=%.2f (standard training params)",
+  ESP_LOGI(TAG, "🎛️  Frontend config: noise.min_signal=%.2f, pcan.strength=%.2f [NOISE_REDUCTION_DISABLED_FOR_TEST]",
            this->frontend_config_.noise_reduction.min_signal_remaining,
            this->frontend_config_.pcan_gain_control.strength);
 

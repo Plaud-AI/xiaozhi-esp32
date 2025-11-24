@@ -24,7 +24,8 @@ enum class State {
 };
 
 // The number of audio slices to process before accepting a positive detection
-static const uint8_t MIN_SLICES_BEFORE_DETECTION = 74;
+// ⚠️ MUST match ESPHome: allows detection after sufficient samples processed
+static const uint8_t MIN_SLICES_BEFORE_DETECTION = 100;
 
 class MicroWakeWord : public WakeWord {
  public:

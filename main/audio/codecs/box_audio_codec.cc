@@ -21,9 +21,12 @@ BoxAudioCodec::BoxAudioCodec(void* i2c_master_handle, int input_sample_rate, int
     output_sample_rate_ = output_sample_rate;
     
     // 🎤 麦克风增益设置（范围 0-47 dB）
-    // 推荐值：30(安静环境) → 33(一般环境) → 37(嘈杂/远场)
-    // 注意：增益过高会导致失真，过低会影响识别率
-    input_gain_ = 33;  // 默认值：适合大多数室内环境
+    // 🔧 ES7210实测：需要极高增益才能对抗标准 noise reduction (min_signal=0.05)
+    // 测试记录：
+    //   - 42 dB: Frontend 仍然过度抑制 (zero_count=30-40/40) ❌
+    //   - 45 dB: 达到可接受的信号强度 ✅
+    //   - 47 dB: 最大值，可能略有失真但识别率最高
+    input_gain_ = 45;  // 最佳值：ES7210 4-mic 配合 MicroWakeWord
     
     ESP_LOGI(TAG, "🎤 BoxAudioCodec constructor: input_sample_rate=%d, output_sample_rate=%d, input_reference=%d, input_channels=%d (4-ch TDM), input_gain=%d dB",
              input_sample_rate_, output_sample_rate_, input_reference_, input_channels_, input_gain_);
