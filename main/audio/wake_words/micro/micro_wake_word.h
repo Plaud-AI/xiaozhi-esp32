@@ -56,6 +56,7 @@ class MicroWakeWord : public WakeWord {
   std::vector<std::unique_ptr<WakeWordModel>> wake_word_models_;
 
   tflite::MicroMutableOpResolver<20> streaming_op_resolver_;
+  bool ops_registered_{false};  // Flag to prevent duplicate registration
 
   // Audio frontend handles generating spectrogram features
   struct FrontendConfig frontend_config_;

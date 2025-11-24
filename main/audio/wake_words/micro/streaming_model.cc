@@ -11,13 +11,13 @@ namespace micro_wake_word {
 void WakeWordModel::log_model_config() {
   ESP_LOGI(TAG, "    - Wake Word: %s", this->wake_word_.c_str());
   ESP_LOGI(TAG, "      Probability cutoff: %.3f", this->probability_cutoff_);
-  ESP_LOGI(TAG, "      Sliding window size: %zu", this->sliding_window_size_);
+  ESP_LOGI(TAG, "      Sliding window size: %u", (unsigned int)this->sliding_window_size_);
 }
 
 void VADModel::log_model_config() {
   ESP_LOGI(TAG, "    - VAD Model");
   ESP_LOGI(TAG, "      Probability cutoff: %.3f", this->probability_cutoff_);
-  ESP_LOGI(TAG, "      Sliding window size: %zu", this->sliding_window_size_);
+  ESP_LOGI(TAG, "      Sliding window size: %u", (unsigned int)this->sliding_window_size_);
 }
 
 bool StreamingModel::load_model(tflite::MicroMutableOpResolver<20> &op_resolver) {
@@ -31,9 +31,9 @@ bool StreamingModel::load_model(tflite::MicroMutableOpResolver<20> &op_resolver)
     }
     // Check if allocation is from PSRAM or SRAM
     if (esp_ptr_external_ram(this->tensor_arena_)) {
-      ESP_LOGI(TAG, "✅ Tensor Arena (%zu bytes) allocated from PSRAM", this->tensor_arena_size_);
+      ESP_LOGI(TAG, "✅ Tensor Arena (%u bytes) allocated from PSRAM", (unsigned int)this->tensor_arena_size_);
     } else {
-      ESP_LOGW(TAG, "⚠️  Tensor Arena (%zu bytes) allocated from SRAM! This will cause memory issues.", this->tensor_arena_size_);
+      ESP_LOGW(TAG, "⚠️  Tensor Arena (%u bytes) allocated from SRAM! This will cause memory issues.", (unsigned int)this->tensor_arena_size_);
     }
   }
 
@@ -89,7 +89,7 @@ bool StreamingModel::load_model(tflite::MicroMutableOpResolver<20> &op_resolver)
     }
   }
 
-  ESP_LOGI(TAG, "Actual tensor arena size is %zu", this->interpreter_->arena_used_bytes());
+  ESP_LOGI(TAG, "Actual tensor arena size is %u", (unsigned int)this->interpreter_->arena_used_bytes());
 
   return true;
 }

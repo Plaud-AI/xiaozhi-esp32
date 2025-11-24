@@ -46,9 +46,17 @@ bool MicroWakeWord::Initialize(AudioCodec *codec, srmodel_list_t *models_list) {
   
   ESP_LOGI(TAG, "Initializing MicroWakeWord...");
 
-  if (!this->register_streaming_ops_(this->streaming_op_resolver_)) {
-    ESP_LOGE(TAG, "Failed to register streaming operations");
-    return false;
+  // Only register operations once
+  if (!ops_registered_) {
+    ESP_LOGI(TAG, "Registering TFLite streaming operations...");
+    if (!this->register_streaming_ops_(this->streaming_op_resolver_)) {
+      ESP_LOGE(TAG, "Failed to register streaming operations");
+      return false;
+    }
+    ops_registered_ = true;
+    ESP_LOGI(TAG, "✅ Successfully registered all TFLite streaming operations");
+  } else {
+    ESP_LOGI(TAG, "TFLite operations already registered, skipping...");
   }
 
   ESP_LOGI(TAG, "Micro Wake Word initialized");
@@ -134,8 +142,8 @@ void MicroWakeWord::OnWakeWordDetected(std::function<void(const std::string &)> 
 
 void MicroWakeWord::Start() {
   ESP_LOGI(TAG, "🚀 Starting MicroWakeWord detection");
-  ESP_LOGI(TAG, "  - Wake word models: %zu", wake_word_models_.size());
-  ESP_LOGI(TAG, "  - Sample rate: %zu Hz", SAMPLE_RATE_HZ);
+  ESP_LOGI(TAG, "  - Wake word models: %u", (unsigned int)wake_word_models_.size());
+  ESP_LOGI(TAG, "  - Sample rate: %u Hz", (unsigned int)SAMPLE_RATE_HZ);
   ESP_LOGI(TAG, "  - Feature duration: %d ms", FEATURE_DURATION_MS);
 
   if (state_ != State::IDLE) {
@@ -290,10 +298,10 @@ bool MicroWakeWord::allocate_buffers_() {
     
     // Check allocation location
     if (esp_ptr_external_ram(this->ring_buffer_)) {
-      ESP_LOGI(TAG, "✅ Ring buffer (%zu bytes) allocated from PSRAM", RING_BUFFER_SIZE * sizeof(int16_t));
+      ESP_LOGI(TAG, "✅ Ring buffer (%u bytes) allocated from PSRAM", (unsigned int)(RING_BUFFER_SIZE * sizeof(int16_t)));
     } else {
-      ESP_LOGW(TAG, "⚠️  Ring buffer (%zu bytes) allocated from SRAM! This will cause memory issues.", 
-               RING_BUFFER_SIZE * sizeof(int16_t));
+      ESP_LOGW(TAG, "⚠️  Ring buffer (%u bytes) allocated from SRAM! This will cause memory issues.", 
+               (unsigned int)(RING_BUFFER_SIZE * sizeof(int16_t)));
     }
   }
 
@@ -321,7 +329,7 @@ void MicroWakeWord::deallocate_buffers_() {
 }
 
 bool MicroWakeWord::load_models_() {
-  ESP_LOGI(TAG, "🔧 Loading %zu wake word models...", wake_word_models_.size());
+  ESP_LOGI(TAG, "🔧 Loading %u wake word models...", (unsigned int)wake_word_models_.size());
   
   // Setup preprocessor feature generator
   ESP_LOGI(TAG, "Initializing audio frontend (sample rate: %d Hz)...", AUDIO_SAMPLE_FREQUENCY);
