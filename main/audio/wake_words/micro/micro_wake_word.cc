@@ -69,24 +69,21 @@ bool MicroWakeWord::Initialize(AudioCodec *codec, srmodel_list_t *models_list) {
   this->frontend_config_.filterbank.lower_band_limit = 125.0;
   this->frontend_config_.filterbank.upper_band_limit = 7500.0;
   
-  // 🚨 临时测试：完全禁用 noise reduction
-  // Frontend 行为异常（输出经常全零），先彻底禁用 noise reduction 测试
-  // 如果能识别，说明问题在 noise reduction；如果还不行，说明问题在其他地方
+  // ✅ ESPHome standard parameters - exact copy for compatibility
   this->frontend_config_.noise_reduction.smoothing_bits = 10;
-  this->frontend_config_.noise_reduction.even_smoothing = 0.0;     // 禁用
-  this->frontend_config_.noise_reduction.odd_smoothing = 0.0;      // 禁用  
-  this->frontend_config_.noise_reduction.min_signal_remaining = 1.0;  // 禁用（保留100%信号）
+  this->frontend_config_.noise_reduction.even_smoothing = 0.025;
+  this->frontend_config_.noise_reduction.odd_smoothing = 0.06;
+  this->frontend_config_.noise_reduction.min_signal_remaining = 0.05;
   
-  // PCAN gain control - 保持标准训练参数
   this->frontend_config_.pcan_gain_control.enable_pcan = 1;
-  this->frontend_config_.pcan_gain_control.strength = 0.95;  // 标准值
+  this->frontend_config_.pcan_gain_control.strength = 0.95;
   this->frontend_config_.pcan_gain_control.offset = 80.0;
   this->frontend_config_.pcan_gain_control.gain_bits = 21;
   
   this->frontend_config_.log_scale.enable_log = 1;
   this->frontend_config_.log_scale.scale_shift = 6;
   
-  ESP_LOGI(TAG, "🎛️  Frontend config: noise.min_signal=%.2f, pcan.strength=%.2f [NOISE_REDUCTION_DISABLED_FOR_TEST]",
+  ESP_LOGI(TAG, "🎛️  Frontend config: noise.min_signal=%.2f, pcan.strength=%.2f [ESPHome Standard]",
            this->frontend_config_.noise_reduction.min_signal_remaining,
            this->frontend_config_.pcan_gain_control.strength);
 
@@ -463,15 +460,16 @@ bool MicroWakeWord::detect_wake_words_() {
 }
 
 bool MicroWakeWord::generate_features_for_window_(int8_t features[PREPROCESSOR_FEATURE_SIZE]) {
+  // ✅ ESPHome implementation - directly ported for compatibility
   static uint32_t feature_count = 0;
   feature_count++;
   
   // Ensure we have enough new audio samples in the ring buffer for a full window
   if (!this->has_enough_samples_()) {
-  if (feature_count % 100 == 0) {
-    ESP_LOGI(TAG, "Feature #%lu: Not enough samples (available: %u, needed: %u)", 
+    if (feature_count % 100 == 0) {
+      ESP_LOGI(TAG, "Feature #%lu: Not enough samples (available: %u, needed: %u)", 
                feature_count, (unsigned)ring_buffer_available_, (unsigned)this->new_samples_to_get_());
-  }
+    }
     return false;
   }
 
@@ -483,7 +481,7 @@ bool MicroWakeWord::generate_features_for_window_(int8_t features[PREPROCESSOR_F
     return false;
   }
 
-  // 🔍 诊断：检查输入到 Frontend 的音频数据
+  // 🔍 Diagnostic logging (kept for debugging)
   if (feature_count % 100 == 0) {
     int32_t input_sum = 0;
     int16_t input_max = 0, input_min = 32767;
@@ -501,13 +499,14 @@ bool MicroWakeWord::generate_features_for_window_(int8_t features[PREPROCESSOR_F
              input_avg, input_min, input_max, input_zero_count, (unsigned)this->new_samples_to_get_());
   }
 
-  size_t num_samples_read;
+  // ===== ESPHome Frontend Processing =====
+  size_t num_samples_read = 0;
   struct FrontendOutput frontend_output =
       FrontendProcessSamples(&this->frontend_state_, this->preprocessor_audio_buffer_, this->new_samples_to_get_(),
                              &num_samples_read);
 
+  // Diagnostic logging
   if (feature_count % 100 == 0) {
-    // 🔍 关键诊断：打印 Frontend 原始输出值
     int64_t raw_sum = 0;
     int16_t raw_max = 0, raw_min = 32767;
     int zero_count = 0;
@@ -521,50 +520,48 @@ bool MicroWakeWord::generate_features_for_window_(int8_t features[PREPROCESSOR_F
     }
     int16_t raw_avg = frontend_output.size > 0 ? raw_sum / frontend_output.size : 0;
     
-    // Calculate feature statistics to check if we're getting valid features
-    int32_t feature_sum = 0;
-    int8_t feature_max = -128, feature_min = 127;
-    for (size_t i = 0; i < frontend_output.size; ++i) {
-      int32_t value = ((frontend_output.values[i] * 256) + (666 / 2)) / 666 - 128;
-      if (value < -128) value = -128;
-      if (value > 127) value = 127;
-      feature_sum += value;
-      if (value > feature_max) feature_max = value;
-      if (value < feature_min) feature_min = value;
-    }
-    int8_t feature_avg = frontend_output.size > 0 ? feature_sum / frontend_output.size : 0;
-    
     ESP_LOGI(TAG, "Feature #%lu: Frontend processed %u samples, output: %u", 
              feature_count, (unsigned)num_samples_read, (unsigned)frontend_output.size);
     ESP_LOGI(TAG, "  🎛️  Raw frontend values: avg=%d, min=%d, max=%d, zero_count=%d/40", 
              raw_avg, raw_min, raw_max, zero_count);
-    ESP_LOGI(TAG, "  📊 Scaled features: avg=%d, min=%d, max=%d", 
-             feature_avg, feature_min, feature_max);
   }
 
+  // ===== ESPHome Feature Scaling (exact copy) =====
   for (size_t i = 0; i < frontend_output.size; ++i) {
     // These scaling values are set to match the TFLite audio frontend int8 output.
-    // The feature pipeline outputs 16-bit signed integers in roughly a 0 to 670 range.
-    // In training, these are then arbitrarily divided by 25.6 to get float values in the
-    // rough range of 0.0 to 26.0. This scaling is performed for historical reasons, to match
-    // up with the output of other feature generators. The process is then further complicated
-    // when we quantize the model. This means we have to scale the 0.0 to 26.0 real values to
-    // the -128 to 127 signed integer numbers. All this means that to get matching values from
-    // our integer feature output into the tensor input, we have to perform:
+    // The feature pipeline outputs 16-bit signed integers in roughly a 0 to 670
+    // range. In training, these are then arbitrarily divided by 25.6 to get
+    // float values in the rough range of 0.0 to 26.0. This scaling is performed
+    // for historical reasons, to match up with the output of other feature
+    // generators.
+    // The process is then further complicated when we quantize the model. This
+    // means we have to scale the 0.0 to 26.0 real values to the -128 (INT8_MIN)
+    // to 127 (INT8_MAX) signed integer numbers.
+    // All this means that to get matching values from our integer feature
+    // output into the tensor input, we have to perform:
     // input = (((feature / 25.6) / 26.0) * 256) - 128
     // To simplify this and perform it in 32-bit integer math, we rearrange to:
     // input = (feature * 256) / (25.6 * 26.0) - 128
     constexpr int32_t value_scale = 256;
     constexpr int32_t value_div = 666;  // 666 = 25.6 * 26.0 after rounding
     int32_t value = ((frontend_output.values[i] * value_scale) + (value_div / 2)) / value_div;
-    value -= 128;
-    if (value < -128) {
-      value = -128;
+
+    value += INT8_MIN;  // Adds a -128; i.e., subtracts 128
+    features[i] = static_cast<int8_t>(std::clamp<int32_t>(value, INT8_MIN, INT8_MAX));
+  }
+
+  // Additional diagnostic
+  if (feature_count % 100 == 0) {
+    int32_t feature_sum = 0;
+    int8_t feature_max = INT8_MIN, feature_min = INT8_MAX;
+    for (size_t i = 0; i < frontend_output.size; ++i) {
+      feature_sum += features[i];
+      if (features[i] > feature_max) feature_max = features[i];
+      if (features[i] < feature_min) feature_min = features[i];
     }
-    if (value > 127) {
-      value = 127;
-    }
-    features[i] = value;
+    int8_t feature_avg = frontend_output.size > 0 ? feature_sum / frontend_output.size : 0;
+    ESP_LOGI(TAG, "  📊 Scaled features: avg=%d, min=%d, max=%d", 
+             feature_avg, feature_min, feature_max);
   }
 
   return true;

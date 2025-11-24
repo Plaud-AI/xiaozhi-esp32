@@ -21,12 +21,12 @@ BoxAudioCodec::BoxAudioCodec(void* i2c_master_handle, int input_sample_rate, int
     output_sample_rate_ = output_sample_rate;
     
     // 🎤 麦克风增益设置（范围 0-47 dB）
-    // 🔧 ES7210实测：需要极高增益才能对抗标准 noise reduction (min_signal=0.05)
+    // 🔧 ES7210 + ESPHome标准noise reduction (0.05) 需要极高增益
     // 测试记录：
-    //   - 42 dB: Frontend 仍然过度抑制 (zero_count=30-40/40) ❌
-    //   - 45 dB: 达到可接受的信号强度 ✅
-    //   - 47 dB: 最大值，可能略有失真但识别率最高
-    input_gain_ = 45;  // 最佳值：ES7210 4-mic 配合 MicroWakeWord
+    //   - 42 dB: Frontend 输出大量零值 (zero_count=30-40/40) ❌
+    //   - 45 dB: 仍有过度抑制 ❌
+    //   - 47 dB: 最大增益，配合标准 noise reduction ✅
+    input_gain_ = 47;  // 最大值：ES7210 4-mic + ESPHome 标准参数
     
     ESP_LOGI(TAG, "🎤 BoxAudioCodec constructor: input_sample_rate=%d, output_sample_rate=%d, input_reference=%d, input_channels=%d (4-ch TDM), input_gain=%d dB",
              input_sample_rate_, output_sample_rate_, input_reference_, input_channels_, input_gain_);
