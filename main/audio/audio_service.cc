@@ -15,8 +15,9 @@
 #include "wake_words/tf_custom_wake_word.h"
 #include "wake_words/micro/micro_wake_word.h"
 #if CONFIG_USE_MICRO_WAKE_WORD
-// 在文件顶部包含模型数据，避免在函数中 include 导致的临界区冲突
-#include "wake_words/micro/hey_jarvis.h"
+// ✅ Using ESPHome official v2 model "Okay Nabu" for testing
+// Downloaded from: https://github.com/esphome/micro-wake-word-models
+#include "wake_words/micro/okay_nabu.h"
 #endif
 #else
 #include "wake_words/esp_wake_word.h"
@@ -814,11 +815,12 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
         ESP_LOGI(TAG, "   - Tensor Arena: %u bytes", (unsigned int)tensor_arena);
         
         // 添加模型（模型数据在文件顶部已 include）
+        // ✅ 使用 ESPHome 官方验证的 Okay Nabu 模型进行测试
         micro_ww->add_wake_word_model(
-            hey_jarvis_tflite,  // 全局数组，无命名空间
+            okay_nabu_tflite,  // ← ESPHome 官方模型
             threshold,
             sliding_window,
-            "hey jarvis",
+            "okay nabu",  // ← 唤醒词："Okay Nabu"
             tensor_arena
         );
         
