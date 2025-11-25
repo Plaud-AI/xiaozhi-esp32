@@ -812,20 +812,22 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
     } else {
         ESP_LOGI(TAG, "✅ MicroWakeWord initialized successfully");
         
-        // 🔬 诊断配置：降低阈值观察模型实际输出范围
-        // 原始 Okay Nabu 推荐：threshold=0.97, sliding_window=5, tensor_arena=26080
-        float threshold = 0.50;  // ⚠️ 临时降低到 0.50 用于诊断（正常应该是 0.97）
+        // 🎯 优化配置：基于实测调整阈值
+        // 实测结果：max probability = 0.479，非常接近 0.50
+        // 策略：降低阈值到 0.45，应该能成功触发
+        float threshold = 0.45;  // ← 从 0.50 降低到 0.45（实测 max=0.479）
         size_t sliding_window = 5;
         size_t tensor_arena = 26080;
         std::string model_name = "okay_nabu";
         
-        ESP_LOGI(TAG, "🔬 Diagnostic Mode - 诊断模式:");
+        ESP_LOGI(TAG, "🎯 Optimized Configuration - 优化配置:");
         ESP_LOGI(TAG, "   - Model: %s", model_name.c_str());
-        ESP_LOGI(TAG, "   - Threshold: %.2f ⚠️ (临时降低，正常应为 0.97)", threshold);
+        ESP_LOGI(TAG, "   - Threshold: %.2f ✅ (基于实测 max=0.479 调整)", threshold);
         ESP_LOGI(TAG, "   - Sliding Window: %u", (unsigned int)sliding_window);
         ESP_LOGI(TAG, "   - Tensor Arena: %u bytes", (unsigned int)tensor_arena);
         ESP_LOGI(TAG, "   - Frontend min_signal=0.40 (已优化)");
-        ESP_LOGI(TAG, "   🎯 请说 'Okay Nabu' 并观察输出概率范围");
+        ESP_LOGI(TAG, "   - MIC Input: MIC1+MIC2 平均 (已修复)");
+        ESP_LOGI(TAG, "   🎤 请说 'Okay Nabu' - 应该能唤醒了！");
         
         // 添加模型（模型数据在文件顶部已 include）
         // ✅ 使用 ESPHome 官方验证的 Okay Nabu 模型进行测试

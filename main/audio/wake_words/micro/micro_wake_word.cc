@@ -431,13 +431,13 @@ void MicroWakeWord::update_model_probabilities_() {
     
     float prob = model->get_sliding_window_average();
     
-    // 🔬 诊断模式：打印所有显著的模型输出（不仅仅是每100次）
+    // 打印模型输出
     if (update_count % 100 == 0) {
       // 定期打印
       ESP_LOGI(TAG, "  Model '%s': probability %.3f (threshold: %.3f)", 
                model->get_wake_word().c_str(), prob, model->get_probability_cutoff());
-    } else if (prob > 0.01) {
-      // 🎯 有显著输出时立即打印（诊断模式）
+    } else if (prob > 0.10) {
+      // 🎯 有显著输出时立即打印（降低噪音，只打印 > 0.10 的）
       ESP_LOGI(TAG, "  🎯 Model '%s': probability %.3f (threshold: %.3f) [说话时]", 
                model->get_wake_word().c_str(), prob, model->get_probability_cutoff());
     }
