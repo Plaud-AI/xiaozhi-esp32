@@ -802,17 +802,18 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
     } else {
         ESP_LOGI(TAG, "✅ MicroWakeWord initialized successfully");
         
-        // 从配置读取参数
-        float threshold = CONFIG_MICRO_WAKE_WORD_THRESHOLD / 100.0f;  // 转换为 0.0-1.0
-        size_t sliding_window = CONFIG_MICRO_WAKE_WORD_SLIDING_WINDOW;
-        size_t tensor_arena = CONFIG_MICRO_WAKE_WORD_TENSOR_ARENA_SIZE;
-        std::string model_name = CONFIG_MICRO_WAKE_WORD_MODEL;
+        // ✅ 使用 Okay Nabu 官方推荐配置（来自 ESPHome manifest）
+        // 来源：https://github.com/esphome/micro-wake-word-models/blob/main/models/v2/okay_nabu.json
+        float threshold = 0.97;  // Okay Nabu 官方推荐：0.97
+        size_t sliding_window = 5;  // Okay Nabu 官方推荐：5
+        size_t tensor_arena = 26080;  // Okay Nabu 官方推荐：26080
+        std::string model_name = "okay_nabu";
         
-        ESP_LOGI(TAG, "📊 Model Configuration:");
+        ESP_LOGI(TAG, "📊 Model Configuration (Okay Nabu - ESPHome官方推荐配置):");
         ESP_LOGI(TAG, "   - Model: %s", model_name.c_str());
-        ESP_LOGI(TAG, "   - Threshold: %.2f", threshold);
-        ESP_LOGI(TAG, "   - Sliding Window: %u", (unsigned int)sliding_window);
-        ESP_LOGI(TAG, "   - Tensor Arena: %u bytes", (unsigned int)tensor_arena);
+        ESP_LOGI(TAG, "   - Threshold: %.2f (官方推荐值)", threshold);
+        ESP_LOGI(TAG, "   - Sliding Window: %u (官方推荐值)", (unsigned int)sliding_window);
+        ESP_LOGI(TAG, "   - Tensor Arena: %u bytes (官方推荐值)", (unsigned int)tensor_arena);
         
         // 添加模型（模型数据在文件顶部已 include）
         // ✅ 使用 ESPHome 官方验证的 Okay Nabu 模型进行测试
