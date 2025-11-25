@@ -52,6 +52,17 @@ bool StreamingModel::load_model(tflite::MicroMutableOpResolver<20> &op_resolver)
     ESP_LOGE(TAG, "Streaming model's schema is not supported");
     return false;
   }
+  
+  // 诊断：检查模型权重的内存位置
+  uintptr_t model_addr = (uintptr_t)this->model_start_;
+  ESP_LOGI(TAG, "📍 Model weights address: 0x%08x", (unsigned int)model_addr);
+  if (esp_ptr_in_drom(this->model_start_)) {
+    ESP_LOGI(TAG, "   ✅ Located in Flash ROM (.rodata) - Zero RAM cost!");
+  } else if (esp_ptr_external_ram(this->model_start_)) {
+    ESP_LOGI(TAG, "   ⚠️  Located in PSRAM");
+  } else {
+    ESP_LOGI(TAG, "   ⚠️  Located in SRAM");
+  }
 
   if (this->interpreter_ == nullptr) {
     this->interpreter_ = make_unique<tflite::MicroInterpreter>(

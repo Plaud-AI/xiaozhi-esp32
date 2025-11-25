@@ -67,11 +67,25 @@ void AfeAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms, srm
     afe_iface_ = esp_afe_handle_from_config(afe_config);
     afe_data_ = afe_iface_->create_from_config(afe_config);
     
-    xTaskCreate([](void* arg) {
+    ESP_LOGI(TAG, "Creating AFE processor task (stack: 2560 bytes)...");
+    ESP_LOGI(TAG, "📊 Before AFE task creation: Free SRAM=%zu, Min SRAM ever=%zu", 
+             heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    
+    BaseType_t task_created = xTaskCreatePinnedToCore([](void* arg) {
         auto this_ = (AfeAudioProcessor*)arg;
+        ESP_LOGI("AfeAudioProcessor", "🚀 AFE task started on core %d!", xPortGetCoreID());
         this_->AudioProcessorTask();
         vTaskDelete(NULL);
-    }, "audio_communication", 4096, this, 3, NULL);
+    }, "afe_proc", 2560, this, 4, NULL, 0);  // 栈 2.5KB，优先级 4，固定到 Core 0
+    
+    if (task_created != pdPASS) {
+        ESP_LOGE(TAG, "❌ CRITICAL: Failed to create AFE task!");
+        ESP_LOGE(TAG, "   Free SRAM: %zu bytes", heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        ESP_LOGE(TAG, "   Free PSRAM: %zu bytes", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    } else {
+        ESP_LOGI(TAG, "✅ AFE task created (stack: 2560, core: 0, prio: 4)");
+    }
 }
 
 AfeAudioProcessor::~AfeAudioProcessor() {
@@ -139,12 +153,19 @@ void AfeAudioProcessor::AudioProcessorTask() {
     ESP_LOGI(TAG, "Audio communication task started, feed size: %d fetch size: %d",
         feed_size, fetch_size);
 
+    int loop_count = 0;
     while (true) {
         xEventGroupWaitBits(event_group_, PROCESSOR_RUNNING, pdFALSE, pdTRUE, portMAX_DELAY);
+
+        loop_count++;
+        if (loop_count % 100 == 0) {
+            ESP_LOGI(TAG, "📥 AFE fetch loop running (count=%d)...", loop_count);
+        }
 
         // 使用较短的超时时间进行 fetch，这样可以及时响应 Stop() 调用
         auto res = afe_iface_->fetch_with_delay(afe_data_, pdMS_TO_TICKS(100));
         if ((xEventGroupGetBits(event_group_) & PROCESSOR_RUNNING) == 0) {
+            ESP_LOGD(TAG, "  PROCESSOR_RUNNING bit cleared, skipping...");
             continue;
         }
         if (res == nullptr || res->ret_value == ESP_FAIL) {
@@ -172,8 +193,8 @@ void AfeAudioProcessor::AudioProcessorTask() {
             // Output complete frames when buffer has enough data
             while (output_buffer_.size() >= frame_samples_) {
                 if (output_buffer_.size() == frame_samples_) {
-                    // If buffer size equals frame size, move the entire buffer
-                    output_callback_(std::move(output_buffer_));
+                    // If buffer size equals frame size, copy the entire buffer and clear
+                    output_callback_(std::vector<int16_t>(output_buffer_.begin(), output_buffer_.end()));
                     output_buffer_.clear();
                     output_buffer_.reserve(frame_samples_);
                 } else {

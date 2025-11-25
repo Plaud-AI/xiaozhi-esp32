@@ -12,6 +12,7 @@
 
 #include "audio_processor.h"
 #include "audio_codec.h"
+#include "../wake_words/micro/helpers.h"  // For ExternalRAMAllocator
 
 class AfeAudioProcessor : public AudioProcessor {
 public:
@@ -37,7 +38,8 @@ private:
     AudioCodec* codec_ = nullptr;
     int frame_samples_ = 0;
     bool is_speaking_ = false;
-    std::vector<int16_t> output_buffer_;
+    // Use PSRAM allocator for output buffer to save SRAM
+    std::vector<int16_t, micro_wake_word::ExternalRAMAllocator<int16_t>> output_buffer_;
 
     void AudioProcessorTask();
 };

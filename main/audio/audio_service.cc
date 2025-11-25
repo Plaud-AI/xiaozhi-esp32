@@ -554,21 +554,30 @@ void AudioService::EnableWakeWordDetection(bool enable) {
 }
 
 void AudioService::EnableVoiceProcessing(bool enable) {
-    ESP_LOGD(TAG, "%s voice processing", enable ? "Enabling" : "Disabling");
+    ESP_LOGI(TAG, "%s voice processing", enable ? "Enabling" : "Disabling");
     if (enable) {
         if (!audio_processor_initialized_) {
+            ESP_LOGI(TAG, "  Initializing audio processor for the first time...");
             audio_processor_->Initialize(codec_, OPUS_FRAME_DURATION_MS, models_list_);
             audio_processor_initialized_ = true;
+        } else {
+            ESP_LOGI(TAG, "  Audio processor already initialized, just starting...");
         }
 
         /* We should make sure no audio is playing */
         ResetDecoder();
         audio_input_need_warmup_ = true;
+        ESP_LOGI(TAG, "  Calling audio_processor_->Start()...");
         audio_processor_->Start();
+        ESP_LOGI(TAG, "  Setting AS_EVENT_AUDIO_PROCESSOR_RUNNING event bit...");
         xEventGroupSetBits(event_group_, AS_EVENT_AUDIO_PROCESSOR_RUNNING);
+        ESP_LOGI(TAG, "✅ Voice processing enabled, IsRunning=%d", audio_processor_->IsRunning());
     } else {
+        ESP_LOGI(TAG, "  Calling audio_processor_->Stop()...");
         audio_processor_->Stop();
+        ESP_LOGI(TAG, "  Clearing AS_EVENT_AUDIO_PROCESSOR_RUNNING event bit...");
         xEventGroupClearBits(event_group_, AS_EVENT_AUDIO_PROCESSOR_RUNNING);
+        ESP_LOGI(TAG, "✅ Voice processing disabled");
     }
 }
 

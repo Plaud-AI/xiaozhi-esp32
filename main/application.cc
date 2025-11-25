@@ -400,11 +400,11 @@ void Application::Start() {
     audio_service_.SetCallbacks(callbacks);
 
     // Start the main event loop task with priority 3
-    // Stack size increased to 12KB (from 8KB) to handle WebSocket + OPUS encoding
+    // Stack size: 14KB (balanced for OPUS resampler + WebSocket operations)
     xTaskCreate([](void* arg) {
         ((Application*)arg)->MainEventLoop();
         vTaskDelete(NULL);
-    }, "main_event_loop", 2048 * 6, this, 3, &main_event_loop_task_handle_);
+    }, "main_event_loop", 2048 * 7, this, 3, &main_event_loop_task_handle_);
 
     /* Start the clock timer to update the status bar */
     esp_timer_start_periodic(clock_timer_handle_, 1000000);
@@ -571,23 +571,32 @@ void Application::Start() {
     });
     bool protocol_started = protocol_->Start();
 
+    ESP_LOGI(TAG, "📊 Pre-initialization memory check:");
+    SystemInfo::PrintHeapStats();
+    
 #ifdef CONFIG_ENABLE_DOLL_INTERACTION
-    // Initialize and start doll interaction system
-    ESP_LOGI(TAG, "Initializing doll interaction system...");
+    // CRITICAL: Initialize Doll system BEFORE SetDeviceState(IDLE)
+    // Because IDLE state will try to Start() it if not running
+    ESP_LOGI(TAG, "🎭 Initializing doll interaction system...");
     
     // Initialize motor controller first
     MotorController::GetInstance().Initialize();
     MotorController::GetInstance().Start();
     
-    // Initialize doll interaction manager
+    // Initialize doll interaction manager (but don't Start yet)
     DollInteractionManager::GetInstance().Initialize();
-    DollInteractionManager::GetInstance().Start();
     
-    ESP_LOGI(TAG, "Doll interaction system started successfully");
+    ESP_LOGI(TAG, "✅ Doll interaction system initialized");
 #endif
-
+    
+    // Set IDLE state to initialize MicroWakeWord while SRAM is still available
+    ESP_LOGI(TAG, "⚠️  Initializing MicroWakeWord (requires ~320 bytes SRAM)...");
+    SetDeviceState(kDeviceStateIdle);  // This will Start() Doll system if initialized
+    
+    // Wait for initialization to complete
+    vTaskDelay(pdMS_TO_TICKS(300));
+    ESP_LOGI(TAG, "📊 Post-initialization memory:");
     SystemInfo::PrintHeapStats();
-    SetDeviceState(kDeviceStateIdle);
 
     has_server_time_ = ota.HasServerTime();
     if (protocol_started) {
@@ -764,6 +773,18 @@ void Application::SetDeviceState(DeviceState state) {
             display->SetEmotion("neutral");
             audio_service_.EnableVoiceProcessing(false);
             audio_service_.EnableWakeWordDetection(true);
+            
+#ifdef CONFIG_ENABLE_DOLL_INTERACTION
+            // Restore Doll system after AFE is stopped
+            if (!DollInteractionManager::GetInstance().IsRunning()) {
+                ESP_LOGI(TAG, "🎭 Restoring Doll system (AFE stopped, SRAM available)...");
+                // ⚠️ IMPORTANT: Must call Start() only, Initialize() was already called at startup
+                // The DollInteractionManager is designed to be initialized once and can be started/stopped multiple times
+                DollInteractionManager::GetInstance().Start();
+                ESP_LOGI(TAG, "✅ Doll system restored");
+            }
+#endif
+            
             ESP_LOGI(TAG, "IDLE state setup complete");
             break;
         case kDeviceStateConnecting:
@@ -777,10 +798,26 @@ void Application::SetDeviceState(DeviceState state) {
 
             // Make sure the audio processor is running
             if (!audio_service_.IsAudioProcessorRunning()) {
-                // Send the start listening command
-                protocol_->SendStartListening(listening_mode_);
-                audio_service_.EnableVoiceProcessing(true);
+                // CRITICAL: Free SRAM before creating AFE task
+                
+#ifdef CONFIG_ENABLE_DOLL_INTERACTION
+                // Step 1: Stop Doll system to free ~4KB SRAM
+                if (DollInteractionManager::GetInstance().IsRunning()) {
+                    ESP_LOGI(TAG, "🎭 Stopping Doll system to free SRAM for AFE...");
+                    DollInteractionManager::GetInstance().Stop();
+                    ESP_LOGI(TAG, "📊 After stopping Doll: free SRAM=%zu", 
+                             heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+                }
+#endif
+                
+                // Step 2: Disable wake word to free MicroWakeWord memory
                 audio_service_.EnableWakeWordDetection(false);
+                
+                // Step 3: Send the start listening command
+                protocol_->SendStartListening(listening_mode_);
+                
+                // Step 4: Enable AFE (should now have enough SRAM)
+                audio_service_.EnableVoiceProcessing(true);
             }
             break;
         case kDeviceStateSpeaking:
