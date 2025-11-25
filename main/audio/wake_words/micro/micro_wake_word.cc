@@ -70,11 +70,13 @@ bool MicroWakeWord::Initialize(AudioCodec *codec, srmodel_list_t *models_list) {
   this->frontend_config_.filterbank.lower_band_limit = 125.0;
   this->frontend_config_.filterbank.upper_band_limit = 7500.0;
   
-  // ✅ ESPHome standard parameters - exact copy for compatibility
+  // ⚠️ Noise Reduction 参数调整：ESPHome 标准值在当前硬件上过度抑制
+  // 原始 ESPHome 值：min_signal_remaining = 0.05 导致 Frontend 输出全零
+  // 调整策略：大幅提高 min_signal_remaining 以减少抑制
   this->frontend_config_.noise_reduction.smoothing_bits = 10;
   this->frontend_config_.noise_reduction.even_smoothing = 0.025;
   this->frontend_config_.noise_reduction.odd_smoothing = 0.06;
-  this->frontend_config_.noise_reduction.min_signal_remaining = 0.05;
+  this->frontend_config_.noise_reduction.min_signal_remaining = 0.40;  // ← 从 0.05 提高到 0.40
   
   this->frontend_config_.pcan_gain_control.enable_pcan = 1;
   this->frontend_config_.pcan_gain_control.strength = 0.95;
@@ -84,9 +86,11 @@ bool MicroWakeWord::Initialize(AudioCodec *codec, srmodel_list_t *models_list) {
   this->frontend_config_.log_scale.enable_log = 1;
   this->frontend_config_.log_scale.scale_shift = 6;
   
-  ESP_LOGI(TAG, "🎛️  Frontend config: noise.min_signal=%.2f, pcan.strength=%.2f [ESPHome Standard]",
+  ESP_LOGI(TAG, "🎛️  Frontend config: noise.min_signal=%.2f (调整后), pcan.strength=%.2f",
            this->frontend_config_.noise_reduction.min_signal_remaining,
            this->frontend_config_.pcan_gain_control.strength);
+  ESP_LOGI(TAG, "   ⚠️  注意：min_signal_remaining 已从 ESPHome 标准值 0.05 提高到 %.2f",
+           this->frontend_config_.noise_reduction.min_signal_remaining);
 
   return true;
 }
@@ -425,9 +429,16 @@ void MicroWakeWord::update_model_probabilities_() {
     // Perform inference
     model->perform_streaming_inference(audio_features);
     
+    float prob = model->get_sliding_window_average();
+    
+    // 🔬 诊断模式：打印所有显著的模型输出（不仅仅是每100次）
     if (update_count % 100 == 0) {
-      float prob = model->get_sliding_window_average();
+      // 定期打印
       ESP_LOGI(TAG, "  Model '%s': probability %.3f (threshold: %.3f)", 
+               model->get_wake_word().c_str(), prob, model->get_probability_cutoff());
+    } else if (prob > 0.01) {
+      // 🎯 有显著输出时立即打印（诊断模式）
+      ESP_LOGI(TAG, "  🎯 Model '%s': probability %.3f (threshold: %.3f) [说话时]", 
                model->get_wake_word().c_str(), prob, model->get_probability_cutoff());
     }
   }

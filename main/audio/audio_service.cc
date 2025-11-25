@@ -802,18 +802,20 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
     } else {
         ESP_LOGI(TAG, "✅ MicroWakeWord initialized successfully");
         
-        // ✅ 使用 Okay Nabu 官方推荐配置（来自 ESPHome manifest）
-        // 来源：https://github.com/esphome/micro-wake-word-models/blob/main/models/v2/okay_nabu.json
-        float threshold = 0.97;  // Okay Nabu 官方推荐：0.97
-        size_t sliding_window = 5;  // Okay Nabu 官方推荐：5
-        size_t tensor_arena = 26080;  // Okay Nabu 官方推荐：26080
+        // 🔬 诊断配置：降低阈值观察模型实际输出范围
+        // 原始 Okay Nabu 推荐：threshold=0.97, sliding_window=5, tensor_arena=26080
+        float threshold = 0.50;  // ⚠️ 临时降低到 0.50 用于诊断（正常应该是 0.97）
+        size_t sliding_window = 5;
+        size_t tensor_arena = 26080;
         std::string model_name = "okay_nabu";
         
-        ESP_LOGI(TAG, "📊 Model Configuration (Okay Nabu - ESPHome官方推荐配置):");
+        ESP_LOGI(TAG, "🔬 Diagnostic Mode - 诊断模式:");
         ESP_LOGI(TAG, "   - Model: %s", model_name.c_str());
-        ESP_LOGI(TAG, "   - Threshold: %.2f (官方推荐值)", threshold);
-        ESP_LOGI(TAG, "   - Sliding Window: %u (官方推荐值)", (unsigned int)sliding_window);
-        ESP_LOGI(TAG, "   - Tensor Arena: %u bytes (官方推荐值)", (unsigned int)tensor_arena);
+        ESP_LOGI(TAG, "   - Threshold: %.2f ⚠️ (临时降低，正常应为 0.97)", threshold);
+        ESP_LOGI(TAG, "   - Sliding Window: %u", (unsigned int)sliding_window);
+        ESP_LOGI(TAG, "   - Tensor Arena: %u bytes", (unsigned int)tensor_arena);
+        ESP_LOGI(TAG, "   - Frontend min_signal=0.40 (已优化)");
+        ESP_LOGI(TAG, "   🎯 请说 'Okay Nabu' 并观察输出概率范围");
         
         // 添加模型（模型数据在文件顶部已 include）
         // ✅ 使用 ESPHome 官方验证的 Okay Nabu 模型进行测试
