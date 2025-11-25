@@ -168,83 +168,17 @@ bool AudioService::ReadAudioData(std::vector<int16_t>& data, int sample_rate, in
                 data[j] = resampled_mic[i];
                 data[j + 1] = resampled_reference[i];
             }
-        } else if (codec_->input_channels() == 4) {
-            // 🎯 **ES7210 TDM 4通道的正确处理**（基于本项目配置）
-            // 
-            // ⚠️ 重要：本项目与官方 esp-skainet 配置不同！
-            // 
-            // 本项目 input_format = "MMMR" (见 afe_audio_processor.cc):
-            //   - SLOT0 = M (MIC1 物理麦克风) ✅
-            //   - SLOT1 = M (MIC2 物理麦克风) ✅
-            //   - SLOT2 = M (MIC3 空/未焊接) ❌
-            //   - SLOT3 = R (Reference 参考通道) ❌
-            // 
-            // 官方 esp-skainet input_format = "RMNM" (不同！):
-            //   - SLOT0 = R, SLOT1 = M, SLOT2 = N, SLOT3 = M
-            // 
-            // ✅ 正确做法：混音 SLOT0 (MIC1) + SLOT1 (MIC2)
-            
-            auto mixed_channel = std::vector<int16_t>(data.size() / 4);
-            
-            static int resample_count = 0;
-            int64_t sum_before = 0;
-            int max_before = 0;
-            
-            // 🎯 混音 SLOT0 (MIC1) + SLOT1 (MIC2)
-            for (size_t i = 0, j = 0; i < mixed_channel.size(); ++i, j += 4) {
-                int32_t sum = (int32_t)data[j] + data[j+1];  // MIC1 (SLOT0) + MIC2 (SLOT1)
-                mixed_channel[i] = sum / 2;  // 平均两个物理麦克风
-                sum_before += abs(mixed_channel[i]);
-                if (abs(mixed_channel[i]) > max_before) max_before = abs(mixed_channel[i]);
-            }
-            
-            auto resampled_mixed = std::vector<int16_t>(input_resampler_.GetOutputSamples(mixed_channel.size()));
-            input_resampler_.Process(mixed_channel.data(), mixed_channel.size(), resampled_mixed.data());
-            
-            // 🔍 调试：重采样后的信号幅度
-            if (++resample_count % 100 == 0) {
-                int64_t sum_after = 0;
-                int max_after = 0;
-                for (const auto& val : resampled_mixed) {
-                    sum_after += abs(val);
-                    if (abs(val) > max_after) max_after = abs(val);
-                }
-                int avg_before = mixed_channel.empty() ? 0 : sum_before / mixed_channel.size();
-                int avg_after = resampled_mixed.empty() ? 0 : sum_after / resampled_mixed.size();
-                ESP_LOGI(TAG, "📊 Resample Stats (count #%d):", resample_count);
-                ESP_LOGI(TAG, "  Before (24kHz SLOT0+1): size=%u, avg=%d, max=%d ✅ MIC1+MIC2平均（本项目MMMR）", 
-                         (unsigned int)mixed_channel.size(), avg_before, max_before);
-                ESP_LOGI(TAG, "  After  (16kHz):         size=%u, avg=%d, max=%d", 
-                         (unsigned int)resampled_mixed.size(), avg_after, max_after);
-            }
-            
-            data = std::move(resampled_mixed);
         } else {
-            // 单通道或其他情况：直接重采样
+            // ✅ 原始逻辑：其他情况直接重采样（不做通道提取）
             auto resampled = std::vector<int16_t>(input_resampler_.GetOutputSamples(data.size()));
             input_resampler_.Process(data.data(), data.size(), resampled.data());
             data = std::move(resampled);
         }
     } else {
-        // 采样率匹配，不需要重采样
+        // ✅ 原始逻辑：采样率匹配，直接返回所有通道的数据
         data.resize(samples * codec_->input_channels());
         if (!codec_->InputData(data)) {
             return false;
-        }
-        
-        // 🔧 如果是 4 通道 TDM 模式，混音两个物理麦克风
-        if (codec_->input_channels() == 4) {
-            // ✅ 正确处理：基于本项目配置 "MMMR"
-            //    - SLOT0 = MIC1 ✅
-            //    - SLOT1 = MIC2 ✅
-            //    - SLOT2 = 空 ❌
-            //    - SLOT3 = 参考通道（扬声器回放）❌
-            auto mixed_channel = std::vector<int16_t>(data.size() / 4);
-            for (size_t i = 0, j = 0; i < mixed_channel.size(); ++i, j += 4) {
-                int32_t sum = (int32_t)data[j] + data[j+1];  // MIC1 (SLOT0) + MIC2 (SLOT1)
-                mixed_channel[i] = sum / 2;  // 平均
-            }
-            data = std::move(mixed_channel);
         }
     }
 
@@ -262,8 +196,9 @@ bool AudioService::ReadAudioData(std::vector<int16_t>& data, int sample_rate, in
             if (abs(val) > max_val) max_val = abs(val);
         }
         int avg = data.empty() ? 0 : sum / data.size();
-        ESP_LOGI(TAG, "🔎 ReadAudioData返回前 (count #%d, 16kHz): size=%u, avg=%d, max=%d", 
-                 read_count, (unsigned int)data.size(), avg, max_val);
+        const char* format_desc = (codec_->input_channels() == 2) ? "2-ch交织" : "单通道";
+        ESP_LOGI(TAG, "🔎 ReadAudioData返回前 (count #%d, 16kHz %s): size=%u, avg=%d, max=%d", 
+                 read_count, format_desc, (unsigned int)data.size(), avg, max_val);
     }
 
 #if CONFIG_USE_AUDIO_DEBUGGER
@@ -321,8 +256,14 @@ void AudioService::AudioInputTask() {
             int samples = wake_word_->GetFeedSize();
             if (samples > 0) {
                 if (ReadAudioData(data, 16000, samples)) {
-                    // ✅ ReadAudioData 已经在 4 通道模式下提取了 Ch0 并重采样
-                    // data 现在是单通道 16kHz 数据，可以直接 Feed
+                    // 🔧 如果是2通道，需要提取左声道（麦克风通道）
+                    if (codec_->input_channels() == 2) {
+                        auto mono_data = std::vector<int16_t>(data.size() / 2);
+                        for (size_t i = 0, j = 0; i < mono_data.size(); ++i, j += 2) {
+                            mono_data[i] = data[j];  // 提取 Ch0 (左声道/麦克风)
+                        }
+                        data = std::move(mono_data);
+                    }
                     wake_word_->Feed(data);
                     continue;
                 } else {
@@ -829,11 +770,9 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
         //    - 错误做法：(SLOT0 + SLOT1) / 2 ❌
         //    - 正确做法：只用 SLOT0（主麦克风）✅
         // 
-        // 实测概率峰值：0.433（信号幅度 avg=47, max=553）
-        // 相比之前（avg=224, max=937 → 0.479），当前信号幅度约降低 5 倍
-        // 策略：调整阈值以适应当前信号强度，增大滑动窗口平滑波动
-        float threshold = 0.38;  // 根据实测峰值 0.433 调整（留 10% 余量）
-        size_t sliding_window = 7;  // 增大滑动窗口以平滑概率波动
+        // ✅ 恢复原始配置：使用 okay_nabu 官方推荐值
+        float threshold = 0.50;  // 官方推荐阈值
+        size_t sliding_window = 5;  // 官方推荐滑动窗口
         size_t tensor_arena = 26080;
         std::string model_name = "okay nabu";
         

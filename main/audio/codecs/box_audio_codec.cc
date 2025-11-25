@@ -15,20 +15,15 @@ BoxAudioCodec::BoxAudioCodec(void* i2c_master_handle, int input_sample_rate, int
     gpio_num_t pa_pin, uint8_t es8311_addr, uint8_t es7210_addr, bool input_reference) {
     duplex_ = true; // 是否双工
     input_reference_ = input_reference; // 是否使用参考输入，实现回声消除
-    // 🔧 ES7210 在 TDM 模式下配置为 4 通道，这里必须匹配硬件配置
-    input_channels_ = 4;  // ES7210 TDM 模式固定为 4 通道
+    // ✅ 恢复原始配置：2 通道模式（1 麦克风 + 1 参考通道）
+    input_channels_ = input_reference_ ? 2 : 1;  // 原始逻辑
     input_sample_rate_ = input_sample_rate;
     output_sample_rate_ = output_sample_rate;
     
-    // 🎤 麦克风增益设置（范围 0-47 dB）
-    // 🔧 ES7210 + ESPHome标准noise reduction (0.05) 需要极高增益
-    // 测试记录：
-    //   - 42 dB: Frontend 输出大量零值 (zero_count=30-40/40) ❌
-    //   - 45 dB: 仍有过度抑制 ❌
-    //   - 47 dB: 最大增益，配合标准 noise reduction ✅
-    input_gain_ = 47;  // 最大值：ES7210 4-mic + ESPHome 标准参数
+    // 🎤 麦克风增益设置（恢复原始值）
+    input_gain_ = 30;  // 原始工程的增益
     
-    ESP_LOGI(TAG, "🎤 BoxAudioCodec constructor: input_sample_rate=%d, output_sample_rate=%d, input_reference=%d, input_channels=%d (4-ch TDM), input_gain=%.1f dB",
+    ESP_LOGI(TAG, "🎤 BoxAudioCodec constructor: input_sample_rate=%d, output_sample_rate=%d, input_reference=%d, input_channels=%d, input_gain=%.1f dB",
              input_sample_rate_, output_sample_rate_, input_reference_, input_channels_, input_gain_);
 
     CreateDuplexChannels(mclk, bclk, ws, dout, din);
@@ -102,22 +97,20 @@ BoxAudioCodec::BoxAudioCodec(void* i2c_master_handle, int input_sample_rate, int
     }
     esp_codec_dev_sample_info_t input_fs = {
         .bits_per_sample = 16,
-        .channel = 4,
+        .channel = (uint8_t)input_channels_,
         .channel_mask = input_channel_mask,
-        .sample_rate = (uint32_t)input_sample_rate_,  // ✅ 修复：应该用 input_sample_rate_ 而不是 output_sample_rate_
+        .sample_rate = (uint32_t)input_sample_rate_,
         .mclk_multiple = 0,
     };
     esp_err_t ret = esp_codec_dev_open(input_dev_, &input_fs);
     if (ret == ESP_OK) {
-        // 设置所有通道的增益，并验证是否设置成功
-        ESP_LOGI(TAG, "🔧 Setting input gain to %.1f dB for all 4 channels...", (float)input_gain_);
-        for (int ch = 0; ch < 4; ch++) {
-            esp_err_t gain_ret = esp_codec_dev_set_in_channel_gain(input_dev_, ESP_CODEC_DEV_MAKE_CHANNEL_MASK(ch), (float)input_gain_);
-            if (gain_ret == ESP_OK) {
-                ESP_LOGI(TAG, "✅ Channel %d gain set to %.1f dB", ch, (float)input_gain_);
-            } else {
-                ESP_LOGW(TAG, "⚠️ Channel %d gain set failed: %s", ch, esp_err_to_name(gain_ret));
-            }
+        // 设置通道增益
+        ESP_LOGI(TAG, "🔧 Setting input gain to %.1f dB...", (float)input_gain_);
+        esp_err_t gain_ret = esp_codec_dev_set_in_channel_gain(input_dev_, ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0), (float)input_gain_);
+        if (gain_ret == ESP_OK) {
+            ESP_LOGI(TAG, "✅ Input gain set to %.1f dB", (float)input_gain_);
+        } else {
+            ESP_LOGW(TAG, "⚠️ Input gain set failed: %s", esp_err_to_name(gain_ret));
         }
         input_device_permanently_open_ = true;
         ESP_LOGI(TAG, "Input device opened and will remain open (duplex mode optimization)");
@@ -283,16 +276,14 @@ void BoxAudioCodec::EnableInput(bool enable) {
         
         esp_codec_dev_sample_info_t fs = {
             .bits_per_sample = 16,
-            .channel = 4,
+            .channel = (uint8_t)input_channels_,
             .channel_mask = ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0),
-            .sample_rate = (uint32_t)input_sample_rate_,  // ✅ 修复：应该用 input_sample_rate_
+            .sample_rate = (uint32_t)input_sample_rate_,
             .mclk_multiple = 0,
         };
         if (input_reference_) {
             fs.channel_mask |= ESP_CODEC_DEV_MAKE_CHANNEL_MASK(1);
         }
-        ESP_LOGI(TAG, "EnableInput: sample_rate=%d (input_sample_rate_), channel=4, channel_mask=0x%x, input_gain=%d, input_reference=%d",
-                 fs.sample_rate, fs.channel_mask, input_gain_, input_reference_);
         
         esp_err_t ret = esp_codec_dev_open(input_dev_, &fs);
         if (ret != ESP_OK) {
@@ -300,16 +291,14 @@ void BoxAudioCodec::EnableInput(bool enable) {
             return;  // 失败时不更新状态
         }
         
-        // 设置所有通道的增益，并验证是否设置成功
-        for (int ch = 0; ch < 4; ch++) {
-            esp_err_t ret = esp_codec_dev_set_in_channel_gain(input_dev_, ESP_CODEC_DEV_MAKE_CHANNEL_MASK(ch), input_gain_);
-            if (ret == ESP_OK) {
-                ESP_LOGI(TAG, "✅ Channel %d gain set to %d dB", ch, input_gain_);
-            } else {
-                ESP_LOGW(TAG, "⚠️ Channel %d gain set failed: %s", ch, esp_err_to_name(ret));
-            }
+        // 设置通道增益
+        ret = esp_codec_dev_set_in_channel_gain(input_dev_, ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0), input_gain_);
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "✅ Input gain set to %.1f dB", input_gain_);
+        } else {
+            ESP_LOGW(TAG, "⚠️ Input gain set failed: %s", esp_err_to_name(ret));
         }
-        ESP_LOGI(TAG, "Input device opened successfully, actual input_sample_rate_=%d", input_sample_rate_);
+        ESP_LOGI(TAG, "Input device opened successfully");
     } else {
         ESP_ERROR_CHECK(esp_codec_dev_close(input_dev_));
         // 关闭后给硬件时间稳定
