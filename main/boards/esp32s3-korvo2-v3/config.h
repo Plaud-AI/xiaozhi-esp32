@@ -6,6 +6,7 @@
 
 #define AUDIO_INPUT_SAMPLE_RATE  24000  // 恢复 24kHz（ES7210 最佳工作频率）
 #define AUDIO_OUTPUT_SAMPLE_RATE 24000  // 恢复 24kHz（双工模式要求一致）
+#define AUDIO_DEFAULT_OUTPUT_VOLUME 80  // 默认音量 80%
 
 #define AUDIO_INPUT_REFERENCE    true
 

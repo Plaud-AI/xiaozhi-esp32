@@ -144,26 +144,41 @@ private:
 
     void ChangeVol(int val) {
         auto codec = GetAudioCodec();
-        auto volume = codec->output_volume() + val;
+        int old_volume = codec->output_volume();
+        auto volume = old_volume + val;
+        
+        ESP_LOGI(TAG, "🔊 音量调节: %d %s %d = %d", 
+                 old_volume, (val > 0 ? "+" : ""), val, volume);
+        
         if (volume > 100) {
             volume = 100;
+            ESP_LOGI(TAG, "⚠️  音量超过最大值，限制为 100");
         }
         if (volume < 0) {
             volume = 0;
+            ESP_LOGI(TAG, "⚠️  音量低于最小值，限制为 0");
         }
+        
         codec->SetOutputVolume(volume);
+        ESP_LOGI(TAG, "✅ 音量已设置: %d -> %d (变化: %+d)", old_volume, volume, volume - old_volume);
         GetDisplay()->ShowNotification(Lang::Strings::VOLUME + std::to_string(volume));
     }
 
     void MuteVol() {
         auto codec = GetAudioCodec();
-        auto volume = codec->output_volume();
-        if (volume > 1) {
+        int old_volume = codec->output_volume();
+        int volume;
+        
+        if (old_volume > 1) {
             volume = 0;
+            ESP_LOGI(TAG, "🔇 静音: %d -> 0", old_volume);
         } else  {
             volume = 50;
+            ESP_LOGI(TAG, "🔊 取消静音: %d -> 50", old_volume);
         }
+        
         codec->SetOutputVolume(volume);
+        ESP_LOGI(TAG, "✅ 静音切换完成: %d -> %d", old_volume, volume);
         GetDisplay()->ShowNotification(Lang::Strings::VOLUME + std::to_string(volume));
     }
 
@@ -208,21 +223,36 @@ private:
         adc_button_[5] = new AdcButton(adc_cfg);
 
         auto volume_up_button = adc_button_[BSP_ADC_BUTTON_VOL_UP];
-        volume_up_button->OnClick([this]() {ChangeVol(10);});
+        volume_up_button->OnClick([this]() {
+            ESP_LOGI(TAG, "🔼 音量加按钮：短按（+10）");
+            ChangeVol(10);
+        });
         volume_up_button->OnLongPress([this]() {
+            ESP_LOGI(TAG, "🔼 音量加按钮：长按（设为最大音量 100）");
+            int old_volume = GetAudioCodec()->output_volume();
             GetAudioCodec()->SetOutputVolume(100);
+            ESP_LOGI(TAG, "✅ 音量已设置: %d -> 100", old_volume);
             GetDisplay()->ShowNotification(Lang::Strings::MAX_VOLUME);
         });
 
         auto volume_down_button = adc_button_[BSP_ADC_BUTTON_VOL_DOWN];
-        volume_down_button->OnClick([this]() {ChangeVol(-10);});
+        volume_down_button->OnClick([this]() {
+            ESP_LOGI(TAG, "🔽 音量减按钮：短按（-10）");
+            ChangeVol(-10);
+        });
         volume_down_button->OnLongPress([this]() {
+            ESP_LOGI(TAG, "🔽 音量减按钮：长按（静音）");
+            int old_volume = GetAudioCodec()->output_volume();
             GetAudioCodec()->SetOutputVolume(0);
+            ESP_LOGI(TAG, "✅ 音量已设置: %d -> 0 (静音)", old_volume);
             GetDisplay()->ShowNotification(Lang::Strings::MUTED);
         });
 
         auto volume_mute_button = adc_button_[BSP_ADC_BUTTON_VOL_MUTE];
-        volume_mute_button->OnClick([this]() {MuteVol();});
+        volume_mute_button->OnClick([this]() {
+            ESP_LOGI(TAG, "🔇 静音按钮：短按（切换静音/取消静音）");
+            MuteVol();
+        });
 
         auto play_button = adc_button_[BSP_ADC_BUTTON_PLAY];
         play_button->OnClick([this]() {
