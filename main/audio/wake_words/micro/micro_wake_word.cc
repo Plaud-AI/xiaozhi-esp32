@@ -17,8 +17,8 @@ namespace micro_wake_word {
 
 static const char *const TAG = "MicroWakeWord";
 
-static const size_t SAMPLE_RATE_HZ = 16000;  // 16 kHz
-static const size_t RING_BUFFER_SIZE = 16000; // 1 second of audio
+// Note: RING_BUFFER_SIZE is now defined in preprocessor_settings.h (ESPHome-aligned: 120ms = 1920 samples)
+static const size_t SAMPLE_RATE_HZ = AUDIO_SAMPLE_FREQUENCY;  // 16 kHz
 
 static const char *micro_wake_word_state_to_string(State state) {
   switch (state) {
@@ -62,38 +62,41 @@ bool MicroWakeWord::Initialize(AudioCodec *codec, srmodel_list_t *models_list) {
 
   ESP_LOGI(TAG, "Micro Wake Word initialized");
 
+  // ========================================================================
   // Configure audio frontend - MUST match the parameters used during model training!
-  // These are the standard microWakeWord training parameters from esphome
+  // These are the standard microWakeWord training parameters from ESPHome official
+  // All parameters are now aligned with ESPHome's preprocessor_settings.h
+  // ========================================================================
   this->frontend_config_.window.size_ms = FEATURE_DURATION_MS;
   this->frontend_config_.window.step_size_ms = this->features_step_size_;
   this->frontend_config_.filterbank.num_channels = PREPROCESSOR_FEATURE_SIZE;
-  this->frontend_config_.filterbank.lower_band_limit = 125.0;
-  this->frontend_config_.filterbank.upper_band_limit = 7500.0;
+  this->frontend_config_.filterbank.lower_band_limit = FILTERBANK_LOWER_BAND_LIMIT;
+  this->frontend_config_.filterbank.upper_band_limit = FILTERBANK_UPPER_BAND_LIMIT;
   
-  // ✅ 诊断结果：0.40 是最优值
-  // - min_signal=0.40 时概率 0.479（最好）
-  // - min_signal=0.25 时概率 0.299（变差 37%）
-  // - DC Offset 假设不成立，0.40 已达到最佳平衡
-  //  
-  // 🔍 下一步诊断方向：重采样质量（24kHz→16kHz 可能引入问题）
-  this->frontend_config_.noise_reduction.smoothing_bits = 10;
-  this->frontend_config_.noise_reduction.even_smoothing = 0.025;
-  this->frontend_config_.noise_reduction.odd_smoothing = 0.06;
-  this->frontend_config_.noise_reduction.min_signal_remaining = 0.40;  // ← 恢复最优值
+  // Noise reduction settings
+  this->frontend_config_.noise_reduction.smoothing_bits = NOISE_REDUCTION_SMOOTHING_BITS;
+  this->frontend_config_.noise_reduction.even_smoothing = NOISE_REDUCTION_EVEN_SMOOTHING;
+  this->frontend_config_.noise_reduction.odd_smoothing = NOISE_REDUCTION_ODD_SMOOTHING;
+  this->frontend_config_.noise_reduction.min_signal_remaining = NOISE_REDUCTION_MIN_SIGNAL_REMAINING;
   
-  this->frontend_config_.pcan_gain_control.enable_pcan = 1;
-  this->frontend_config_.pcan_gain_control.strength = 0.95;
-  this->frontend_config_.pcan_gain_control.offset = 80.0;
-  this->frontend_config_.pcan_gain_control.gain_bits = 21;
+  // PCAN gain control settings
+  this->frontend_config_.pcan_gain_control.enable_pcan = PCAN_GAIN_CONTROL_ENABLE_PCAN;
+  this->frontend_config_.pcan_gain_control.strength = PCAN_GAIN_CONTROL_STRENGTH;
+  this->frontend_config_.pcan_gain_control.offset = PCAN_GAIN_CONTROL_OFFSET;
+  this->frontend_config_.pcan_gain_control.gain_bits = PCAN_GAIN_CONTROL_GAIN_BITS;
   
-  this->frontend_config_.log_scale.enable_log = 1;
-  this->frontend_config_.log_scale.scale_shift = 6;
+  // Log scale settings
+  this->frontend_config_.log_scale.enable_log = LOG_SCALE_ENABLE_LOG;
+  this->frontend_config_.log_scale.scale_shift = LOG_SCALE_SCALE_SHIFT;
   
-  ESP_LOGI(TAG, "🎛️  Frontend config: noise.min_signal=%.2f (最优值), pcan.strength=%.2f",
-           this->frontend_config_.noise_reduction.min_signal_remaining,
-           this->frontend_config_.pcan_gain_control.strength);
-  ESP_LOGI(TAG, "   ✅ min_signal_remaining = 0.40（已验证为最优值）");
-  ESP_LOGI(TAG, "   🔍 当前最高概率 0.479，目标 > 0.70");
+  ESP_LOGI(TAG, "🎛️  Frontend Configuration (ESPHome-aligned):");
+  ESP_LOGI(TAG, "   - Filterbank: %.1f - %.1f Hz, %d channels",
+           FILTERBANK_LOWER_BAND_LIMIT, FILTERBANK_UPPER_BAND_LIMIT, PREPROCESSOR_FEATURE_SIZE);
+  ESP_LOGI(TAG, "   - Noise Reduction: min_signal=%.2f (ESPHome official)", 
+           NOISE_REDUCTION_MIN_SIGNAL_REMAINING);
+  ESP_LOGI(TAG, "   - PCAN Gain Control: strength=%.2f, offset=%.1f", 
+           PCAN_GAIN_CONTROL_STRENGTH, PCAN_GAIN_CONTROL_OFFSET);
+  ESP_LOGI(TAG, "   - Log Scale: shift=%d", LOG_SCALE_SCALE_SHIFT);
 
   return true;
 }
@@ -169,10 +172,13 @@ void MicroWakeWord::OnWakeWordDetected(std::function<void(const std::string &)> 
 }
 
 void MicroWakeWord::Start() {
-  ESP_LOGI(TAG, "🚀 Starting MicroWakeWord detection");
+  ESP_LOGI(TAG, "🚀 Starting MicroWakeWord detection (ESPHome-aligned)");
   ESP_LOGI(TAG, "  - Wake word models: %u", (unsigned int)wake_word_models_.size());
-  ESP_LOGI(TAG, "  - Sample rate: %u Hz", (unsigned int)SAMPLE_RATE_HZ);
+  ESP_LOGI(TAG, "  - Sample rate: %u Hz", (unsigned int)AUDIO_SAMPLE_FREQUENCY);
   ESP_LOGI(TAG, "  - Feature duration: %d ms", FEATURE_DURATION_MS);
+  ESP_LOGI(TAG, "  - Ring buffer: %u ms (%u samples, %.1f KB)", 
+           RING_BUFFER_DURATION_MS, (unsigned int)RING_BUFFER_SIZE, 
+           (RING_BUFFER_SIZE * sizeof(int16_t)) / 1024.0f);
 
   if (state_ != State::IDLE) {
     ESP_LOGW(TAG, "Wake word is already running (state: %d)", (int)state_);
