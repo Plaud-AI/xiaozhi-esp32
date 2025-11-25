@@ -169,41 +169,49 @@ bool AudioService::ReadAudioData(std::vector<int16_t>& data, int sample_rate, in
                 data[j + 1] = resampled_reference[i];
             }
         } else if (codec_->input_channels() == 4) {
-            // 🔧 ES7210 TDM 4通道模式：先提取 Ch0，再重采样
-            auto ch0_channel = std::vector<int16_t>(data.size() / 4);
+            // 🔧 ES7210 TDM 4通道模式：平均前2个麦克风（MIC1+MIC2），再重采样
+            // ⚠️ 关键发现：ESP32-S3-Korvo-2 V3.0 只有 2 个麦克风（SLOT0和SLOT1）
+            //    - SLOT0 (data[j+0]): MIC1 ✅
+            //    - SLOT1 (data[j+1]): MIC2 ✅
+            //    - SLOT2 (data[j+2]): 空/噪声 ❌
+            //    - SLOT3 (data[j+3]): 空/噪声 ❌
+            // 只平均有效的 2 个麦克风，避免被空槽拉低信号强度
+            auto mixed_channel = std::vector<int16_t>(data.size() / 4);
             
             // 🔍 调试：重采样前的信号幅度
             static int resample_count = 0;
             int64_t sum_before = 0;
             int max_before = 0;
             
-            for (size_t i = 0, j = 0; i < ch0_channel.size(); ++i, j += 4) {
-                ch0_channel[i] = data[j];  // 提取 Ch0
-                sum_before += abs(data[j]);
-                if (abs(data[j]) > max_before) max_before = abs(data[j]);
+            // 🎯 混音：只平均有效的 MIC1(SLOT0) + MIC2(SLOT1)
+            for (size_t i = 0, j = 0; i < mixed_channel.size(); ++i, j += 4) {
+                int32_t sum = (int32_t)data[j] + data[j+1];  // 只加 SLOT0 和 SLOT1
+                mixed_channel[i] = sum / 2;  // 平均 2 个有效麦克风
+                sum_before += abs(mixed_channel[i]);
+                if (abs(mixed_channel[i]) > max_before) max_before = abs(mixed_channel[i]);
             }
             
-            auto resampled_ch0 = std::vector<int16_t>(input_resampler_.GetOutputSamples(ch0_channel.size()));
-            input_resampler_.Process(ch0_channel.data(), ch0_channel.size(), resampled_ch0.data());
+            auto resampled_mixed = std::vector<int16_t>(input_resampler_.GetOutputSamples(mixed_channel.size()));
+            input_resampler_.Process(mixed_channel.data(), mixed_channel.size(), resampled_mixed.data());
             
             // 🔍 调试：重采样后的信号幅度
             if (++resample_count % 100 == 0) {
                 int64_t sum_after = 0;
                 int max_after = 0;
-                for (const auto& val : resampled_ch0) {
+                for (const auto& val : resampled_mixed) {
                     sum_after += abs(val);
                     if (abs(val) > max_after) max_after = abs(val);
                 }
-                int avg_before = ch0_channel.empty() ? 0 : sum_before / ch0_channel.size();
-                int avg_after = resampled_ch0.empty() ? 0 : sum_after / resampled_ch0.size();
+                int avg_before = mixed_channel.empty() ? 0 : sum_before / mixed_channel.size();
+                int avg_after = resampled_mixed.empty() ? 0 : sum_after / resampled_mixed.size();
                 ESP_LOGI(TAG, "📊 Resample Stats (count #%d):", resample_count);
-                ESP_LOGI(TAG, "  Before (24kHz Ch0): size=%u, avg=%d, max=%d", 
-                         (unsigned int)ch0_channel.size(), avg_before, max_before);
-                ESP_LOGI(TAG, "  After  (16kHz):     size=%u, avg=%d, max=%d", 
-                         (unsigned int)resampled_ch0.size(), avg_after, max_after);
+                ESP_LOGI(TAG, "  Before (24kHz MIC1+2): size=%u, avg=%d, max=%d", 
+                         (unsigned int)mixed_channel.size(), avg_before, max_before);
+                ESP_LOGI(TAG, "  After  (16kHz):        size=%u, avg=%d, max=%d", 
+                         (unsigned int)resampled_mixed.size(), avg_after, max_after);
             }
             
-            data = std::move(resampled_ch0);
+            data = std::move(resampled_mixed);
         } else {
             // 单通道或其他情况：直接重采样
             auto resampled = std::vector<int16_t>(input_resampler_.GetOutputSamples(data.size()));
@@ -217,13 +225,15 @@ bool AudioService::ReadAudioData(std::vector<int16_t>& data, int sample_rate, in
             return false;
         }
         
-        // 🔧 如果是 4 通道，提取 Ch0
+        // 🔧 如果是 4 通道 TDM 模式，混音 MIC1+MIC2（只有这2个有效）
         if (codec_->input_channels() == 4) {
-            auto ch0_channel = std::vector<int16_t>(data.size() / 4);
-            for (size_t i = 0, j = 0; i < ch0_channel.size(); ++i, j += 4) {
-                ch0_channel[i] = data[j];  // 提取 Ch0
+            // ESP32-S3-Korvo-2 V3.0: 只有 SLOT0(MIC1) 和 SLOT1(MIC2) 有麦克风
+            auto mixed_channel = std::vector<int16_t>(data.size() / 4);
+            for (size_t i = 0, j = 0; i < mixed_channel.size(); ++i, j += 4) {
+                int32_t sum = (int32_t)data[j] + data[j+1];  // MIC1 + MIC2
+                mixed_channel[i] = sum / 2;  // 平均
             }
-            data = std::move(ch0_channel);
+            data = std::move(mixed_channel);
         }
     }
 
