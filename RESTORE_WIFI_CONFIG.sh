@@ -26,3 +26,4 @@ echo "✅ BLE PSRAM 优化已保留"
 echo ""
 echo "请运行: idf.py build"
 
+

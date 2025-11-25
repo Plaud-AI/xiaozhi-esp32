@@ -101,3 +101,4 @@ I (xxx) wifi:wifi firmware version: xxx
 **适用分支:** s3-basic-miro-wake  
 **适用芯片:** ESP32-S3 (8MB PSRAM)
 
+

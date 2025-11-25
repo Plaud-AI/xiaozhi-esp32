@@ -400,10 +400,11 @@ void Application::Start() {
     audio_service_.SetCallbacks(callbacks);
 
     // Start the main event loop task with priority 3
+    // Stack size increased to 12KB (from 8KB) to handle WebSocket + OPUS encoding
     xTaskCreate([](void* arg) {
         ((Application*)arg)->MainEventLoop();
         vTaskDelete(NULL);
-    }, "main_event_loop", 2048 * 4, this, 3, &main_event_loop_task_handle_);
+    }, "main_event_loop", 2048 * 6, this, 3, &main_event_loop_task_handle_);
 
     /* Start the clock timer to update the status bar */
     esp_timer_start_periodic(clock_timer_handle_, 1000000);
@@ -453,8 +454,12 @@ void Application::Start() {
         xEventGroupSetBits(event_group_, MAIN_EVENT_ERROR);
     });
     protocol_->OnIncomingAudio([this](std::unique_ptr<AudioStreamPacket> packet) {
+        ESP_LOGD(TAG, "🎵 OnIncomingAudio: packet size=%zu, device_state=%d (%s)", 
+                 packet->payload.size(), device_state_, STATE_STRINGS[device_state_]);
         if (device_state_ == kDeviceStateSpeaking) {
             audio_service_.PushPacketToDecodeQueue(std::move(packet));
+        } else {
+            ESP_LOGW(TAG, "⚠️  Received audio but not in SPEAKING state, dropping packet");
         }
     });
     protocol_->OnAudioChannelOpened([this, codec, &board]() {
@@ -477,7 +482,9 @@ void Application::Start() {
         auto type = cJSON_GetObjectItem(root, "type");
         if (strcmp(type->valuestring, "tts") == 0) {
             auto state = cJSON_GetObjectItem(root, "state");
+            ESP_LOGI(TAG, "📢 TTS event: state=%s", state->valuestring);
             if (strcmp(state->valuestring, "start") == 0) {
+                ESP_LOGI(TAG, "🎙️  TTS started, switching to SPEAKING state");
                 Schedule([this]() {
                     aborted_ = false;
                     if (device_state_ == kDeviceStateIdle || device_state_ == kDeviceStateListening) {
@@ -485,6 +492,7 @@ void Application::Start() {
                     }
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {
+                ESP_LOGI(TAG, "🎙️  TTS stopped");
                 Schedule([this]() {
                     if (device_state_ == kDeviceStateSpeaking) {
                         if (listening_mode_ == kListeningModeManualStop) {
@@ -687,12 +695,25 @@ void Application::OnWakeWordDetected() {
         ESP_LOGI(TAG, "*** Wake word detected: %s ***", wake_word.c_str());
 #if CONFIG_SEND_WAKE_WORD_DATA
         // Encode and send the wake word data to the server
+        ESP_LOGI(TAG, "📤 Sending wake word packets...");
+        int packet_count = 0;
         while (auto packet = audio_service_.PopWakeWordPacket()) {
-            protocol_->SendAudio(std::move(packet));
+            packet_count++;
+            ESP_LOGD(TAG, "  Sending packet #%d, size=%zu", packet_count, packet->payload.size());
+            if (!protocol_->SendAudio(std::move(packet))) {
+                ESP_LOGE(TAG, "❌ Failed to send wake word packet #%d", packet_count);
+                break;
+            }
         }
+        ESP_LOGI(TAG, "✅ Sent %d wake word packets", packet_count);
+        
         // Set the chat state to wake word detected
+        ESP_LOGI(TAG, "📡 Sending wake word detected event: '%s'", wake_word.c_str());
         protocol_->SendWakeWordDetected(wake_word);
+        
+        ESP_LOGI(TAG, "🎤 Setting listening mode...");
         SetListeningMode(aec_mode_ == kAecOff ? kListeningModeAutoStop : kListeningModeRealtime);
+        ESP_LOGI(TAG, "✅ Wake word processing complete");
 #else
         SetListeningMode(aec_mode_ == kAecOff ? kListeningModeAutoStop : kListeningModeRealtime);
         // Play the pop up sound to indicate the wake word is detected

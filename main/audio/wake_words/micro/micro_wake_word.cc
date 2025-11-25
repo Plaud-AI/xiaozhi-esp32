@@ -243,7 +243,8 @@ bool MicroWakeWord::GetWakeWordOpus(std::vector<uint8_t> &opus) {
   if (wake_word_opus_.empty()) {
     return false;
   }
-  opus = wake_word_opus_;
+  opus = std::move(wake_word_opus_);  // 移动而非复制，同时清空 wake_word_opus_
+  ESP_LOGD(TAG, "✅ Wake word OPUS data moved to caller (%zu bytes), internal buffer now empty", opus.size());
   return true;
 }
 

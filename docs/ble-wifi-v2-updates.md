@@ -762,3 +762,4 @@ Smallest app partition is 0x500000 bytes
 **维护**: XiaoZhi-ESP32 Team
 
 
+
