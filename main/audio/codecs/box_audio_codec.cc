@@ -28,7 +28,7 @@ BoxAudioCodec::BoxAudioCodec(void* i2c_master_handle, int input_sample_rate, int
     //   - 47 dB: 最大增益，配合标准 noise reduction ✅
     input_gain_ = 47;  // 最大值：ES7210 4-mic + ESPHome 标准参数
     
-    ESP_LOGI(TAG, "🎤 BoxAudioCodec constructor: input_sample_rate=%d, output_sample_rate=%d, input_reference=%d, input_channels=%d (4-ch TDM), input_gain=%d dB",
+    ESP_LOGI(TAG, "🎤 BoxAudioCodec constructor: input_sample_rate=%d, output_sample_rate=%d, input_reference=%d, input_channels=%d (4-ch TDM), input_gain=%.1f dB",
              input_sample_rate_, output_sample_rate_, input_reference_, input_channels_, input_gain_);
 
     CreateDuplexChannels(mclk, bclk, ws, dout, din);
@@ -104,7 +104,7 @@ BoxAudioCodec::BoxAudioCodec(void* i2c_master_handle, int input_sample_rate, int
         .bits_per_sample = 16,
         .channel = 4,
         .channel_mask = input_channel_mask,
-        .sample_rate = (uint32_t)output_sample_rate_,
+        .sample_rate = (uint32_t)input_sample_rate_,  // ✅ 修复：应该用 input_sample_rate_ 而不是 output_sample_rate_
         .mclk_multiple = 0,
     };
     esp_err_t ret = esp_codec_dev_open(input_dev_, &input_fs);
@@ -285,13 +285,13 @@ void BoxAudioCodec::EnableInput(bool enable) {
             .bits_per_sample = 16,
             .channel = 4,
             .channel_mask = ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0),
-            .sample_rate = (uint32_t)output_sample_rate_,
+            .sample_rate = (uint32_t)input_sample_rate_,  // ✅ 修复：应该用 input_sample_rate_
             .mclk_multiple = 0,
         };
         if (input_reference_) {
             fs.channel_mask |= ESP_CODEC_DEV_MAKE_CHANNEL_MASK(1);
         }
-        ESP_LOGI(TAG, "EnableInput: sample_rate=%d (output_sample_rate), channel=4, channel_mask=0x%x, input_gain=%d, input_reference=%d",
+        ESP_LOGI(TAG, "EnableInput: sample_rate=%d (input_sample_rate_), channel=4, channel_mask=0x%x, input_gain=%d, input_reference=%d",
                  fs.sample_rate, fs.channel_mask, input_gain_, input_reference_);
         
         esp_err_t ret = esp_codec_dev_open(input_dev_, &fs);
