@@ -18,6 +18,8 @@
 // ✅ Using ESPHome official v2 model "Okay Nabu" for testing
 // Downloaded from: https://github.com/esphome/micro-wake-word-models
 #include "wake_words/micro/okay_nabu.h"
+// ✅ Using custom Plaud AI model "Hey Ploud"
+#include "wake_words/micro/hey_ploud.h"
 #endif
 #else
 #include "wake_words/esp_wake_word.h"
@@ -779,34 +781,49 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
         //    - 错误做法：(SLOT0 + SLOT1) / 2 ❌
         //    - 正确做法：只用 SLOT0（主麦克风）✅
         // 
-        // ✅ 恢复原始配置：使用 okay_nabu 官方推荐值
-        float threshold = 0.50;  // 官方推荐阈值
+        // ✅ 配置参数：根据实际测试调整
+        // 由于使用 24kHz->16kHz 重采样，阈值需要相应调整
+        float threshold_okay_nabu = 0.55;  // 调整后的阈值（考虑重采样影响）
+        float threshold_hey_ploud = 0.55;  // Hey Ploud 初始阈值（需要实际测试调整）
         size_t sliding_window = 5;  // 官方推荐滑动窗口
-        size_t tensor_arena = 26080;
-        std::string model_name = "okay nabu";
+        size_t tensor_arena_okay_nabu = 26080;  // Okay Nabu 的 tensor arena
+        size_t tensor_arena_hey_ploud = 26080;  // Hey Ploud 的 tensor arena（初始估计，可能需要调整）
         
-        ESP_LOGI(TAG, "🎯 Fixed Configuration - 修复参考通道混音错误:");
-        ESP_LOGI(TAG, "   - Model: %s", model_name.c_str());
-        ESP_LOGI(TAG, "   - Threshold: %.2f ✅ (预期信号质量显著提升)", threshold);
+        ESP_LOGI(TAG, "🎯 Loading Multiple Wake Word Models:");
+        ESP_LOGI(TAG, "   - Sample Rate: 24kHz (ES7210 原生)");
+        ESP_LOGI(TAG, "   - Resampling: 24kHz → 16kHz (SILK Resampler)");
+        ESP_LOGI(TAG, "   - Frontend: ESPHome-aligned (min_signal=0.05)");
+        ESP_LOGI(TAG, "   - MIC Input: SLOT0 only (主麦克风) ✅");
         ESP_LOGI(TAG, "   - Sliding Window: %u", (unsigned int)sliding_window);
-        ESP_LOGI(TAG, "   - Tensor Arena: %u bytes", (unsigned int)tensor_arena);
-        ESP_LOGI(TAG, "   - Sample Rate: 24kHz (ES7210 最佳频率)");
-        ESP_LOGI(TAG, "   - Frontend min_signal=0.40 (最优值)");
-        ESP_LOGI(TAG, "   - MIC Input: 只用 SLOT0（主麦克风）✅ 不再混入扬声器回放！");
-        ESP_LOGI(TAG, "   🔥 根本问题已修复：之前错误地把主麦克风和扬声器回放混在一起！");
-        ESP_LOGI(TAG, "   🎤 请说 'Okay Nabu' - 预期概率应该 > 0.50，大幅提升！");
         
-        // 添加模型（模型数据在文件顶部已 include）
-        // ✅ 使用 ESPHome 官方验证的 Okay Nabu 模型进行测试
+        // Model 1: ESPHome 官方 Okay Nabu 模型
+        ESP_LOGI(TAG, "📦 Model 1: Okay Nabu (ESPHome Official v2)");
+        ESP_LOGI(TAG, "   - Threshold: %.2f (adjusted for resampling)", threshold_okay_nabu);
+        ESP_LOGI(TAG, "   - Tensor Arena: %u bytes", (unsigned int)tensor_arena_okay_nabu);
+        ESP_LOGI(TAG, "   - Wake Phrase: 'Okay Nabu'");
         micro_ww->add_wake_word_model(
-            okay_nabu_tflite,  // ← ESPHome 官方模型
-            threshold,
+            okay_nabu_tflite,
+            threshold_okay_nabu,
             sliding_window,
-            "okay nabu",  // ← 唤醒词："Okay Nabu"
-            tensor_arena
+            "okay nabu",
+            tensor_arena_okay_nabu
         );
         
-        ESP_LOGI(TAG, "✅ Wake word model loaded successfully");
+        // Model 2: Plaud AI 定制 Hey Ploud 模型
+        ESP_LOGI(TAG, "📦 Model 2: Hey Ploud (Plaud AI Custom)");
+        ESP_LOGI(TAG, "   - Threshold: %.2f (initial, needs testing)", threshold_hey_ploud);
+        ESP_LOGI(TAG, "   - Tensor Arena: %u bytes (initial estimate)", (unsigned int)tensor_arena_hey_ploud);
+        ESP_LOGI(TAG, "   - Wake Phrase: 'Hey Ploud'");
+        micro_ww->add_wake_word_model(
+            hey_ploud_tflite,
+            threshold_hey_ploud,
+            sliding_window,
+            "hey ploud",
+            tensor_arena_hey_ploud
+        );
+        
+        ESP_LOGI(TAG, "✅ All wake word models loaded successfully");
+        ESP_LOGI(TAG, "🎤 You can now say either 'Okay Nabu' or 'Hey Ploud' to wake up the device!");
         
         wake_word_ = std::move(micro_ww);
     }
