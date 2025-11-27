@@ -1,4 +1,5 @@
 #include "emotion_coordinator.h"
+#include "emotion_assets_loader.h"
 #include "esp_log.h"
 
 static const char* TAG = "EmotionCoord";
@@ -242,46 +243,95 @@ void EmotionCoordinator::OnEmotionChanged(const EmotionChangeEvent& event)
 
 void EmotionCoordinator::PlayEmotionAnimation(EmotionState emotion)
 {
-    auto& anim_mapper = EmotionAnimationMapper::Instance();
-    AnimationInfo anim_info;
+    ESP_LOGI(TAG, "PlayEmotionAnimation: %s", EmotionStateToString(emotion));
+
+    // 检查是否从 assets 分区加载
+    bool use_assets = (config_.animation_base_path == "assets:");
     
-    if (!anim_mapper.GetAnimation(emotion, anim_info)) {
-        ESP_LOGW(TAG, "No animation found for emotion: %s", EmotionStateToString(emotion));
-        return;
-    }
+    if (use_assets) {
+        // 从 assets 分区加载（memory-mapped 方式）
+        void* data = nullptr;
+        size_t size = 0;
+        bool loop = false;
 
-    ESP_LOGI(TAG, "Playing animation: %s", anim_info.file_path.c_str());
+        if (!EmotionAssetsLoader::GetAnimationData(emotion, data, size, loop)) {
+            ESP_LOGW(TAG, "No animation data found for: %s", EmotionStateToString(emotion));
+            return;
+        }
 
-    // 通知动画开始回调
-    if (animation_start_callback_) {
-        animation_start_callback_(anim_info.file_path);
-    }
+        ESP_LOGI(TAG, "Loading animation from assets: %s (%u bytes)", 
+                 EmotionStateToString(emotion), size);
 
-    // 配置 Lottie 动画
-    lottie::AnimConfig lottie_config;
-    lottie_config.file_path = anim_info.file_path;
-    lottie_config.loop = anim_info.loop;
-    lottie_config.width = config_.screen_width;
-    lottie_config.height = config_.screen_height;
+        // 获取当前屏幕
+        lv_obj_t* screen = lv_scr_act();
+        
+        // 创建新的 Lottie 动画对象
+        auto* anim = EmotionAssetsLoader::CreateAnimationFromAssets(screen, emotion);
+        if (!anim) {
+            ESP_LOGE(TAG, "Failed to create animation");
+            return;
+        }
 
-    // 转换为 AnimState（临时映射）
-    lottie::AnimState anim_state = lottie::AnimState::CUSTOM;
-    switch(emotion) {
-        case EmotionState::LISTENING:   anim_state = lottie::AnimState::LISTENING; break;
-        case EmotionState::THINKING:    anim_state = lottie::AnimState::THINKING; break;
-        case EmotionState::SPEAKING:    anim_state = lottie::AnimState::SPEAKING; break;
-        default: anim_state = lottie::AnimState::CUSTOM; break;
-    }
+        // 设置大小和位置
+        anim->SetSize(config_.screen_width, config_.screen_height);
+        anim->Center();
+        
+        // 播放
+        anim->Play(loop);
 
-    // 如果是自定义状态，使用 PlayCustomAnimation
-    if (anim_state == lottie::AnimState::CUSTOM) {
-        auto& lottie_mgr = lottie::AnimationManager::Instance();
-        lottie_mgr.PlayCustomAnimation(anim_info.file_path, anim_info.loop, false);
+        ESP_LOGI(TAG, "Animation playing from assets");
+
+        // 通知动画开始回调
+        if (animation_start_callback_) {
+            animation_start_callback_(EmotionStateToString(emotion));
+        }
+
+        // TODO: 管理动画对象的生命周期（避免内存泄漏）
+        // 简单实现：先不删除，让 LVGL 管理
+        
     } else {
-        // 注册并播放
-        auto& lottie_mgr = lottie::AnimationManager::Instance();
-        lottie_mgr.RegisterAnimation(anim_state, lottie_config);
-        lottie_mgr.SetState(anim_state);
+        // 从文件系统加载（原有逻辑）
+        auto& anim_mapper = EmotionAnimationMapper::Instance();
+        AnimationInfo anim_info;
+        
+        if (!anim_mapper.GetAnimation(emotion, anim_info)) {
+            ESP_LOGW(TAG, "No animation found for emotion: %s", EmotionStateToString(emotion));
+            return;
+        }
+
+        ESP_LOGI(TAG, "Playing animation: %s", anim_info.file_path.c_str());
+
+        // 通知动画开始回调
+        if (animation_start_callback_) {
+            animation_start_callback_(anim_info.file_path);
+        }
+
+        // 配置 Lottie 动画
+        lottie::AnimConfig lottie_config;
+        lottie_config.file_path = anim_info.file_path;
+        lottie_config.loop = anim_info.loop;
+        lottie_config.width = config_.screen_width;
+        lottie_config.height = config_.screen_height;
+
+        // 转换为 AnimState（临时映射）
+        lottie::AnimState anim_state = lottie::AnimState::CUSTOM;
+        switch(emotion) {
+            case EmotionState::LISTENING:   anim_state = lottie::AnimState::LISTENING; break;
+            case EmotionState::THINKING:    anim_state = lottie::AnimState::THINKING; break;
+            case EmotionState::SPEAKING:    anim_state = lottie::AnimState::SPEAKING; break;
+            default: anim_state = lottie::AnimState::CUSTOM; break;
+        }
+
+        // 如果是自定义状态，使用 PlayCustomAnimation
+        if (anim_state == lottie::AnimState::CUSTOM) {
+            auto& lottie_mgr = lottie::AnimationManager::Instance();
+            lottie_mgr.PlayCustomAnimation(anim_info.file_path, anim_info.loop, false);
+        } else {
+            // 注册并播放
+            auto& lottie_mgr = lottie::AnimationManager::Instance();
+            lottie_mgr.RegisterAnimation(anim_state, lottie_config);
+            lottie_mgr.SetState(anim_state);
+        }
     }
 }
 
