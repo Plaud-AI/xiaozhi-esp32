@@ -1202,6 +1202,11 @@ void Application::StartWakeWordTestCycle() {
     ESP_LOGI(TAG, "║  🎯 Starting Wake Word Test Cycle                        ║");
     ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════╝");
     
+    // ⚠️ 关键：先停止再启动，确保 MicroWakeWord 状态从 DETECTED 重置为 DETECTING
+    ESP_LOGI(TAG, "🔄 Resetting wake word detection state...");
+    audio_service_.EnableWakeWordDetection(false);
+    vTaskDelay(pdMS_TO_TICKS(100));  // 短暂等待，确保停止完成
+    
     // 1. 播放低音提示音（准备就绪）
     PlayBeepTone(500, 200);  // 500Hz, 200ms
     
@@ -1232,7 +1237,7 @@ void Application::OnWakeWordDetectedInTestMode() {
     ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════╝");
     ESP_LOGI(TAG, "");
     
-    // 停止唤醒词检测
+    // ⚠️ 关键：立即停止唤醒词检测，防止冷却期间的重复触发
     audio_service_.EnableWakeWordDetection(false);
     
     // 播放高音提示音（检测成功）
