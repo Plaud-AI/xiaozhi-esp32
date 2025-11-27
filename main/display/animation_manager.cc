@@ -196,6 +196,9 @@ void AnimationManager::LoadAndPlayAnimation(AnimState state)
         OnAnimationComplete();
     });
 
+    // 确保动画显示在最前面（解决被其他UI元素遮挡的问题）
+    lv_obj_move_foreground(current_animation_->GetObject());
+
     // 播放动画
     current_animation_->Play(config.loop);
 

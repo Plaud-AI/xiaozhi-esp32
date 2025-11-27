@@ -1,7 +1,6 @@
 #include "wifi_board.h"
 #include "codecs/box_audio_codec.h"
-#include "display/lcd_display.h"
-#include "display/emotion_assets_loader.h"  // 从 Assets 加载动画
+#include "display/lcd_emotion_display.h"
 #include "application.h"
 #include "button.h"
 #include "config.h"
@@ -58,7 +57,7 @@ private:
     adc_oneshot_unit_handle_t bsp_adc_handle = NULL;
 #endif
     i2c_master_bus_handle_t i2c_bus_;
-    LcdDisplay* display_;
+    LcdEmotionDisplay* display_;
     esp_io_expander_handle_t io_expander_ = NULL;
     Esp32Camera* camera_;
 
@@ -326,8 +325,18 @@ private:
         ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y));
         ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel, false));
         ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel, true));
-        display_ = new SpiLcdDisplay(panel_io, panel,
-                                    DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
+        display_ = new LcdEmotionDisplay(panel_io, panel,
+                                        DISPLAY_WIDTH, DISPLAY_HEIGHT,
+                                        DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y,
+                                        DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
+        
+        // 初始化情感系统
+        ESP_LOGI(TAG, "Initializing emotion system...");
+        if (display_->InitEmotionSystem()) {
+            ESP_LOGI(TAG, "✅ Emotion system ready!");
+        } else {
+            ESP_LOGW(TAG, "⚠️  Emotion system init failed (will continue without emotions)");
+        }
     }
 
     void InitializeSt7789Display() {
@@ -359,8 +368,18 @@ private:
         ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y));
         ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel, true));
 
-        display_ = new SpiLcdDisplay(panel_io, panel,
-                                     DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
+        display_ = new LcdEmotionDisplay(panel_io, panel,
+                                        DISPLAY_WIDTH, DISPLAY_HEIGHT,
+                                        DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y,
+                                        DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
+        
+        // 初始化情感系统
+        ESP_LOGI(TAG, "Initializing emotion system...");
+        if (display_->InitEmotionSystem()) {
+            ESP_LOGI(TAG, "✅ Emotion system ready!");
+        } else {
+            ESP_LOGW(TAG, "⚠️  Emotion system init failed (will continue without emotions)");
+        }
     }
 
     void InitializeCamera() {
@@ -411,15 +430,6 @@ public:
         #else
         InitializeSt7789Display(); 
         #endif
-        
-        // 初始化情感系统（使用 assets 分区的 memory-mapped 方式）
-        // 注意：动画从 assets 分区直接加载，不需要挂载文件系统
-        ESP_LOGI(TAG, "Initializing emotion system...");
-        if (emotion::InitEmotionSystemFromAssets(display_, DISPLAY_WIDTH, DISPLAY_HEIGHT)) {
-            ESP_LOGI(TAG, "✅ Emotion system ready!");
-        } else {
-            ESP_LOGW(TAG, "⚠️  Emotion system init failed (will continue without emotions)");
-        }
     }
 
     virtual AudioCodec* GetAudioCodec() override {
