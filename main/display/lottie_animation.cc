@@ -188,6 +188,16 @@ void LottieAnimation::SetSpeed(float speed)
 #endif
 }
 
+void LottieAnimation::SetCompleteCallback(std::function<void()> callback)
+{
+    complete_callback_ = callback;
+    
+    // 如果有 lottie 对象，设置事件回调
+    if (lottie_obj_) {
+        lv_obj_add_event_cb(lottie_obj_, OnAnimComplete, LV_EVENT_READY, this);
+    }
+}
+
 void LottieAnimation::SetVisible(bool visible)
 {
     if (lottie_obj_) {
@@ -210,6 +220,14 @@ bool LottieAnimation::IsPlaying() const
 #else
     return false;
 #endif
+}
+
+void LottieAnimation::OnAnimComplete(lv_event_t* e)
+{
+    LottieAnimation* anim = static_cast<LottieAnimation*>(lv_event_get_user_data(e));
+    if (anim && anim->complete_callback_) {
+        anim->complete_callback_();
+    }
 }
 
 uint32_t LottieAnimation::GetTotalFrames() const
