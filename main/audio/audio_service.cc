@@ -483,6 +483,15 @@ const std::string& AudioService::GetLastWakeWord() const {
     return wake_word_->GetLastDetectedWakeWord();
 }
 
+float AudioService::GetLastWakeWordProbability() const {
+    // MicroWakeWord 支持获取概率，其他类型的 wake word 返回 0.0
+    auto micro_ww = dynamic_cast<micro_wake_word::MicroWakeWord*>(wake_word_.get());
+    if (micro_ww) {
+        return micro_ww->GetLastDetectedProbability();
+    }
+    return 0.0f;
+}
+
 std::unique_ptr<AudioStreamPacket> AudioService::PopWakeWordPacket() {
     auto packet = std::make_unique<AudioStreamPacket>();
     if (wake_word_->GetWakeWordOpus(packet->payload)) {

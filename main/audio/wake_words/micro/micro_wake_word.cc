@@ -471,9 +471,9 @@ bool MicroWakeWord::detect_wake_words_() {
     auto &model = this->wake_word_models_[i];
     if (model->determine_detected()) {
       this->detected_wake_word_ = model->get_wake_word();
-      float prob = model->get_sliding_window_average();
+      this->detected_probability_ = model->get_sliding_window_average();  // 存储检测概率
       ESP_LOGI(TAG, "🎉 Model '%s' detected! (probability: %.3f, threshold: %.3f)", 
-               this->detected_wake_word_.c_str(), prob, model->get_probability_cutoff());
+               this->detected_wake_word_.c_str(), this->detected_probability_, model->get_probability_cutoff());
       return true;
     }
   }

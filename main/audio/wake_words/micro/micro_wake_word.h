@@ -42,6 +42,7 @@ class MicroWakeWord : public WakeWord {
   void EncodeWakeWordData() override;
   bool GetWakeWordOpus(std::vector<uint8_t> &opus) override;
   const std::string &GetLastDetectedWakeWord() const override;
+  float GetLastDetectedProbability() const { return detected_probability_; }  // 获取最后检测到的概率
 
   // Configuration methods
   void set_features_step_size(uint8_t step_size) { this->features_step_size_ = step_size; }
@@ -81,6 +82,7 @@ class MicroWakeWord : public WakeWord {
 
   bool detected_{false};
   std::string detected_wake_word_{""};
+  float detected_probability_{0.0f};  // 最后检测到的概率
   std::function<void(const std::string &)> detection_callback_;
 
   // Wake word recording for OPUS encoding

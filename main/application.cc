@@ -12,6 +12,8 @@
 #include "wake_word_manager.h"
 #include "audio/wake_words/custom_wake_word.h"
 
+#include <cmath>  // For M_PI and sinf
+
 #ifdef CONFIG_ENABLE_DOLL_INTERACTION
 #include "doll/doll_interaction_manager.h"
 #include "doll/doll_mcp_tools.h"
@@ -250,6 +252,57 @@ void Application::ShowActivationCode(const std::string& code, const std::string&
             audio_service_.PlaySound(it->sound);
         }
     }
+}
+
+/**
+ * @brief 播报概率数字（使用内置数字音频）
+ * @param probability 概率值（0.0-1.0），例如 0.567
+ * 
+ * 将概率转换为数字字符串并逐个播放，例如：
+ * - 0.567 → "0567" → 读作 "零五六七"
+ * - 0.523 → "0523" → 读作 "零五二三"
+ */
+void Application::SpeakProbability(float probability) {
+    // 定义数字到音频的映射
+    struct digit_sound {
+        char digit;
+        const std::string_view& sound;
+    };
+    static const std::array<digit_sound, 10> digit_sounds{{
+        digit_sound{'0', Lang::Sounds::OGG_0},
+        digit_sound{'1', Lang::Sounds::OGG_1}, 
+        digit_sound{'2', Lang::Sounds::OGG_2},
+        digit_sound{'3', Lang::Sounds::OGG_3},
+        digit_sound{'4', Lang::Sounds::OGG_4},
+        digit_sound{'5', Lang::Sounds::OGG_5},
+        digit_sound{'6', Lang::Sounds::OGG_6},
+        digit_sound{'7', Lang::Sounds::OGG_7},
+        digit_sound{'8', Lang::Sounds::OGG_8},
+        digit_sound{'9', Lang::Sounds::OGG_9}
+    }};
+    
+    // 将概率转换为 4 位数字字符串（去掉小数点）
+    // 例如：0.567 → "0567"，0.523 → "0523"
+    int prob_int = (int)(probability * 1000);  // 0.567 → 567
+    char prob_str[5];
+    snprintf(prob_str, sizeof(prob_str), "%04d", prob_int);  // → "0567"
+    
+    ESP_LOGI(TAG, "📢 Reading digits: %s (from probability %.3f)", prob_str, probability);
+    
+    // 逐个播放数字
+    for (size_t i = 0; i < strlen(prob_str); i++) {
+        char digit = prob_str[i];
+        auto it = std::find_if(digit_sounds.begin(), digit_sounds.end(),
+            [digit](const digit_sound& ds) { return ds.digit == digit; });
+        if (it != digit_sounds.end()) {
+            ESP_LOGI(TAG, "   Reading digit: %c", digit);
+            audio_service_.PlaySound(it->sound);
+            // 等待当前数字播放完成后再播放下一个
+            vTaskDelay(pdMS_TO_TICKS(600));  // 每个数字之间间隔 600ms
+        }
+    }
+    
+    ESP_LOGI(TAG, "✅ Finished reading probability digits");
 }
 
 void Application::Alert(const char* status, const char* message, const char* emotion, const std::string_view& sound) {
@@ -606,6 +659,19 @@ void Application::Start() {
         // Play the success sound to indicate the device is ready
         audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
     }
+    
+    // 🧪 启用唤醒词测试模式
+    // 等待设备完全初始化完成
+    vTaskDelay(pdMS_TO_TICKS(2000));
+    
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════╗");
+    ESP_LOGI(TAG, "║  🧪 WAKE WORD TEST MODE - READY TO START!               ║");
+    ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════╝");
+    ESP_LOGI(TAG, "");
+    
+    // 启用测试模式
+    EnableWakeWordTestMode(true);
 }
 
 // Add a async task to MainLoop
@@ -627,6 +693,7 @@ void Application::MainEventLoop() {
             MAIN_EVENT_WAKE_WORD_DETECTED |
             MAIN_EVENT_VAD_CHANGE |
             MAIN_EVENT_CLOCK_TICK |
+            MAIN_EVENT_WAKE_WORD_TEST_CYCLE |
             MAIN_EVENT_ERROR, pdTRUE, pdFALSE, portMAX_DELAY);
 
         if (bits & MAIN_EVENT_ERROR) {
@@ -644,6 +711,11 @@ void Application::MainEventLoop() {
 
         if (bits & MAIN_EVENT_WAKE_WORD_DETECTED) {
             OnWakeWordDetected();
+        }
+        
+        if (bits & MAIN_EVENT_WAKE_WORD_TEST_CYCLE) {
+            // 开始新一轮测试循环
+            StartWakeWordTestCycle();
         }
 
         if (bits & MAIN_EVENT_VAD_CHANGE) {
@@ -678,8 +750,14 @@ void Application::MainEventLoop() {
 }
 
 void Application::OnWakeWordDetected() {  
-    ESP_LOGI(TAG, "OnWakeWordDetected() called, device_state=%d, protocol=%p", 
-             device_state_, protocol_.get());
+    ESP_LOGI(TAG, "OnWakeWordDetected() called, device_state=%d, protocol=%p, test_mode=%d", 
+             device_state_, protocol_.get(), wake_word_test_mode_enabled_);
+    
+    // 🧪 如果处于测试模式，使用测试模式处理逻辑
+    if (wake_word_test_mode_enabled_) {
+        OnWakeWordDetectedInTestMode();
+        return;
+    }
     
     if (!protocol_) {
         ESP_LOGW(TAG, "Protocol not initialized, ignoring wake word");
@@ -1055,5 +1133,160 @@ bool Application::ApplyWakeWordConfig() {
         ESP_LOGE(TAG, "║  建议: 重启设备后唤醒词将自动加载                         ║");
         ESP_LOGE(TAG, "╚══════════════════════════════════════════════════════════╝");
         return false;
+    }
+}
+
+// ============================================================================
+// 唤醒词测试模式实现
+// ============================================================================
+
+/**
+ * @brief 播放提示音（蜂鸣音）
+ * @param frequency_hz 频率（Hz），例如：500=低音，1000=高音
+ * @param duration_ms 持续时间（毫秒）
+ */
+void Application::PlayBeepTone(int frequency_hz, int duration_ms) {
+    ESP_LOGI(TAG, "🔔 Playing beep tone: %d Hz, %d ms", frequency_hz, duration_ms);
+    
+    // 生成简单的正弦波提示音
+    const int sample_rate = 16000;  // 16kHz
+    const int samples = (sample_rate * duration_ms) / 1000;
+    std::vector<int16_t> pcm(samples);
+    
+    // 生成正弦波
+    const float amplitude = 8000.0f;  // 音量（0-32767）
+    const float angular_freq = 2.0f * M_PI * frequency_hz / sample_rate;
+    
+    for (int i = 0; i < samples; i++) {
+        // 添加简单的淡入淡出避免爆音
+        float envelope = 1.0f;
+        if (i < sample_rate / 100) {  // 前 10ms 淡入
+            envelope = (float)i / (sample_rate / 100);
+        } else if (i > samples - sample_rate / 100) {  // 后 10ms 淡出
+            envelope = (float)(samples - i) / (sample_rate / 100);
+        }
+        
+        pcm[i] = (int16_t)(amplitude * envelope * sinf(angular_freq * i));
+    }
+    
+    // 播放音频
+    auto codec = Board::GetInstance().GetAudioCodec();
+    if (!codec->output_enabled()) {
+        codec->EnableOutput(true);
+    }
+    codec->OutputData(pcm);
+    
+    ESP_LOGI(TAG, "✅ Beep tone played");
+}
+
+/**
+ * @brief 启动一个测试循环
+ */
+void Application::StartWakeWordTestCycle() {
+    if (!wake_word_test_mode_enabled_) {
+        ESP_LOGW(TAG, "Test mode not enabled, ignoring StartWakeWordTestCycle");
+        return;
+    }
+    
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════╗");
+    ESP_LOGI(TAG, "║  🎯 Starting Wake Word Test Cycle                        ║");
+    ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════╝");
+    
+    // 1. 播放低音提示音（准备就绪）
+    PlayBeepTone(500, 200);  // 500Hz, 200ms
+    
+    vTaskDelay(pdMS_TO_TICKS(300));  // 等待提示音播放完成
+    
+    // 2. 启动唤醒词检测
+    ESP_LOGI(TAG, "🎤 Enabling wake word detection...");
+    SetDeviceState(kDeviceStateIdle);  // 确保进入 IDLE 状态
+    audio_service_.EnableWakeWordDetection(true);
+    
+    ESP_LOGI(TAG, "✅ Ready! Please say the wake word...");
+    ESP_LOGI(TAG, "");
+}
+
+/**
+ * @brief 测试模式下的唤醒处理
+ */
+void Application::OnWakeWordDetectedInTestMode() {
+    // 获取检测到的唤醒词信息
+    last_wake_word_name_ = audio_service_.GetLastWakeWord();
+    last_wake_word_probability_ = audio_service_.GetLastWakeWordProbability();
+    
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════╗");
+    ESP_LOGI(TAG, "║  🎉 Wake Word Detected in Test Mode!                    ║");
+    ESP_LOGI(TAG, "║  Wake Word: %-44s ║", last_wake_word_name_.c_str());
+    ESP_LOGI(TAG, "║  Probability: %.3f                                       ║", last_wake_word_probability_);
+    ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════╝");
+    ESP_LOGI(TAG, "");
+    
+    // 停止唤醒词检测
+    audio_service_.EnableWakeWordDetection(false);
+    
+    // 播放高音提示音（检测成功）
+    PlayBeepTone(1000, 100);  // 1000Hz, 100ms
+    vTaskDelay(pdMS_TO_TICKS(150));
+    PlayBeepTone(1200, 100);  // 1200Hz, 100ms（双音表示成功）
+    
+    vTaskDelay(pdMS_TO_TICKS(500));
+    
+    // 播报概率数字（使用内置数字音频）
+    ESP_LOGI(TAG, "🔊 Speaking probability digits...");
+    SpeakProbability(last_wake_word_probability_);
+    
+    // 等待冷却时间（5秒）后自动开始下一轮
+    ESP_LOGI(TAG, "⏳ Cooling down for 5 seconds before next test cycle...");
+    vTaskDelay(pdMS_TO_TICKS(5000));
+    
+    // 触发下一轮测试循环
+    if (wake_word_test_mode_enabled_) {
+        ESP_LOGI(TAG, "🔄 Starting next test cycle...");
+        xEventGroupSetBits(event_group_, MAIN_EVENT_WAKE_WORD_TEST_CYCLE);
+    }
+}
+
+/**
+ * @brief 开启/关闭唤醒词测试模式
+ * @param enable true=开启，false=关闭
+ */
+void Application::EnableWakeWordTestMode(bool enable) {
+    if (enable == wake_word_test_mode_enabled_) {
+        ESP_LOGI(TAG, "Wake word test mode already %s", enable ? "enabled" : "disabled");
+        return;
+    }
+    
+    wake_word_test_mode_enabled_ = enable;
+    
+    if (enable) {
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════╗");
+        ESP_LOGI(TAG, "║  🧪 Wake Word Test Mode ENABLED                         ║");
+        ESP_LOGI(TAG, "║                                                          ║");
+        ESP_LOGI(TAG, "║  Test Flow:                                              ║");
+        ESP_LOGI(TAG, "║  1. Low beep (ready)                                     ║");
+        ESP_LOGI(TAG, "║  2. Say wake word                                        ║");
+        ESP_LOGI(TAG, "║  3. High beep (detected)                                 ║");
+        ESP_LOGI(TAG, "║  4. Speak probability digits (e.g. 0567 for 0.567)       ║");
+        ESP_LOGI(TAG, "║  5. Cooldown 5 seconds                                   ║");
+        ESP_LOGI(TAG, "║  6. Auto repeat                                          ║");
+        ESP_LOGI(TAG, "║                                                          ║");
+        ESP_LOGI(TAG, "║  To stop: Call EnableWakeWordTestMode(false)             ║");
+        ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════╝");
+        ESP_LOGI(TAG, "");
+        
+        // 立即开始第一轮测试
+        StartWakeWordTestCycle();
+    } else {
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════╗");
+        ESP_LOGI(TAG, "║  🛑 Wake Word Test Mode DISABLED                        ║");
+        ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════╝");
+        ESP_LOGI(TAG, "");
+        
+        // 停止唤醒词检测
+        audio_service_.EnableWakeWordDetection(false);
     }
 }
