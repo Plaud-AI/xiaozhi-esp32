@@ -221,7 +221,17 @@ inline bool InitEmotionSystemFromAssets(Display* display,
         return false;
     }
 
-    // 初始化情感协调器
+    // 🔧 关键修复：先注册动画，再初始化协调器
+    // 1. 从 assets 分区注册动画
+    int count = EmotionAssetsLoader::RegisterStandardAnimationsFromAssets();
+    ESP_LOGI(TAG, "Registered %d animations from assets partition", count);
+
+    if (count == 0) {
+        ESP_LOGW(TAG, "No animations found in assets, emotion system may not work");
+        return false;
+    }
+
+    // 2. 初始化情感协调器（此时动画已注册，可以正常播放）
     auto& coordinator = EmotionCoordinator::Instance();
     
     EmotionSystemConfig config;
@@ -235,15 +245,6 @@ inline bool InitEmotionSystemFromAssets(Display* display,
 
     if (!coordinator.Init(config, screen)) {
         ESP_LOGE(TAG, "Failed to initialize emotion coordinator");
-        return false;
-    }
-
-    // 从 assets 分区注册动画
-    int count = EmotionAssetsLoader::RegisterStandardAnimationsFromAssets();
-    ESP_LOGI(TAG, "Registered %d animations from assets partition", count);
-
-    if (count == 0) {
-        ESP_LOGW(TAG, "No animations found in assets, emotion system may not work");
         return false;
     }
 
