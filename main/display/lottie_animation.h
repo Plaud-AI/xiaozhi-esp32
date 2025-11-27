@@ -1,6 +1,7 @@
 #pragma once
 
 #include "lvgl.h"
+#include "widgets/lottie/lv_lottie.h"
 #include <string>
 #include <functional>
 
