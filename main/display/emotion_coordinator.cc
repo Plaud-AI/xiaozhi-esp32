@@ -15,10 +15,12 @@ EmotionCoordinator& EmotionCoordinator::Instance()
 bool EmotionCoordinator::Init(const EmotionSystemConfig& config, lv_obj_t* parent)
 {
     config_ = config;
+    animation_container_ = parent;  // 保存动画容器引用
 
     ESP_LOGI(TAG, "Initializing Emotion System...");
     ESP_LOGI(TAG, "  Animation path: %s", config.animation_base_path.c_str());
     ESP_LOGI(TAG, "  Screen size: %dx%d", config.screen_width, config.screen_height);
+    ESP_LOGI(TAG, "  Animation container: %p", animation_container_);
 
     // 1. 初始化情感状态管理器
     auto& state_mgr = EmotionStateManager::Instance();
@@ -249,6 +251,11 @@ void EmotionCoordinator::PlayEmotionAnimation(EmotionState emotion)
     bool use_assets = (config_.animation_base_path == "assets:");
     
     if (use_assets) {
+        // 停止当前动画（通过 AnimationManager）
+        auto& lottie_mgr = lottie::AnimationManager::Instance();
+        lottie_mgr.Stop();
+        ESP_LOGI(TAG, "Stopped previous animation");
+        
         // 从 assets 分区加载（memory-mapped 方式）
         void* data = nullptr;
         size_t size = 0;
@@ -262,11 +269,13 @@ void EmotionCoordinator::PlayEmotionAnimation(EmotionState emotion)
         ESP_LOGI(TAG, "Loading animation from assets: %s (%u bytes)", 
                  EmotionStateToString(emotion), size);
 
-        // 获取当前屏幕
-        lv_obj_t* screen = lv_scr_act();
+        // 使用保存的动画容器（如果没有则回退到当前屏幕）
+        lv_obj_t* parent = animation_container_ ? animation_container_ : lv_scr_act();
+        ESP_LOGI(TAG, "Creating animation on parent: %p (container=%p, screen=%p)", 
+                 parent, animation_container_, lv_scr_act());
         
         // 创建新的 Lottie 动画对象
-        auto* anim = EmotionAssetsLoader::CreateAnimationFromAssets(screen, emotion);
+        auto* anim = EmotionAssetsLoader::CreateAnimationFromAssets(parent, emotion);
         if (!anim) {
             ESP_LOGE(TAG, "Failed to create animation");
             return;

@@ -259,8 +259,9 @@ private:
     void PlayEmotionAnimation(EmotionState emotion);
 
     // 成员变量
-    bool initialized_;
+    bool initialized_ = false;
     EmotionSystemConfig config_;
+    lv_obj_t* animation_container_ = nullptr;  // LVGL 动画容器（用于创建动画对象）
     
     std::function<void(const std::string&)> animation_start_callback_;
 };
