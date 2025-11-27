@@ -117,32 +117,6 @@ void EmotionDisplay::SetVolume(int level) {
     ShowTopBar(nullptr, msg, 1500);
 }
 
-void EmotionDisplay::SetPreviewImage(const void* image_data) {
-    // 情感显示界面不支持预览图片
-    ESP_LOGW(TAG, "Preview image not supported in EmotionDisplay");
-}
-
-void EmotionDisplay::SetStatusIcon(StatusIcon icon, bool visible) {
-    // 可以根据不同的图标类型显示不同的表情
-    if (!visible || !emotion_system_initialized_) return;
-    
-    switch (icon) {
-        case StatusIcon::WIFI:
-            ShowEmotion(lottie::EmotionType::THINKING, 1000);
-            break;
-        case StatusIcon::RECORDING:
-            ShowEmotion(lottie::EmotionType::NEUTRAL, -1);
-            break;
-        case StatusIcon::SPEAKING:
-            ShowEmotion(lottie::EmotionType::HAPPY, -1);
-            break;
-        case StatusIcon::LOADING:
-            ShowEmotion(lottie::EmotionType::THINKING, -1);
-            break;
-        default:
-            break;
-    }
-}
 
 // ============================================================================
 // 情感动画相关接口
@@ -421,7 +395,7 @@ void EmotionDisplay::CreateTopBar() {
     top_bar_label_ = lv_label_create(top_bar_);
     lv_label_set_text(top_bar_label_, "");
     lv_obj_set_style_text_color(top_bar_label_, lv_color_white(), 0);
-    lv_obj_set_style_text_font(top_bar_label_, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(top_bar_label_, &lv_font_montserrat_14, 0);
     lv_obj_add_flag(top_bar_label_, LV_OBJ_FLAG_HIDDEN);  // 默认隐藏
 
     // 默认隐藏整个状态栏
@@ -448,7 +422,7 @@ void EmotionDisplay::CreateAnimationArea() {
 }
 
 void EmotionDisplay::OnTopBarTimeout(lv_timer_t* timer) {
-    EmotionDisplay* display = static_cast<EmotionDisplay*>(timer->user_data);
+    EmotionDisplay* display = static_cast<EmotionDisplay*>(lv_timer_get_user_data(timer));
     if (display) {
         display->HideTopBar();
     }

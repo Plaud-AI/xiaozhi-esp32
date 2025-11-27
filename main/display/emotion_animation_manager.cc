@@ -5,8 +5,6 @@
 
 static const char* TAG = "EmotionAnimMgr";
 
-xxx
-
 namespace lottie {
 
 // 自动返回定时器回调

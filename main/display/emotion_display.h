@@ -64,13 +64,35 @@ public:
     void Unlock() override;
     void SetChatMessage(const char* role, const char* content) override;
     void ShowNotification(const char* message, int duration_ms = 3000) override;
-    void ShowLowBatteryWarning() override;
-    void HideLowBatteryWarning() override;
-    void SetBatteryLevel(int percentage) override;
-    void SetNetworkStatus(bool connected) override;
-    void SetVolume(int level) override;
-    void SetPreviewImage(const void* image_data) override;
-    void SetStatusIcon(StatusIcon icon, bool visible) override;
+
+    // ========================================================================
+    // 扩展接口（非 override）
+    // ========================================================================
+
+    /**
+     * @brief 显示低电量警告
+     */
+    void ShowLowBatteryWarning();
+
+    /**
+     * @brief 隐藏低电量警告
+     */
+    void HideLowBatteryWarning();
+
+    /**
+     * @brief 设置电池电量
+     */
+    void SetBatteryLevel(int percentage);
+
+    /**
+     * @brief 设置网络状态
+     */
+    void SetNetworkStatus(bool connected);
+
+    /**
+     * @brief 设置音量
+     */
+    void SetVolume(int level);
 
     // ========================================================================
     // 情感动画相关接口
@@ -236,6 +258,10 @@ private:
      */
     static void OnTopBarTimeout(lv_timer_t* timer);
 
+    // 尺寸
+    int width_;
+    int height_;
+    
     // UI 对象
     lv_obj_t* screen_;              // 主屏幕
     lv_obj_t* top_bar_;             // 顶部状态栏
@@ -249,9 +275,6 @@ private:
     bool emotion_system_initialized_;
     bool top_bar_visible_;
     TopBarConfig top_bar_config_;
-    
-    int width_;
-    int height_;
 };
 
 } // namespace display
