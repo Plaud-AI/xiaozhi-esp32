@@ -11,6 +11,7 @@
 #include "assets.h"
 #include "lottie_animation.h"
 #include "emotion_coordinator.h"
+#include "display.h"
 #include "esp_log.h"
 #include <string>
 #include <map>

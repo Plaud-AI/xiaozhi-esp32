@@ -175,9 +175,11 @@ void LottieAnimation::SetSpeed(float speed)
 
     lv_anim_t* anim = lv_lottie_get_anim(lottie_obj_);
     if (anim) {
-        // 调整动画速度（通过调整持续时间）
+        // LVGL 9.x 的 lv_anim_t 结构体字段已更改
+        // 使用 lv_anim_set_time 来调整速度
         if (speed > 0.01f) {
-            anim->time = (uint32_t)(anim->time / speed);
+            uint32_t current_time = lv_anim_get_playtime(anim);
+            lv_anim_set_time(anim, (uint32_t)(current_time / speed));
         }
         ESP_LOGI(TAG, "Speed set to: %.2f", speed);
     }
@@ -229,16 +231,6 @@ uint32_t LottieAnimation::GetCurrentFrame() const
 #else
     return 0;
 #endif
-}
-
-lv_obj_t* LottieAnimation::GetObject()
-{
-    return lottie_obj_;
-}
-
-const lv_obj_t* LottieAnimation::GetObject() const
-{
-    return lottie_obj_;
 }
 
 } // namespace lottie

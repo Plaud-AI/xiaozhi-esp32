@@ -1,7 +1,7 @@
 #include "wifi_board.h"
 #include "codecs/box_audio_codec.h"
 #include "display/lcd_display.h"
-#include "display/emotion_system_init.h"  // 添加情感系统
+#include "display/emotion_assets_loader.h"  // 从 Assets 加载动画
 #include "application.h"
 #include "button.h"
 #include "config.h"

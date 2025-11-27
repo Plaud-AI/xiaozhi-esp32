@@ -75,7 +75,7 @@ public:
      * @param width 宽度（像素）
      * @param height 高度（像素）
      */
-    void SetSize(int width, int height);
+    void SetSize(int32_t width, int32_t height);
 
     /**
      * @brief 设置动画位置
@@ -83,7 +83,7 @@ public:
      * @param x X 坐标
      * @param y Y 坐标
      */
-    void SetPosition(int x, int y);
+    void SetPosition(int32_t x, int32_t y);
 
     /**
      * @brief 居中显示
@@ -116,7 +116,8 @@ public:
      * 
      * @return lv_obj_t* LVGL 对象指针
      */
-    lv_obj_t* GetObject() const { return lottie_obj_; }
+    lv_obj_t* GetObject() { return lottie_obj_; }
+    const lv_obj_t* GetObject() const { return lottie_obj_; }
 
     /**
      * @brief 获取总帧数
