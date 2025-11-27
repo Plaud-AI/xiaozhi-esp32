@@ -3089,6 +3089,7 @@ CONFIG_LV_COLOR_MIX_ROUND_OFS=128
 # CONFIG_LV_USE_OBJ_ID is not set
 # CONFIG_LV_USE_OBJ_NAME is not set
 # CONFIG_LV_USE_OBJ_PROPERTY is not set
+# CONFIG_LV_USE_VG_LITE_THORVG is not set
 # end of Others
 # end of Feature Configuration
 
@@ -3278,6 +3279,8 @@ CONFIG_LV_USE_LODEPNG=y
 # CONFIG_LV_USE_TINY_TTF is not set
 # CONFIG_LV_USE_RLOTTIE is not set
 CONFIG_LV_USE_THORVG=y
+CONFIG_LV_USE_THORVG_INTERNAL=y
+# CONFIG_LV_USE_THORVG_EXTERNAL is not set
 # CONFIG_LV_USE_LZ4 is not set
 # CONFIG_LV_USE_FFMPEG is not set
 # end of 3rd Party Libraries

@@ -859,3 +859,7 @@ if ("${size}" AND "${offset}")
 else()
     message(STATUS "Assets partition not found, using v1 partition table")
 endif()
+
+# 禁用 LVGL/ThorVG 的格式警告（第三方库兼容性问题）
+idf_component_get_property(lvgl_lib lvgl__lvgl COMPONENT_LIB)
+target_compile_options(${lvgl_lib} PRIVATE -Wno-error=format)
