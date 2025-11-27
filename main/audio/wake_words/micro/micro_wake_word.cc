@@ -233,13 +233,21 @@ void MicroWakeWord::EncodeWakeWordData() {
   }
 
   auto encoder = std::make_unique<OpusEncoderWrapper>(16000, 1, OPUS_FRAME_DURATION_MS);
+  if (!encoder) {
+    ESP_LOGE(TAG, "Failed to create OPUS encoder");
+    return;
+  }
+  
   encoder->SetComplexity(0);  // Fastest encoding
 
   wake_word_opus_.clear();
   
+  // 🔧 修复：避免在回调中捕获 this，直接使用局部引用
+  auto& wake_word_opus_ref = wake_word_opus_;
+  
   // Encode the PCM data
-  encoder->Encode(std::move(wake_word_pcm_), [this](std::vector<uint8_t>&& opus) {
-    wake_word_opus_.insert(wake_word_opus_.end(), opus.begin(), opus.end());
+  encoder->Encode(std::move(wake_word_pcm_), [&wake_word_opus_ref](std::vector<uint8_t>&& opus) {
+    wake_word_opus_ref.insert(wake_word_opus_ref.end(), opus.begin(), opus.end());
   });
 
   ESP_LOGI(TAG, "Wake word encoding complete: %zu bytes", wake_word_opus_.size());
