@@ -412,9 +412,10 @@ public:
         InitializeSt7789Display(); 
         #endif
         
-        // 初始化情感系统（在 Display 初始化之后）
+        // 初始化情感系统（使用 assets 分区的 memory-mapped 方式）
+        // 注意：动画从 assets 分区直接加载，不需要挂载文件系统
         ESP_LOGI(TAG, "Initializing emotion system...");
-        if (emotion::InitEmotionSystem(display_, "/spiffs/anim/", DISPLAY_WIDTH, DISPLAY_HEIGHT)) {
+        if (emotion::InitEmotionSystemFromAssets(display_, DISPLAY_WIDTH, DISPLAY_HEIGHT)) {
             ESP_LOGI(TAG, "✅ Emotion system ready!");
         } else {
             ESP_LOGW(TAG, "⚠️  Emotion system init failed (will continue without emotions)");
