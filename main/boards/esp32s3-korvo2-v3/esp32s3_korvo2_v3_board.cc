@@ -1,6 +1,7 @@
 #include "wifi_board.h"
 #include "codecs/box_audio_codec.h"
 #include "display/lcd_display.h"
+#include "display/emotion_system_init.h"  // 添加情感系统
 #include "application.h"
 #include "button.h"
 #include "config.h"
@@ -410,6 +411,14 @@ public:
         #else
         InitializeSt7789Display(); 
         #endif
+        
+        // 初始化情感系统（在 Display 初始化之后）
+        ESP_LOGI(TAG, "Initializing emotion system...");
+        if (emotion::InitEmotionSystem(display_, "/spiffs/anim/", DISPLAY_WIDTH, DISPLAY_HEIGHT)) {
+            ESP_LOGI(TAG, "✅ Emotion system ready!");
+        } else {
+            ESP_LOGW(TAG, "⚠️  Emotion system init failed (will continue without emotions)");
+        }
     }
 
     virtual AudioCodec* GetAudioCodec() override {
