@@ -730,6 +730,13 @@ endforeach()
 
 endif()
 
+# ============================================================================
+# 🎨 Lottie 动画资源配置
+# ============================================================================
+# 设置额外资源目录（包含 Lottie 动画）
+# assets_source/anim/ 目录中的动画文件会自动打包到 assets 分区
+set(DEFAULT_ASSETS_EXTRA_FILES "${PROJECT_DIR}/assets_source")
+message(STATUS "🎭 Lottie animations will be included from: ${DEFAULT_ASSETS_EXTRA_FILES}/anim/")
 
 # Function to build default assets based on configuration
 function(build_default_assets_bin)
