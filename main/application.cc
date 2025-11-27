@@ -263,6 +263,14 @@ void Application::ShowActivationCode(const std::string& code, const std::string&
  * - 0.523 → "0523" → 读作 "零五二三"
  */
 void Application::SpeakProbability(float probability) {
+    // 确保音频输出已启用
+    auto codec = Board::GetInstance().GetAudioCodec();
+    if (!codec->output_enabled()) {
+        ESP_LOGI(TAG, "🔊 Enabling audio output for digit playback...");
+        codec->EnableOutput(true);
+        vTaskDelay(pdMS_TO_TICKS(100));  // 等待音频输出稳定
+    }
+    
     // 定义数字到音频的映射
     struct digit_sound {
         char digit;
@@ -298,7 +306,8 @@ void Application::SpeakProbability(float probability) {
             ESP_LOGI(TAG, "   Reading digit: %c", digit);
             audio_service_.PlaySound(it->sound);
             // 等待当前数字播放完成后再播放下一个
-            vTaskDelay(pdMS_TO_TICKS(600));  // 每个数字之间间隔 600ms
+            // 数字音频通常 ~500ms，加上缓冲时间，延迟 1200ms 确保播放完成
+            vTaskDelay(pdMS_TO_TICKS(1200));
         }
     }
     
@@ -1241,10 +1250,10 @@ void Application::OnWakeWordDetectedInTestMode() {
     ESP_LOGI(TAG, "⏳ Cooling down for 5 seconds before next test cycle...");
     vTaskDelay(pdMS_TO_TICKS(5000));
     
-    // 触发下一轮测试循环
+    // 直接开始下一轮测试循环（避免并发问题）
     if (wake_word_test_mode_enabled_) {
         ESP_LOGI(TAG, "🔄 Starting next test cycle...");
-        xEventGroupSetBits(event_group_, MAIN_EVENT_WAKE_WORD_TEST_CYCLE);
+        StartWakeWordTestCycle();  // 直接调用，不通过事件
     }
 }
 
