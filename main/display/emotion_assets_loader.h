@@ -88,15 +88,15 @@ public:
         };
 
         EmotionMapping mappings[] = {
-            {EmotionState::HAPPY,      "happy",      false},
-            {EmotionState::SAD,        "sad",        false},
-            {EmotionState::EXCITED,    "excited",    false},
-            {EmotionState::CALM,       "calm",       false},
-            {EmotionState::SLEEPY,     "sleepy",     false},
-            {EmotionState::SURPRISED,  "surprised",  false},
-            {EmotionState::LISTENING,  "listening",  true},
-            {EmotionState::THINKING,   "thinking",   true},
-            {EmotionState::SPEAKING,   "speaking",   true},
+            {EmotionState::HAPPY,      "happy",      true},   // 循环播放，持续展示
+            {EmotionState::SAD,        "sad",        true},   // 循环播放，持续展示
+            {EmotionState::EXCITED,    "excited",    true},   // 循环播放，持续展示
+            {EmotionState::CALM,       "calm",       true},   // 循环播放，持续展示
+            {EmotionState::SLEEPY,     "sleepy",     true},   // 循环播放，持续展示
+            {EmotionState::SURPRISED,  "surprised",  true},   // 循环播放，持续展示
+            {EmotionState::LISTENING,  "listening",  true},   // 循环播放
+            {EmotionState::THINKING,   "thinking",   true},   // 循环播放
+            {EmotionState::SPEAKING,   "speaking",   true},   // 循环播放
         };
 
         int count = 0;

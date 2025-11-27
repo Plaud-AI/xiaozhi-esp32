@@ -150,6 +150,9 @@ void LcdEmotionDisplay::CreateStatusBar() {
     lv_obj_set_style_border_width(status_bar_, 0, 0);
     lv_obj_set_style_radius(status_bar_, 0, 0);
     lv_obj_set_style_pad_all(status_bar_, 5, 0);
+    
+    // 确保状态栏始终显示在最前面（作为 overlay）
+    lv_obj_move_foreground(status_bar_);
 
     // 默认隐藏状态栏
     lv_obj_add_flag(status_bar_, LV_OBJ_FLAG_HIDDEN);
@@ -192,6 +195,8 @@ void LcdEmotionDisplay::SetStatus(const char* status) {
     // 如果有状态文字，显示状态栏
     if (strlen(status) > 0) {
         lv_obj_clear_flag(status_bar_, LV_OBJ_FLAG_HIDDEN);
+        // 确保状态栏显示在动画上方
+        lv_obj_move_foreground(status_bar_);
     } else {
         lv_obj_add_flag(status_bar_, LV_OBJ_FLAG_HIDDEN);
     }
@@ -209,6 +214,9 @@ void LcdEmotionDisplay::ShowNotification(const char* message, int duration_ms) {
     lv_label_set_text(notification_label_, message);
     lv_obj_clear_flag(notification_label_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(status_bar_, LV_OBJ_FLAG_HIDDEN);
+    
+    // 确保状态栏显示在动画上方
+    lv_obj_move_foreground(status_bar_);
 
     // 设置定时隐藏
     if (duration_ms > 0) {
@@ -251,6 +259,41 @@ void LcdEmotionDisplay::SetChatMessage(const char* role, const char* content) {
     if (content && strlen(content) > 0) {
         ShowNotification(content, 3000);
     }
+}
+
+void LcdEmotionDisplay::SetEmotion(const char* emotion) {
+    if (!emotion || !emotion_system_initialized_) {
+        ESP_LOGW(TAG, "Cannot set emotion: %s (initialized=%d)", 
+                 emotion ? emotion : "null", emotion_system_initialized_);
+        return;
+    }
+
+    // 简单映射：字符串 -> EmotionState
+    // Application 通常调用这个接口，传入的是字符串（如 "neutral", "happy" 等）
+    ESP_LOGI(TAG, "SetEmotion called with: %s", emotion);
+    
+    // 对于常见的情感名称，映射到对应的 EmotionState
+    emotion::EmotionState state = emotion::EmotionState::CALM;  // 默认
+    
+    if (strcmp(emotion, "neutral") == 0 || strcmp(emotion, "calm") == 0) {
+        state = emotion::EmotionState::CALM;
+    } else if (strcmp(emotion, "happy") == 0) {
+        state = emotion::EmotionState::HAPPY;
+    } else if (strcmp(emotion, "sad") == 0) {
+        state = emotion::EmotionState::SAD;
+    } else if (strcmp(emotion, "excited") == 0) {
+        state = emotion::EmotionState::EXCITED;
+    } else if (strcmp(emotion, "sleepy") == 0) {
+        state = emotion::EmotionState::SLEEPY;
+    } else if (strcmp(emotion, "surprised") == 0) {
+        state = emotion::EmotionState::SURPRISED;
+    } else if (strcmp(emotion, "listening") == 0) {
+        state = emotion::EmotionState::LISTENING;
+    } else {
+        ESP_LOGW(TAG, "Unknown emotion: %s, using CALM", emotion);
+    }
+    
+    ShowEmotion(state);
 }
 
 void LcdEmotionDisplay::UpdateStatusBar(bool update_all) {

@@ -276,10 +276,13 @@ void EmotionCoordinator::PlayEmotionAnimation(EmotionState emotion)
         anim->SetSize(config_.screen_width, config_.screen_height);
         anim->Center();
         
+        // 确保动画显示在最前面（避免被状态栏等UI元素遮挡）
+        lv_obj_move_foreground(anim->GetObject());
+        
         // 播放
         anim->Play(loop);
 
-        ESP_LOGI(TAG, "Animation playing from assets");
+        ESP_LOGI(TAG, "Animation playing from assets (loop=%d)", loop);
 
         // 通知动画开始回调
         if (animation_start_callback_) {
