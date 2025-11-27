@@ -1251,9 +1251,9 @@ void Application::OnWakeWordDetectedInTestMode() {
     ESP_LOGI(TAG, "🔊 Speaking probability digits...");
     SpeakProbability(last_wake_word_probability_);
     
-    // 等待冷却时间（5秒）后自动开始下一轮
-    ESP_LOGI(TAG, "⏳ Cooling down for 5 seconds before next test cycle...");
-    vTaskDelay(pdMS_TO_TICKS(5000));
+    // 等待冷却时间（2秒）后自动开始下一轮
+    ESP_LOGI(TAG, "⏳ Cooling down for 2 seconds before next test cycle...");
+    vTaskDelay(pdMS_TO_TICKS(2000));
     
     // 直接开始下一轮测试循环（避免并发问题）
     if (wake_word_test_mode_enabled_) {
@@ -1284,7 +1284,7 @@ void Application::EnableWakeWordTestMode(bool enable) {
         ESP_LOGI(TAG, "║  2. Say wake word                                        ║");
         ESP_LOGI(TAG, "║  3. High beep (detected)                                 ║");
         ESP_LOGI(TAG, "║  4. Speak probability digits (e.g. 0567 for 0.567)       ║");
-        ESP_LOGI(TAG, "║  5. Cooldown 5 seconds                                   ║");
+        ESP_LOGI(TAG, "║  5. Cooldown 2 seconds                                   ║");
         ESP_LOGI(TAG, "║  6. Auto repeat                                          ║");
         ESP_LOGI(TAG, "║                                                          ║");
         ESP_LOGI(TAG, "║  To stop: Call EnableWakeWordTestMode(false)             ║");

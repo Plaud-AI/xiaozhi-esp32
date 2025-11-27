@@ -38,7 +38,7 @@ idf.py build flash monitor
 3. **听到高音** "嘀嘀~" → 检测成功
 4. **听到数字播报** "零五六七" → 概率 0.567
 5. **查看日志** 查看检测概率
-6. **等待 5 秒** → 自动循环到步骤 1
+6. **等待 2 秒** → 自动循环到步骤 1
 
 ---
 
@@ -54,7 +54,7 @@ I (5000) Application: ║  1. Low beep (ready)                                  
 I (5000) Application: ║  2. Say wake word                                        ║
 I (5000) Application: ║  3. High beep (detected)                                 ║
 I (5000) Application: ║  4. Speak probability digits (e.g. 0567 for 0.567)       ║
-I (5000) Application: ║  5. Cooldown 5 seconds                                   ║
+I (5000) Application: ║  5. Cooldown 2 seconds                                   ║
 I (5000) Application: ║  6. Auto repeat                                          ║
 I (5000) Application: ╚══════════════════════════════════════════════════════════╝
 I (5100) Application: 🔔 Playing beep tone: 500 Hz, 200 ms
@@ -80,8 +80,8 @@ I (9584) Application:    Reading digit: 5
 I (10184) Application:    Reading digit: 6
 I (10784) Application:    Reading digit: 7
 I (11384) Application: ✅ Finished reading probability digits
-I (11384) Application: ⏳ Cooling down for 5 seconds before next test cycle...
-I (16384) Application: 🔄 Starting next test cycle...
+I (11384) Application: ⏳ Cooling down for 2 seconds before next test cycle...
+I (13384) Application: 🔄 Starting next test cycle...
 I (12684) Application: 🔔 Playing beep tone: 500 Hz, 200 ms
 ... (循环继续)
 ```
@@ -117,7 +117,7 @@ float threshold_hey_ploud = 0.55;  // 改为 0.50 或 0.60
 在 `main/application.cc` 的 `OnWakeWordDetectedInTestMode()` 函数中：
 
 ```cpp
-vTaskDelay(pdMS_TO_TICKS(5000));  // 5秒 → 改为 3000（3秒）或 10000（10秒）
+vTaskDelay(pdMS_TO_TICKS(2000));  // 2秒（当前值）→ 改为 3000（3秒）或 5000（5秒）
 ```
 
 ### **调整数字播报间隔**

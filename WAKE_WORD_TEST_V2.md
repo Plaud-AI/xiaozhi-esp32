@@ -79,9 +79,9 @@ vTaskDelay(pdMS_TO_TICKS(500));
 ESP_LOGI(TAG, "🔊 Speaking probability digits...");
 SpeakProbability(last_wake_word_probability_);
 
-// 等待冷却时间（5秒）
-ESP_LOGI(TAG, "⏳ Cooling down for 5 seconds...");
-vTaskDelay(pdMS_TO_TICKS(5000));
+// 等待冷却时间（2秒）
+ESP_LOGI(TAG, "⏳ Cooling down for 2 seconds...");
+vTaskDelay(pdMS_TO_TICKS(2000));
 ```
 
 ---
@@ -102,7 +102,7 @@ vTaskDelay(pdMS_TO_TICKS(5000));
 1. 听到低音 → 说唤醒词
 2. 听到高音 → **听到** "零五六七"
 3. **脑中记忆或口述** → 边听边记录
-4. 5 秒后继续
+4. 2 秒后继续
 
 **优势**：可以闭着眼睛测试！👍
 
@@ -121,21 +121,21 @@ X+2.3s: 下一轮开始
 
 **每轮最短**：~2.5 秒
 
-### **V2（5 秒冷却 + 数字播报）**
+### **V2（2 秒冷却 + 数字播报）**
 
 ```
 0s: 低音 → 等待用户
 Xs: 检测到 → 高音
 X+0.5s: 播报 "零" (0)
-X+1.1s: 播报 "五" (5)
-X+1.7s: 播报 "六" (6)
-X+2.3s: 播报 "七" (7)
-X+2.9s: 播报完成
-X+7.9s: 下一轮开始
+X+1.7s: 播报 "五" (5)
+X+2.9s: 播报 "六" (6)
+X+4.1s: 播报 "七" (7)
+X+5.3s: 播报完成
+X+7.3s: 下一轮开始
 ```
 
-**每轮最短**：~8 秒  
-**数字播报时间**：~2.4 秒（4 个数字）
+**每轮最短**：~7.5 秒  
+**数字播报时间**：~4.8 秒（4 个数字 × 1200ms）
 
 ---
 
