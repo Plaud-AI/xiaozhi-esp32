@@ -29,7 +29,7 @@ public:
      * @brief 从 assets 分区注册动画
      * 
      * @param emotion 情感类型
-     * @param asset_name Assets 中的资源名称（如 "anim/happy"）
+     * @param asset_name Assets 中的资源名称（如 "happy"）
      * @param loop 是否循环
      * @return true 成功
      */
@@ -75,7 +75,7 @@ public:
      * @brief 批量注册标准情感动画
      * 
      * 从 assets 分区注册所有标准情感动画
-     * 假设 assets 中的命名为：anim/happy, anim/sad 等
+     * 假设 assets 中的命名为：happy, sad 等
      * 
      * @return 成功注册的数量
      */
@@ -88,15 +88,15 @@ public:
         };
 
         EmotionMapping mappings[] = {
-            {EmotionState::HAPPY,      "anim/happy",      false},
-            {EmotionState::SAD,        "anim/sad",        false},
-            {EmotionState::EXCITED,    "anim/excited",    false},
-            {EmotionState::CALM,       "anim/calm",       false},
-            {EmotionState::SLEEPY,     "anim/sleepy",     false},
-            {EmotionState::SURPRISED,  "anim/surprised",  false},
-            {EmotionState::LISTENING,  "anim/listening",  true},
-            {EmotionState::THINKING,   "anim/thinking",   true},
-            {EmotionState::SPEAKING,   "anim/speaking",   true},
+            {EmotionState::HAPPY,      "happy",      false},
+            {EmotionState::SAD,        "sad",        false},
+            {EmotionState::EXCITED,    "excited",    false},
+            {EmotionState::CALM,       "calm",       false},
+            {EmotionState::SLEEPY,     "sleepy",     false},
+            {EmotionState::SURPRISED,  "surprised",  false},
+            {EmotionState::LISTENING,  "listening",  true},
+            {EmotionState::THINKING,   "thinking",   true},
+            {EmotionState::SPEAKING,   "speaking",   true},
         };
 
         int count = 0;
