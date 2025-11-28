@@ -114,10 +114,10 @@ public:
     /**
      * @brief 获取 LVGL 对象
      * 
-     * @return lv_obj_t* LVGL 对象指针
+     * @return lv_obj_t* LVGL Canvas 对象指针
      */
-    lv_obj_t* GetObject() { return lottie_obj_; }
-    const lv_obj_t* GetObject() const { return lottie_obj_; }
+    lv_obj_t* GetObject() { return canvas_obj_; }
+    const lv_obj_t* GetObject() const { return canvas_obj_; }
 
     /**
      * @brief 获取总帧数
