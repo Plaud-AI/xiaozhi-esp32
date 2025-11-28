@@ -74,15 +74,21 @@ bool LottieAnimation::LoadFromData(const void* data, size_t size)
 
     ESP_LOGI(TAG, "Loading lottie animation from data (%u bytes)", size);
 
-    // 验证对象大小（应该在 SetSize 中已设置）
-    lv_coord_t w = lv_obj_get_width(lottie_obj_);
-    lv_coord_t h = lv_obj_get_height(lottie_obj_);
-    ESP_LOGI(TAG, "Object size: %ldx%ld", w, h);
-
     // LVGL 9.x API
     // 注意：lv_lottie_set_src_data 会立即调用 lottie_update(0) 渲染第一帧
     // 并且会更新动画的时长，动画会自动开始播放
     lv_lottie_set_src_data(lottie_obj_, data, size);
+
+    // 🔑 关键修复：lv_lottie_set_src_data 会重置对象大小为 Lottie JSON 中的原始尺寸
+    // 必须在加载数据后立即重新设置为我们的 buffer 尺寸
+    if (buffer_width_ > 0 && buffer_height_ > 0) {
+        lv_obj_set_size(lottie_obj_, buffer_width_, buffer_height_);
+        ESP_LOGI(TAG, "✅ Re-applied object size after loading: %ldx%ld", buffer_width_, buffer_height_);
+        
+        lv_coord_t w = lv_obj_get_width(lottie_obj_);
+        lv_coord_t h = lv_obj_get_height(lottie_obj_);
+        ESP_LOGI(TAG, "✅ Final object size: %ldx%ld", w, h);
+    }
 
     ESP_LOGI(TAG, "✅ Animation loaded successfully from data");
     return true;
