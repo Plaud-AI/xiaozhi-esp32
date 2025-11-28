@@ -299,8 +299,13 @@ void EmotionCoordinator::PlayEmotionAnimation(EmotionState emotion)
         ESP_LOGI(TAG, "Animation set: size=%dx%d, pos=(0,0)", 
                  config_.screen_width, config_.screen_height);
         
-        // 播放
-        anim->Play(loop);
+        // ⚠️ 临时禁用播放，因为 Lottie 对象大小在首次渲染前是 0，会导致死循环
+        ESP_LOGW(TAG, "⚠️  Lottie playback DISABLED to avoid watchdog timeout");
+        ESP_LOGW(TAG, "⚠️  Root cause: Lottie object size is 0 before first render");
+        ESP_LOGW(TAG, "⚠️  This causes lottie_update() -> lv_obj_invalidate() infinite loop");
+        
+        // TODO: 需要找到正确的方式让 Lottie 在渲染后再播放
+        // anim->Play(loop);
 
         ESP_LOGI(TAG, "Animation playing from assets (loop=%d)", loop);
 

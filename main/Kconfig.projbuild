@@ -16,7 +16,7 @@ config ENABLE_DOLL_INTERACTION
 
 config OTA_URL
     string "Default OTA URL"
-    default "http://34.221.190.98:8002/xiaozhi/ota/"
+    default "http://18.143.177.88:8002/xiaozhi/ota/"
     help
         The application will access this URL to check for new firmwares and server address.
 
