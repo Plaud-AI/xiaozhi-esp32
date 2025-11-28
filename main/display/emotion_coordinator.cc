@@ -299,13 +299,24 @@ void EmotionCoordinator::PlayEmotionAnimation(EmotionState emotion)
         ESP_LOGI(TAG, "Animation set: size=%dx%d, pos=(0,0)", 
                  config_.screen_width, config_.screen_height);
         
-        // ⚠️ 临时禁用播放，因为 Lottie 对象大小在首次渲染前是 0，会导致死循环
-        ESP_LOGW(TAG, "⚠️  Lottie playback DISABLED to avoid watchdog timeout");
-        ESP_LOGW(TAG, "⚠️  Root cause: Lottie object size is 0 before first render");
-        ESP_LOGW(TAG, "⚠️  This causes lottie_update() -> lv_obj_invalidate() infinite loop");
+        // 🔑 关键修复：强制刷新对象布局，让 LVGL 计算 Lottie 对象的实际大小
+        lv_obj_update_layout(lottie_obj);
         
-        // TODO: 需要找到正确的方式让 Lottie 在渲染后再播放
-        // anim->Play(loop);
+        // 验证对象大小（调试）
+        lv_coord_t final_width = lv_obj_get_width(lottie_obj);
+        lv_coord_t final_height = lv_obj_get_height(lottie_obj);
+        ESP_LOGI(TAG, "After layout update: size=%dx%d", final_width, final_height);
+        
+        if (final_width > 0 && final_height > 0) {
+            // 大小有效，可以安全播放
+            ESP_LOGI(TAG, "✅ Object size valid, starting playback");
+            anim->Play(loop);
+            ESP_LOGI(TAG, "✅ Animation playback started successfully");
+        } else {
+            // 大小仍然是 0，不播放
+            ESP_LOGW(TAG, "⚠️  Object size still 0x0, skipping playback");
+            ESP_LOGW(TAG, "⚠️  Lottie animation will not display");
+        }
 
         ESP_LOGI(TAG, "Animation playing from assets (loop=%d)", loop);
 

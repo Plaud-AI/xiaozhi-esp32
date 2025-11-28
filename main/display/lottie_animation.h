@@ -146,8 +146,13 @@ private:
     lv_obj_t* lottie_obj_;          // ThorVG Lottie 对象
     std::function<void()> complete_callback_;  // 完成回调
     bool is_playing_;               // 播放状态
+    void* buffer_;                  // ARGB8888 buffer for rendering
+    int32_t buffer_width_;          // Buffer width
+    int32_t buffer_height_;         // Buffer height
 
     static void OnAnimComplete(lv_event_t* e);
+    bool AllocateBuffer(int32_t width, int32_t height);  // 分配渲染 buffer
+    void FreeBuffer();              // 释放 buffer
 };
 
 } // namespace lottie

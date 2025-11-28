@@ -8,6 +8,9 @@ static const char* TAG = "LottieAnimation";
 LottieAnimation::LottieAnimation(lv_obj_t* parent)
     : parent_(parent ? parent : lv_scr_act())
     , lottie_obj_(nullptr)
+    , buffer_(nullptr)
+    , buffer_width_(0)
+    , buffer_height_(0)
 {
     if (!parent_) {
         ESP_LOGE(TAG, "Parent object is null and no active screen");
@@ -22,6 +25,15 @@ LottieAnimation::LottieAnimation(lv_obj_t* parent)
         return;
     }
     
+    // 🔑 关键修复：lv_lottie_constructor 会立即启动动画（lv_anim_start）
+    // 必须立即暂停，避免在设置大小前触发 lv_obj_invalidate() 死循环
+    lv_anim_t* anim = lv_lottie_get_anim(lottie_obj_);
+    if (anim) {
+        lv_anim_set_repeat_count(anim, 0);  // 设置为不重复
+        lv_anim_set_time(anim, 0);          // 时长设为 0（实际暂停）
+        ESP_LOGI(TAG, "Paused constructor auto-start animation");
+    }
+    
     ESP_LOGI(TAG, "Lottie animation object created successfully");
 #else
     ESP_LOGE(TAG, "LV_USE_LOTTIE not enabled");
@@ -30,6 +42,7 @@ LottieAnimation::LottieAnimation(lv_obj_t* parent)
 
 LottieAnimation::~LottieAnimation()
 {
+    FreeBuffer();
     if (lottie_obj_) {
         lv_obj_del(lottie_obj_);
         lottie_obj_ = nullptr;
@@ -48,6 +61,11 @@ bool LottieAnimation::LoadFromFile(const char* file_path)
 
     // LVGL 9.x API
     lv_lottie_set_src_file(lottie_obj_, file_path);
+    
+    // 🔑 关键修复：删除加载时自动启动的动画
+    // 我们会在后续手动调用 Play() 时重新启动
+    lv_anim_delete(lottie_obj_, nullptr);
+    ESP_LOGI(TAG, "Deleted auto-started animation after loading file");
 
     ESP_LOGI(TAG, "Animation loaded successfully");
     return true;
@@ -69,6 +87,11 @@ bool LottieAnimation::LoadFromData(const void* data, size_t size)
 
     // LVGL 9.x API
     lv_lottie_set_src_data(lottie_obj_, data, size);
+    
+    // 🔑 关键修复：删除加载时自动启动的动画
+    // lv_lottie_set_src_data 会触发动画自动播放，立即删除，稍后手动重启
+    lv_anim_delete(lottie_obj_, nullptr);
+    ESP_LOGI(TAG, "Deleted auto-started animation after loading data");
 
     ESP_LOGI(TAG, "Animation loaded successfully from data");
     return true;
@@ -165,8 +188,22 @@ void LottieAnimation::SetPosition(int32_t x, int32_t y)
 void LottieAnimation::SetSize(int32_t width, int32_t height)
 {
     if (lottie_obj_) {
+        // 🔑 关键修复：先分配 buffer，再设置大小
+        // 这样在加载数据时（lv_lottie_set_src_data）就不会触发 invalidate 死循环
+        if (!AllocateBuffer(width, height)) {
+            ESP_LOGE(TAG, "Failed to allocate buffer for %ldx%ld", width, height);
+            return;
+        }
+        
+        // 设置 buffer 到 LVGL Lottie 对象（必须在 lv_lottie_set_src_data 之前）
+#if LV_USE_LOTTIE
+        lv_lottie_set_buffer(lottie_obj_, width, height, buffer_);
+        ESP_LOGI(TAG, "✅ Buffer set: %ldx%ld at %p", width, height, buffer_);
+#endif
+        
+        // 设置对象大小
         lv_obj_set_size(lottie_obj_, width, height);
-        ESP_LOGI(TAG, "🎨 Set animation size: %dx%d", width, height);
+        ESP_LOGI(TAG, "🎨 Set animation size: %ldx%ld", width, height);
         
         // 确保对象可见
         lv_obj_clear_flag(lottie_obj_, LV_OBJ_FLAG_HIDDEN);
@@ -279,6 +316,48 @@ uint32_t LottieAnimation::GetCurrentFrame() const
 #else
     return 0;
 #endif
+}
+
+bool LottieAnimation::AllocateBuffer(int32_t width, int32_t height)
+{
+    // 如果已有buffer且大小匹配，则复用
+    if (buffer_ && buffer_width_ == width && buffer_height_ == height) {
+        ESP_LOGI(TAG, "Reusing existing buffer (%ldx%ld)", width, height);
+        return true;
+    }
+    
+    // 释放旧buffer
+    FreeBuffer();
+    
+    // 分配新buffer（ARGB8888 = 4 bytes per pixel）
+    size_t buffer_size = width * height * 4;
+    buffer_ = heap_caps_malloc(buffer_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    
+    if (!buffer_) {
+        ESP_LOGE(TAG, "Failed to allocate buffer (%zu bytes) for %ldx%ld", 
+                 buffer_size, width, height);
+        return false;
+    }
+    
+    buffer_width_ = width;
+    buffer_height_ = height;
+    
+    ESP_LOGI(TAG, "Allocated buffer: %ldx%ld (%zu bytes) at %p", 
+             width, height, buffer_size, buffer_);
+    
+    return true;
+}
+
+void LottieAnimation::FreeBuffer()
+{
+    if (buffer_) {
+        ESP_LOGI(TAG, "Freeing buffer at %p (%ldx%ld)", 
+                 buffer_, buffer_width_, buffer_height_);
+        heap_caps_free(buffer_);
+        buffer_ = nullptr;
+        buffer_width_ = 0;
+        buffer_height_ = 0;
+    }
 }
 
 } // namespace lottie
