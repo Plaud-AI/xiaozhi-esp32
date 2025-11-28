@@ -184,6 +184,10 @@ void LottieAnimation::SetSize(int32_t width, int32_t height)
     lv_lottie_set_buffer(lottie_obj_, width, height, buffer_);
     ESP_LOGI(TAG, "✅ Buffer set: %ldx%ld at %p", width, height, buffer_);
     
+    // 🔑 关键修复：手动设置对象大小（因为 lv_lottie_set_buffer 没有设置）
+    lv_obj_set_size(lottie_obj_, width, height);
+    ESP_LOGI(TAG, "✅ Manually set object size: %ldx%ld", width, height);
+    
     // 🔑 关键修复：按照 LVGL 官方示例，调用 lv_obj_center 来居中对象
     // 这会触发 LVGL 的布局更新，确保对象被正确放置和渲染
     lv_obj_center(lottie_obj_);
@@ -192,10 +196,10 @@ void LottieAnimation::SetSize(int32_t width, int32_t height)
     // 确保对象可见
     lv_obj_clear_flag(lottie_obj_, LV_OBJ_FLAG_HIDDEN);
     
-    // 验证对象大小（调试用，即使为0也可能正常渲染）
+    // 验证对象大小（调试用）
     lv_coord_t obj_w = lv_obj_get_width(lottie_obj_);
     lv_coord_t obj_h = lv_obj_get_height(lottie_obj_);
-    ESP_LOGI(TAG, "✅ Object size after center: %ldx%ld", obj_w, obj_h);
+    ESP_LOGI(TAG, "✅ Object size after manual set: %ldx%ld", obj_w, obj_h);
 #endif
 }
 
