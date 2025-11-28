@@ -349,9 +349,11 @@ bool LottieAnimation::AllocateBuffer(int32_t width, int32_t height)
     // 释放旧buffer
     FreeBuffer();
     
+    // 🔑 关键修复：使用 calloc 而不是 malloc，确保 buffer 清零
+    // ThorVG 渲染需要干净的 buffer，未初始化的内存会导致崩溃
     // 分配新buffer（ARGB8888 = 4 bytes per pixel）
     size_t buffer_size = width * height * 4;
-    buffer_ = heap_caps_malloc(buffer_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    buffer_ = heap_caps_calloc(1, buffer_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     
     if (!buffer_) {
         ESP_LOGE(TAG, "Failed to allocate buffer (%zu bytes) for %ldx%ld", 
@@ -362,7 +364,7 @@ bool LottieAnimation::AllocateBuffer(int32_t width, int32_t height)
     buffer_width_ = width;
     buffer_height_ = height;
     
-    ESP_LOGI(TAG, "Allocated buffer: %ldx%ld (%u bytes) at %p", 
+    ESP_LOGI(TAG, "Allocated and cleared buffer: %ldx%ld (%u bytes) at %p", 
              width, height, (unsigned int)buffer_size, buffer_);
     
     return true;

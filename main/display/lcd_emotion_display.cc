@@ -334,8 +334,9 @@ bool LcdEmotionDisplay::InitEmotionSystem() {
     emotion_system_initialized_ = true;
     ESP_LOGI(TAG, "✅ Emotion system initialized successfully");
 
-    // 使用定时器延迟播放初始情感动画（确保在 LVGL 任务中执行）
-    ESP_LOGI(TAG, "Scheduling initial emotion animation (CALM) in 500ms");
+    // 🔑 测试修复：使用 HAPPY 动画替代 CALM，验证动画是否能显示
+    // TODO: 确认动画显示正常后改回 CALM
+    ESP_LOGI(TAG, "Scheduling initial emotion animation (HAPPY) in 500ms");
     
     if (!Lock(1000)) {
         ESP_LOGW(TAG, "Failed to lock for timer creation");
@@ -345,8 +346,8 @@ bool LcdEmotionDisplay::InitEmotionSystem() {
     lv_timer_t* init_timer = lv_timer_create([](lv_timer_t* timer) {
         auto* self = static_cast<LcdEmotionDisplay*>(lv_timer_get_user_data(timer));
         if (self) {
-            ESP_LOGI("LcdEmotionDisplay", "🎬 Playing initial CALM animation (timer callback)");
-            self->ShowEmotion(emotion::EmotionState::CALM);
+            ESP_LOGI("LcdEmotionDisplay", "🎬 Playing initial HAPPY animation (timer callback)");
+            self->ShowEmotion(emotion::EmotionState::HAPPY);  // 🔑 使用 HAPPY 测试
         }
         lv_timer_del(timer);  // 一次性定时器
     }, 500, this);
