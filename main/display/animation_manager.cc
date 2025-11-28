@@ -127,7 +127,11 @@ void AnimationManager::Stop()
 {
     if (current_animation_) {
         current_animation_->Stop();
-        ESP_LOGI(TAG, "Animation stopped");
+        
+        // 🔑 关键修复：删除旧动画对象，避免在屏幕上叠加
+        current_animation_.reset();  // 释放 unique_ptr，删除对象
+        
+        ESP_LOGI(TAG, "Animation stopped and object deleted");
     }
 }
 

@@ -125,9 +125,11 @@ void LcdEmotionDisplay::SetupUI() {
         return;
     }
 
-    // 设置屏幕背景为黑色（透明，让 Lottie 动画可见）
-    lv_obj_set_style_bg_color(screen_, lv_color_black(), 0);
+    // 🔑 临时修复：设置背景色为白色，验证动画是否可见
+    // TODO: 动画显示正常后改回黑色
+    lv_obj_set_style_bg_color(screen_, lv_color_white(), 0);
     lv_obj_set_style_bg_opa(screen_, LV_OPA_COVER, 0);
+    ESP_LOGI(TAG, "🎨 Screen background set to WHITE for testing");
 
     // 创建状态栏（顶部）
     CreateStatusBar();

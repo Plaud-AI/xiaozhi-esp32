@@ -288,7 +288,7 @@ static void async_anim_load_timer_cb(lv_timer_t* timer) {
     ESP_LOGI(TAG, "Loading animation from assets: %s (%u bytes)", 
              EmotionStateToString(load_data->emotion), size);
 
-    // 创建动画（在 LVGL 任务中，不会阻塞主任务）
+    // 创建新动画（在干净的父容器中）
     auto* anim = EmotionAssetsLoader::CreateAnimationFromAssets(
         load_data->parent, load_data->emotion, 
         load_data->config.screen_width, load_data->config.screen_height);
