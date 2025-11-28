@@ -12,6 +12,8 @@ LottieAnimation::LottieAnimation(lv_obj_t* parent)
     , buffer_(nullptr)
     , buffer_width_(0)
     , buffer_height_(0)
+    , buffer_size_(0)
+    , draw_buf_(nullptr)
 {
     if (!parent_) {
         ESP_LOGE(TAG, "Parent object is null and no active screen");
@@ -174,32 +176,51 @@ void LottieAnimation::SetSize(int32_t width, int32_t height)
 #if LV_USE_LOTTIE
     if (!lottie_obj_) return;
     
-    // 分配 buffer
-    if (!AllocateBuffer(width, height)) {
-        ESP_LOGE(TAG, "Failed to allocate buffer for %ldx%ld", width, height);
+    // 🔑 关键修复：使用 lv_draw_buf_create 创建持久的 draw_buf
+    // lv_draw_buf_create 会自动分配内存，不需要手动分配 buffer
+    
+    // 如果大小相同，不需要重新创建
+    if (draw_buf_ && buffer_width_ == width && buffer_height_ == height) {
+        ESP_LOGI(TAG, "Reusing existing draw_buf (%ldx%ld)", width, height);
         return;
     }
     
-    // 按 LVGL 官方示例：直接调用 lv_lottie_set_buffer
-    lv_lottie_set_buffer(lottie_obj_, width, height, buffer_);
-    ESP_LOGI(TAG, "✅ Buffer set: %ldx%ld at %p", width, height, buffer_);
+    // 销毁旧的 draw_buf
+    if (draw_buf_) {
+        lv_draw_buf_destroy(draw_buf_);
+        draw_buf_ = nullptr;
+    }
     
-    // 🔑 关键修复：手动设置对象大小（因为 lv_lottie_set_buffer 没有设置）
-    lv_obj_set_size(lottie_obj_, width, height);
-    ESP_LOGI(TAG, "✅ Manually set object size: %ldx%ld", width, height);
+    // 创建持久的 draw_buf（LVGL 会自动分配 PSRAM 内存）
+    uint32_t stride = lv_draw_buf_width_to_stride(width, LV_COLOR_FORMAT_ARGB8888);
+    draw_buf_ = lv_draw_buf_create(width, height, LV_COLOR_FORMAT_ARGB8888, stride);
     
-    // 🔑 关键修复：按照 LVGL 官方示例，调用 lv_obj_center 来居中对象
-    // 这会触发 LVGL 的布局更新，确保对象被正确放置和渲染
+    if (!draw_buf_) {
+        ESP_LOGE(TAG, "Failed to create draw_buf for %ldx%ld", width, height);
+        return;
+    }
+    
+    buffer_width_ = width;
+    buffer_height_ = height;
+    
+    ESP_LOGI(TAG, "✅ Draw buf created: %ldx%ld (stride=%lu, data=%p)", 
+             width, height, stride, draw_buf_->data);
+    
+    // 调用 lv_lottie_set_draw_buf（这会正确设置对象大小）
+    lv_lottie_set_draw_buf(lottie_obj_, draw_buf_);
+    ESP_LOGI(TAG, "✅ Draw buf set to lottie object");
+    
+    // 居中对象
     lv_obj_center(lottie_obj_);
     ESP_LOGI(TAG, "✅ Object centered on screen");
     
     // 确保对象可见
     lv_obj_clear_flag(lottie_obj_, LV_OBJ_FLAG_HIDDEN);
     
-    // 验证对象大小（调试用）
+    // 验证对象大小
     lv_coord_t obj_w = lv_obj_get_width(lottie_obj_);
     lv_coord_t obj_h = lv_obj_get_height(lottie_obj_);
-    ESP_LOGI(TAG, "✅ Object size after manual set: %ldx%ld", obj_w, obj_h);
+    ESP_LOGI(TAG, "✅ Object size after draw_buf set: %ldx%ld", obj_w, obj_h);
 #endif
 }
 
@@ -332,15 +353,23 @@ bool LottieAnimation::AllocateBuffer(int32_t width, int32_t height)
     
     buffer_width_ = width;
     buffer_height_ = height;
+    buffer_size_ = width * height * sizeof(uint32_t);  // ARGB8888 = 4 bytes/pixel
     
     ESP_LOGI(TAG, "✅ Allocated buffer: %ldx%ld (%u bytes) at %p", 
-             width, height, (unsigned int)(width * height * 4), buffer_);
+             width, height, (unsigned int)buffer_size_, buffer_);
     
     return true;
 }
 
 void LottieAnimation::FreeBuffer()
 {
+    // 释放 LVGL draw_buf
+    if (draw_buf_) {
+        lv_draw_buf_destroy(draw_buf_);
+        draw_buf_ = nullptr;
+    }
+    
+    // 释放我们自己的 buffer（如果还在使用）
     if (buffer_) {
         ESP_LOGI(TAG, "Freeing buffer at %p (%ldx%ld)", 
                  buffer_, buffer_width_, buffer_height_);
@@ -348,6 +377,7 @@ void LottieAnimation::FreeBuffer()
         buffer_ = nullptr;
         buffer_width_ = 0;
         buffer_height_ = 0;
+        buffer_size_ = 0;
     }
 }
 

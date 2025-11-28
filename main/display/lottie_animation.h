@@ -149,6 +149,8 @@ private:
     void* buffer_;                  // ARGB8888 buffer for rendering
     int32_t buffer_width_;          // Buffer width
     int32_t buffer_height_;         // Buffer height
+    size_t buffer_size_;            // Buffer size in bytes
+    lv_draw_buf_t* draw_buf_;       // LVGL draw buffer (persistent)
 
     static void OnAnimComplete(lv_event_t* e);
     bool AllocateBuffer(int32_t width, int32_t height);  // 分配渲染 buffer
