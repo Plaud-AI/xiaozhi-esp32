@@ -70,6 +70,13 @@ public:
     void Seek(uint32_t frame_num);
 
     /**
+     * @brief 设置动画播放速度
+     * 
+     * @param speed 播放速度倍数（1.0 = 正常速度，2.0 = 2倍速，0.5 = 0.5倍速）
+     */
+    void SetSpeed(float speed);
+
+    /**
      * @brief 设置动画大小
      * 
      * @param width 宽度（像素）
@@ -89,13 +96,6 @@ public:
      * @brief 居中显示
      */
     void Center();
-
-    /**
-     * @brief 设置播放速度
-     * 
-     * @param speed 速度倍率（1.0 = 正常速度，0.5 = 半速，2.0 = 2倍速）
-     */
-    void SetSpeed(float speed);
 
     /**
      * @brief 设置完成回调
@@ -162,6 +162,7 @@ private:
     bool loop_;                     // 是否循环
     float total_frames_;            // 总帧数
     float current_frame_;           // 当前帧
+    float speed_;                   // 播放速度（1.0 = 正常速度）
     lv_timer_t* render_timer_;      // 渲染定时器（逐帧更新）
     
     // 私有方法

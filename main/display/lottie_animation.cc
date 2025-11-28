@@ -22,6 +22,7 @@ LottieAnimation::LottieAnimation(lv_obj_t* parent)
     , loop_(false)
     , total_frames_(0.0f)
     , current_frame_(0.0f)
+    , speed_(1.0f)
     , render_timer_(nullptr)
 {
     if (!parent_) {
@@ -140,14 +141,19 @@ void LottieAnimation::Play(bool loop)
     is_playing_ = true;
     current_frame_ = 0.0f;
     
-    // 启动渲染定时器（30 FPS = 33ms per frame）
+    // 启动渲染定时器（30 FPS = 33ms per frame，根据 speed_ 调整）
+    uint32_t period_ms = (uint32_t)(33.0f / speed_);  // 根据速度调整周期
+    if (period_ms < 1) period_ms = 1;  // 最小 1ms
+    
     if (!render_timer_) {
-        render_timer_ = lv_timer_create(RenderTimerCallback, 33, this);
+        render_timer_ = lv_timer_create(RenderTimerCallback, period_ms, this);
     } else {
+        lv_timer_set_period(render_timer_, period_ms);
         lv_timer_resume(render_timer_);
     }
     
-    ESP_LOGI(TAG, "🎬 Animation started (loop=%d, frames=%.0f)", loop, total_frames_);
+    ESP_LOGI(TAG, "🎬 Animation started (loop=%d, frames=%.0f, speed=%.2fx, period=%lums)", 
+             loop, total_frames_, speed_, period_ms);
 }
 
 void LottieAnimation::Pause()
@@ -180,6 +186,25 @@ void LottieAnimation::Seek(uint32_t frame_num)
     
     // 立即渲染这一帧
     RenderFrame();
+}
+
+void LottieAnimation::SetSpeed(float speed)
+{
+    if (speed <= 0.0f) {
+        ESP_LOGW(TAG, "Invalid speed: %.2f (must be > 0), ignoring", speed);
+        return;
+    }
+    
+    speed_ = speed;
+    ESP_LOGI(TAG, "Animation speed set to %.2fx", speed_);
+    
+    // 如果动画正在播放，更新定时器周期
+    if (is_playing_ && render_timer_) {
+        uint32_t period_ms = (uint32_t)(33.0f / speed_);  // 33ms = 30 FPS base
+        if (period_ms < 1) period_ms = 1;  // 最小 1ms
+        lv_timer_set_period(render_timer_, period_ms);
+        ESP_LOGI(TAG, "Timer period updated to %lums (%.1f FPS)", period_ms, 1000.0f / period_ms);
+    }
 }
 
 void LottieAnimation::SetPosition(int32_t x, int32_t y)
