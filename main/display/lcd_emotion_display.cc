@@ -313,14 +313,47 @@ bool LcdEmotionDisplay::InitEmotionSystem() {
 
     ESP_LOGI(TAG, "Initializing emotion system from Assets...");
 
+    // 🔒 重要：持有 LVGL 锁（InitEmotionSystemFromAssets 会创建LVGL对象）
+    if (!Lock(1000)) {
+        ESP_LOGE(TAG, "Failed to lock display for emotion system init");
+        return false;
+    }
+
     // 使用 emotion_assets_loader 的初始化函数
-    if (!emotion::InitEmotionSystemFromAssets(this, width_, height_)) {
+    bool init_success = emotion::InitEmotionSystemFromAssets(this, width_, height_);
+    
+    Unlock();
+
+    if (!init_success) {
         ESP_LOGE(TAG, "Failed to initialize emotion system");
         return false;
     }
 
     emotion_system_initialized_ = true;
     ESP_LOGI(TAG, "✅ Emotion system initialized successfully");
+
+    // 使用定时器延迟播放初始情感动画（确保在 LVGL 任务中执行）
+    ESP_LOGI(TAG, "Scheduling initial emotion animation (CALM) in 500ms");
+    
+    if (!Lock(1000)) {
+        ESP_LOGW(TAG, "Failed to lock for timer creation");
+        return true;  // 初始化成功，但不创建定时器
+    }
+    
+    lv_timer_t* init_timer = lv_timer_create([](lv_timer_t* timer) {
+        auto* self = static_cast<LcdEmotionDisplay*>(lv_timer_get_user_data(timer));
+        if (self) {
+            ESP_LOGI("LcdEmotionDisplay", "🎬 Playing initial CALM animation (timer callback)");
+            self->ShowEmotion(emotion::EmotionState::CALM);
+        }
+        lv_timer_del(timer);  // 一次性定时器
+    }, 500, this);
+    
+    Unlock();
+    
+    if (!init_timer) {
+        ESP_LOGW(TAG, "Failed to create init timer");
+    }
 
     return true;
 }

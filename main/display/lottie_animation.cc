@@ -86,6 +86,14 @@ void LottieAnimation::Play(bool loop)
         return;
     }
 
+    // 调试：检查对象状态
+    ESP_LOGI(TAG, "🎬 Play: lottie_obj=%p, parent=%p", lottie_obj_, parent_);
+    ESP_LOGI(TAG, "🎬 Object visible: %d", !lv_obj_has_flag(lottie_obj_, LV_OBJ_FLAG_HIDDEN));
+    ESP_LOGI(TAG, "🎬 Object size: %dx%d", 
+             lv_obj_get_width(lottie_obj_), lv_obj_get_height(lottie_obj_));
+    ESP_LOGI(TAG, "🎬 Object pos: (%d,%d)", 
+             lv_obj_get_x(lottie_obj_), lv_obj_get_y(lottie_obj_));
+
     // 获取 LVGL 动画对象
     lv_anim_t* anim = lv_lottie_get_anim(lottie_obj_);
     if (anim) {
@@ -158,13 +166,35 @@ void LottieAnimation::SetSize(int32_t width, int32_t height)
 {
     if (lottie_obj_) {
         lv_obj_set_size(lottie_obj_, width, height);
+        ESP_LOGI(TAG, "🎨 Set animation size: %dx%d", width, height);
+        
+        // 确保对象可见
+        lv_obj_clear_flag(lottie_obj_, LV_OBJ_FLAG_HIDDEN);
+        ESP_LOGI(TAG, "🎨 Cleared HIDDEN flag");
     }
 }
 
 void LottieAnimation::Center()
 {
     if (lottie_obj_ && parent_) {
+        // 调试：父对象信息
+        lv_coord_t pw = lv_obj_get_width(parent_);
+        lv_coord_t ph = lv_obj_get_height(parent_);
+        ESP_LOGI(TAG, "🎨 Parent size: %dx%d", pw, ph);
+        
+        // 调试：居中前的对象大小
+        lv_coord_t w_before = lv_obj_get_width(lottie_obj_);
+        lv_coord_t h_before = lv_obj_get_height(lottie_obj_);
+        ESP_LOGI(TAG, "🎨 Before center: size(%dx%d)", w_before, h_before);
+        
         lv_obj_center(lottie_obj_);
+        
+        // 获取对象位置和大小（用于调试）
+        lv_coord_t x = lv_obj_get_x(lottie_obj_);
+        lv_coord_t y = lv_obj_get_y(lottie_obj_);
+        lv_coord_t w = lv_obj_get_width(lottie_obj_);
+        lv_coord_t h = lv_obj_get_height(lottie_obj_);
+        ESP_LOGI(TAG, "🎨 After center: pos(%d,%d) size(%dx%d)", x, y, w, h);
     }
 }
 

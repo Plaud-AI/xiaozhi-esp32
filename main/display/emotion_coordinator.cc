@@ -58,8 +58,9 @@ bool EmotionCoordinator::Init(const EmotionSystemConfig& config, lv_obj_t* paren
 
     ESP_LOGI(TAG, "Emotion System initialized successfully");
     
-    // 显示默认情感
-    PlayEmotionAnimation(config.default_emotion);
+    // ⚠️ 不在 Init() 中播放动画，避免在初始化阶段阻塞
+    // 调用方应该在初始化完成后手动调用 SetEmotion() 或 SetDeviceState()
+    ESP_LOGI(TAG, "Note: Initial emotion animation not played, call SetEmotion() to display");
 
     return true;
 }
@@ -281,12 +282,17 @@ void EmotionCoordinator::PlayEmotionAnimation(EmotionState emotion)
             return;
         }
 
-        // 设置大小和位置
-        anim->SetSize(config_.screen_width, config_.screen_height);
-        anim->Center();
+        // ⚠️ 不要立即设置大小和居中！Lottie 对象的大小在首次渲染前是 0
+        // 设置位置到左上角 (0, 0)，让动画填满父容器
+        lv_obj_set_pos(anim->GetObject(), 0, 0);
+        
+        // 设置对象大小为内容大小（让 Lottie 自己决定）
+        lv_obj_set_size(anim->GetObject(), LV_SIZE_CONTENT, LV_SIZE_CONTENT);
         
         // 确保动画显示在最前面（避免被状态栏等UI元素遮挡）
         lv_obj_move_foreground(anim->GetObject());
+        
+        ESP_LOGI(TAG, "Animation positioned at (0,0) with content size");
         
         // 播放
         anim->Play(loop);

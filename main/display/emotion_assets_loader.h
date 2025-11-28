@@ -232,6 +232,7 @@ inline bool InitEmotionSystemFromAssets(Display* display,
     }
 
     // 2. 初始化情感协调器（此时动画已注册，可以正常播放）
+    // 注意：调用方必须已经持有 LVGL 锁！
     auto& coordinator = EmotionCoordinator::Instance();
     
     EmotionSystemConfig config;
