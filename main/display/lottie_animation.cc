@@ -6,378 +6,362 @@ namespace lottie {
 
 static const char* TAG = "LottieAnimation";
 
+// 🔑 重构：使用 ThorVG C API 代替 LVGL Lottie widget
+// 参考：/Users/xionghao/Downloads/thorvg_lottie/main/thorvg_example_main.c
+
 LottieAnimation::LottieAnimation(lv_obj_t* parent)
     : parent_(parent ? parent : lv_scr_act())
-    , lottie_obj_(nullptr)
-    , buffer_(nullptr)
-    , buffer_width_(0)
-    , buffer_height_(0)
-    , buffer_size_(0)
-    , draw_buf_(nullptr)
+    , canvas_obj_(nullptr)
+    , tvg_canvas_(nullptr)
+    , tvg_animation_(nullptr)
+    , tvg_picture_(nullptr)
+    , canvas_buf_(nullptr)
+    , width_(0)
+    , height_(0)
+    , is_playing_(false)
+    , loop_(false)
+    , total_frames_(0.0f)
+    , current_frame_(0.0f)
+    , render_timer_(nullptr)
 {
     if (!parent_) {
         ESP_LOGE(TAG, "Parent object is null and no active screen");
         return;
     }
 
-    // 创建 Lottie 对象（LVGL 9.x API）
-#if LV_USE_LOTTIE
-    lottie_obj_ = lv_lottie_create(parent_);
-    if (lottie_obj_ == nullptr) {
-        ESP_LOGE(TAG, "Failed to create lottie object");
+    // 初始化 ThorVG 引擎（只需初始化一次）
+    static bool tvg_initialized = false;
+    if (!tvg_initialized) {
+        if (tvg_engine_init(TVG_ENGINE_SW, 0) != TVG_RESULT_SUCCESS) {
+            ESP_LOGE(TAG, "Failed to initialize ThorVG engine");
+            return;
+        }
+        tvg_initialized = true;
+        ESP_LOGI(TAG, "✅ ThorVG engine initialized");
+    }
+
+    // 创建 LVGL Canvas 对象（用于显示 ThorVG 渲染结果）
+    canvas_obj_ = lv_canvas_create(parent_);
+    if (!canvas_obj_) {
+        ESP_LOGE(TAG, "Failed to create canvas object");
         return;
     }
-    
-    ESP_LOGI(TAG, "Lottie animation object created successfully");
-#else
-    ESP_LOGE(TAG, "LV_USE_LOTTIE not enabled");
-#endif
+
+    ESP_LOGI(TAG, "✅ Lottie animation object created (ThorVG C API mode)");
 }
 
 LottieAnimation::~LottieAnimation()
 {
-    FreeBuffer();
-    if (lottie_obj_) {
-        lv_obj_del(lottie_obj_);
-        lottie_obj_ = nullptr;
+    // 停止播放
+    Stop();
+    
+    // 删除渲染定时器
+    if (render_timer_) {
+        lv_timer_del(render_timer_);
+        render_timer_ = nullptr;
+    }
+    
+    // 清理 ThorVG 对象
+    if (tvg_animation_) {
+        tvg_animation_del(tvg_animation_);
+        tvg_animation_ = nullptr;
+    }
+    
+    if (tvg_canvas_) {
+        tvg_canvas_destroy(tvg_canvas_);
+        tvg_canvas_ = nullptr;
+    }
+    
+    // 释放 canvas buffer
+    FreeCanvas();
+    
+    // 删除 LVGL canvas 对象
+    if (canvas_obj_) {
+        lv_obj_del(canvas_obj_);
+        canvas_obj_ = nullptr;
     }
 }
 
 bool LottieAnimation::LoadFromFile(const char* file_path)
 {
-#if LV_USE_LOTTIE
-    if (!lottie_obj_ || !file_path) {
-        ESP_LOGE(TAG, "Invalid object or file path");
-        return false;
-    }
-
-    ESP_LOGI(TAG, "Loading lottie animation from file: %s", file_path);
-
-    // LVGL 9.x API
-    // 注意：此时 buffer 应该已经通过 SetSize() 设置，所以 lv_lottie_set_src_file
-    // 不会触发 invalidate 死循环
-    lv_lottie_set_src_file(lottie_obj_, file_path);
-
-    ESP_LOGI(TAG, "Animation loaded successfully from file");
-    return true;
-#else
-    ESP_LOGE(TAG, "LV_USE_LOTTIE not enabled");
+    ESP_LOGW(TAG, "LoadFromFile not implemented in ThorVG C API mode");
     return false;
-#endif
 }
 
 bool LottieAnimation::LoadFromData(const void* data, size_t size)
 {
-#if LV_USE_LOTTIE
-    if (!lottie_obj_ || !data || size == 0) {
+    if (!canvas_obj_ || !data || size == 0) {
         ESP_LOGE(TAG, "Invalid object or data");
         return false;
     }
 
     ESP_LOGI(TAG, "Loading lottie animation from data (%u bytes)", size);
 
-    // 🔑 按 LVGL 官方示例：必须先调用 lv_lottie_set_src_data，再调用 lv_lottie_set_buffer
-    lv_lottie_set_src_data(lottie_obj_, data, size);
-
-    ESP_LOGI(TAG, "✅ Animation data loaded");
+    // 创建 ThorVG 动画对象
+    if (tvg_animation_) {
+        tvg_animation_del(tvg_animation_);
+    }
+    
+    tvg_animation_ = tvg_animation_new();
+    if (!tvg_animation_) {
+        ESP_LOGE(TAG, "Failed to create ThorVG animation");
+        return false;
+    }
+    
+    // 获取 picture 对象
+    tvg_picture_ = tvg_animation_get_picture(tvg_animation_);
+    if (!tvg_picture_) {
+        ESP_LOGE(TAG, "Failed to get picture from animation");
+        return false;
+    }
+    
+    // 加载 Lottie 数据（JSON）
+    if (tvg_picture_load_data(tvg_picture_, data, size, "lottie", 1) != TVG_RESULT_SUCCESS) {
+        ESP_LOGE(TAG, "Failed to load lottie data");
+        return false;
+    }
+    
+    // 获取总帧数
+    tvg_animation_get_total_frame(tvg_animation_, &total_frames_);
+    current_frame_ = 0.0f;
+    
+    ESP_LOGI(TAG, "✅ Animation loaded: %.0f frames", total_frames_);
     return true;
-#else
-    ESP_LOGE(TAG, "LV_USE_LOTTIE not enabled");
-    return false;
-#endif
 }
 
 void LottieAnimation::Play(bool loop)
 {
-#if LV_USE_LOTTIE
-    if (!lottie_obj_) {
-        ESP_LOGE(TAG, "Lottie object is null");
+    if (!tvg_animation_ || !canvas_obj_) {
+        ESP_LOGE(TAG, "Animation or canvas not ready");
         return;
     }
 
-    // 调试：检查对象状态
-    ESP_LOGI(TAG, "🎬 Play: lottie_obj=%p, parent=%p", lottie_obj_, parent_);
-    ESP_LOGI(TAG, "🎬 Object visible: %d", !lv_obj_has_flag(lottie_obj_, LV_OBJ_FLAG_HIDDEN));
-    ESP_LOGI(TAG, "🎬 Object size: %dx%d", 
-             lv_obj_get_width(lottie_obj_), lv_obj_get_height(lottie_obj_));
-    ESP_LOGI(TAG, "🎬 Object pos: (%d,%d)", 
-             lv_obj_get_x(lottie_obj_), lv_obj_get_y(lottie_obj_));
-
-    // 获取 LVGL 动画对象
-    lv_anim_t* anim = lv_lottie_get_anim(lottie_obj_);
-    if (anim) {
-        // 设置循环
-        anim->repeat_cnt = loop ? LV_ANIM_REPEAT_INFINITE : 0;
-        // 开始播放
-        lv_anim_start(anim);
-        ESP_LOGI(TAG, "Animation started (loop=%d)", loop);
+    loop_ = loop;
+    is_playing_ = true;
+    current_frame_ = 0.0f;
+    
+    // 启动渲染定时器（30 FPS = 33ms per frame）
+    if (!render_timer_) {
+        render_timer_ = lv_timer_create(RenderTimerCallback, 33, this);
     } else {
-        ESP_LOGW(TAG, "No animation object available");
+        lv_timer_resume(render_timer_);
     }
-#else
-    ESP_LOGW(TAG, "LV_USE_LOTTIE not enabled");
-#endif
+    
+    ESP_LOGI(TAG, "🎬 Animation started (loop=%d, frames=%.0f)", loop, total_frames_);
 }
 
 void LottieAnimation::Pause()
 {
-#if LV_USE_LOTTIE
-    if (!lottie_obj_) return;
-
-    lv_anim_t* anim = lv_lottie_get_anim(lottie_obj_);
-    if (anim) {
-        // LVGL 9.x 暂停动画需要删除动画，然后记录当前值
-        // 由于 lv_anim 没有直接的暂停接口，我们可以设置速度为 0
-        // 或者暂时删除动画
-        ESP_LOGW(TAG, "Pause not fully implemented in LVGL 9.x");
+    if (render_timer_) {
+        lv_timer_pause(render_timer_);
     }
-#else
-    ESP_LOGW(TAG, "LV_USE_LOTTIE not enabled");
-#endif
+    is_playing_ = false;
+    ESP_LOGI(TAG, "Animation paused");
 }
 
 void LottieAnimation::Stop()
 {
-#if LV_USE_LOTTIE
-    if (!lottie_obj_) return;
-
-    lv_anim_t* anim = lv_lottie_get_anim(lottie_obj_);
-    if (anim) {
-        lv_anim_delete(lottie_obj_, nullptr);
-        ESP_LOGI(TAG, "Animation stopped");
+    if (render_timer_) {
+        lv_timer_pause(render_timer_);
     }
-#else
-    ESP_LOGW(TAG, "LV_USE_LOTTIE not enabled");
-#endif
+    is_playing_ = false;
+    current_frame_ = 0.0f;
+    ESP_LOGI(TAG, "Animation stopped");
 }
 
 void LottieAnimation::Seek(uint32_t frame_num)
 {
-#if LV_USE_LOTTIE
-    if (!lottie_obj_) return;
-
-    // LVGL 9.x 的 Lottie 不直接支持 Seek 到特定帧
-    // 需要通过动画的进度百分比来设置
-    ESP_LOGW(TAG, "Seek not fully supported in LVGL 9.x lottie");
-#else
-    ESP_LOGW(TAG, "LV_USE_LOTTIE not enabled");
-#endif
+    if (!tvg_animation_) return;
+    
+    current_frame_ = (float)frame_num;
+    if (current_frame_ >= total_frames_) {
+        current_frame_ = total_frames_ - 1.0f;
+    }
+    
+    // 立即渲染这一帧
+    RenderFrame();
 }
 
 void LottieAnimation::SetPosition(int32_t x, int32_t y)
 {
-    if (lottie_obj_) {
-        lv_obj_set_pos(lottie_obj_, x, y);
+    if (canvas_obj_) {
+        lv_obj_set_pos(canvas_obj_, x, y);
     }
 }
 
 void LottieAnimation::SetSize(int32_t width, int32_t height)
 {
-#if LV_USE_LOTTIE
-    if (!lottie_obj_) return;
+    if (!canvas_obj_ || !tvg_animation_) return;
     
-    // 🔑 关键修复：使用 lv_draw_buf_create 创建持久的 draw_buf
-    // lv_draw_buf_create 会自动分配内存，不需要手动分配 buffer
-    
-    // 如果大小相同，不需要重新创建
-    if (draw_buf_ && buffer_width_ == width && buffer_height_ == height) {
-        ESP_LOGI(TAG, "Reusing existing draw_buf (%ldx%ld)", width, height);
+    // 分配 canvas buffer
+    if (!AllocateCanvas(width, height)) {
+        ESP_LOGE(TAG, "Failed to allocate canvas for %ldx%ld", width, height);
         return;
     }
     
-    // 销毁旧的 draw_buf
-    if (draw_buf_) {
-        lv_draw_buf_destroy(draw_buf_);
-        draw_buf_ = nullptr;
+    width_ = width;
+    height_ = height;
+    
+    // 创建 ThorVG canvas
+    if (tvg_canvas_) {
+        tvg_canvas_destroy(tvg_canvas_);
     }
     
-    // 创建持久的 draw_buf（LVGL 会自动分配 PSRAM 内存）
-    uint32_t stride = lv_draw_buf_width_to_stride(width, LV_COLOR_FORMAT_ARGB8888);
-    draw_buf_ = lv_draw_buf_create(width, height, LV_COLOR_FORMAT_ARGB8888, stride);
-    
-    if (!draw_buf_) {
-        ESP_LOGE(TAG, "Failed to create draw_buf for %ldx%ld", width, height);
+    tvg_canvas_ = tvg_swcanvas_create();
+    if (!tvg_canvas_) {
+        ESP_LOGE(TAG, "Failed to create ThorVG canvas");
         return;
     }
     
-    buffer_width_ = width;
-    buffer_height_ = height;
+    // 设置 canvas 渲染目标（参考官方 demo line 119）
+    tvg_swcanvas_set_target(tvg_canvas_, canvas_buf_, width, width, height, TVG_COLORSPACE_ARGB8888);
     
-    ESP_LOGI(TAG, "✅ Draw buf created: %ldx%ld (stride=%lu, data=%p)", 
-             width, height, stride, draw_buf_->data);
+    // 设置 picture 大小
+    if (tvg_picture_) {
+        tvg_picture_set_size(tvg_picture_, width, height);
+    }
     
-    // 调用 lv_lottie_set_draw_buf（这会正确设置对象大小）
-    lv_lottie_set_draw_buf(lottie_obj_, draw_buf_);
-    ESP_LOGI(TAG, "✅ Draw buf set to lottie object");
+    // 将 picture 推送到 canvas
+    if (tvg_picture_) {
+        tvg_canvas_push(tvg_canvas_, tvg_picture_);
+    }
+    
+    // 设置 LVGL canvas 的 buffer
+    lv_canvas_set_buffer(canvas_obj_, canvas_buf_, width, height, LV_COLOR_FORMAT_ARGB8888);
     
     // 居中对象
-    lv_obj_center(lottie_obj_);
-    ESP_LOGI(TAG, "✅ Object centered on screen");
+    lv_obj_center(canvas_obj_);
     
-    // 确保对象可见
-    lv_obj_clear_flag(lottie_obj_, LV_OBJ_FLAG_HIDDEN);
-    
-    // 验证对象大小
-    lv_coord_t obj_w = lv_obj_get_width(lottie_obj_);
-    lv_coord_t obj_h = lv_obj_get_height(lottie_obj_);
-    ESP_LOGI(TAG, "✅ Object size after draw_buf set: %ldx%ld", obj_w, obj_h);
-#endif
+    ESP_LOGI(TAG, "✅ Canvas configured: %ldx%ld", width, height);
 }
 
 void LottieAnimation::Center()
 {
-    if (lottie_obj_ && parent_) {
-        // 调试：父对象信息
-        lv_coord_t pw = lv_obj_get_width(parent_);
-        lv_coord_t ph = lv_obj_get_height(parent_);
-        ESP_LOGI(TAG, "🎨 Parent size: %dx%d", pw, ph);
-        
-        // 调试：居中前的对象大小
-        lv_coord_t w_before = lv_obj_get_width(lottie_obj_);
-        lv_coord_t h_before = lv_obj_get_height(lottie_obj_);
-        ESP_LOGI(TAG, "🎨 Before center: size(%dx%d)", w_before, h_before);
-        
-        lv_obj_center(lottie_obj_);
-        
-        // 获取对象位置和大小（用于调试）
-        lv_coord_t x = lv_obj_get_x(lottie_obj_);
-        lv_coord_t y = lv_obj_get_y(lottie_obj_);
-        lv_coord_t w = lv_obj_get_width(lottie_obj_);
-        lv_coord_t h = lv_obj_get_height(lottie_obj_);
-        ESP_LOGI(TAG, "🎨 After center: pos(%d,%d) size(%dx%d)", x, y, w, h);
-    }
-}
-
-void LottieAnimation::SetSpeed(float speed)
-{
-#if LV_USE_LOTTIE
-    if (!lottie_obj_) return;
-
-    lv_anim_t* anim = lv_lottie_get_anim(lottie_obj_);
-    if (anim) {
-        // LVGL 9.x 的 lv_anim_t 结构体字段已更改
-        // 使用 lv_anim_set_time 来调整速度
-        if (speed > 0.01f) {
-            uint32_t current_time = lv_anim_get_playtime(anim);
-            lv_anim_set_time(anim, (uint32_t)(current_time / speed));
-        }
-        ESP_LOGI(TAG, "Speed set to: %.2f", speed);
-    }
-#else
-    ESP_LOGW(TAG, "LV_USE_LOTTIE not enabled");
-#endif
-}
-
-void LottieAnimation::SetCompleteCallback(std::function<void()> callback)
-{
-    complete_callback_ = callback;
-    
-    // 如果有 lottie 对象，设置事件回调
-    if (lottie_obj_) {
-        lv_obj_add_event_cb(lottie_obj_, OnAnimComplete, LV_EVENT_READY, this);
+    if (canvas_obj_) {
+        lv_obj_center(canvas_obj_);
     }
 }
 
 void LottieAnimation::SetVisible(bool visible)
 {
-    if (lottie_obj_) {
+    if (canvas_obj_) {
         if (visible) {
-            lv_obj_clear_flag(lottie_obj_, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(canvas_obj_, LV_OBJ_FLAG_HIDDEN);
         } else {
-            lv_obj_add_flag(lottie_obj_, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(canvas_obj_, LV_OBJ_FLAG_HIDDEN);
         }
     }
 }
 
-bool LottieAnimation::IsPlaying() const
+void LottieAnimation::SetOnCompleteCallback(std::function<void()> callback)
 {
-#if LV_USE_LOTTIE
-    if (!lottie_obj_) return false;
-    
-    lv_anim_t* anim = lv_lottie_get_anim(lottie_obj_);
-    // 如果动画对象存在且没有被删除，则认为正在播放
-    return (anim != nullptr);
-#else
-    return false;
-#endif
-}
-
-void LottieAnimation::OnAnimComplete(lv_event_t* e)
-{
-    LottieAnimation* anim = static_cast<LottieAnimation*>(lv_event_get_user_data(e));
-    if (anim && anim->complete_callback_) {
-        anim->complete_callback_();
-    }
+    complete_callback_ = callback;
 }
 
 uint32_t LottieAnimation::GetTotalFrames() const
 {
-#if LV_USE_LOTTIE
-    // LVGL 9.x 没有直接获取总帧数的接口
-    // 需要通过其他方式获取或者返回估算值
-    return 0; // 暂时返回 0
-#else
-    return 0;
-#endif
+    return (uint32_t)total_frames_;
 }
 
 uint32_t LottieAnimation::GetCurrentFrame() const
 {
-#if LV_USE_LOTTIE
-    // LVGL 9.x 没有直接获取当前帧的接口
-    return 0; // 暂时返回 0
-#else
-    return 0;
-#endif
+    return (uint32_t)current_frame_;
 }
 
-bool LottieAnimation::AllocateBuffer(int32_t width, int32_t height)
+bool LottieAnimation::IsPlaying() const
 {
-    // 如果已有buffer且大小匹配，则复用
-    if (buffer_ && buffer_width_ == width && buffer_height_ == height) {
-        ESP_LOGI(TAG, "Reusing existing buffer (%ldx%ld)", width, height);
+    return is_playing_;
+}
+
+// ============================================================================
+// 私有方法
+// ============================================================================
+
+bool LottieAnimation::AllocateCanvas(int32_t width, int32_t height)
+{
+    // 如果已有 buffer 且大小匹配，则复用
+    if (canvas_buf_ && width_ == width && height_ == height) {
+        ESP_LOGI(TAG, "Reusing existing canvas buffer (%ldx%ld)", width, height);
         return true;
     }
     
-    // 释放旧buffer
-    FreeBuffer();
+    // 释放旧 buffer
+    FreeCanvas();
     
-    // 🔑使用 calloc 分配并清零（ARGB8888 = 4 bytes per pixel）
-    // 参考 ThorVG Demo: heap_caps_calloc(width * height, sizeof(uint32_t), MALLOC_CAP_SPIRAM)
-    buffer_ = heap_caps_calloc(width * height, sizeof(uint32_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    // 分配 ARGB8888 buffer（参考官方 demo line 264）
+    canvas_buf_ = (uint32_t*)heap_caps_calloc(width * height, sizeof(uint32_t), MALLOC_CAP_SPIRAM);
     
-    if (!buffer_) {
-        ESP_LOGE(TAG, "Failed to allocate buffer for %ldx%ld", width, height);
+    if (!canvas_buf_) {
+        ESP_LOGE(TAG, "Failed to allocate canvas buffer for %ldx%ld", width, height);
         return false;
     }
     
-    buffer_width_ = width;
-    buffer_height_ = height;
-    buffer_size_ = width * height * sizeof(uint32_t);  // ARGB8888 = 4 bytes/pixel
-    
-    ESP_LOGI(TAG, "✅ Allocated buffer: %ldx%ld (%u bytes) at %p", 
-             width, height, (unsigned int)buffer_size_, buffer_);
+    ESP_LOGI(TAG, "✅ Allocated canvas buffer: %ldx%ld (%u bytes) at %p", 
+             width, height, (unsigned int)(width * height * 4), canvas_buf_);
     
     return true;
 }
 
-void LottieAnimation::FreeBuffer()
+void LottieAnimation::FreeCanvas()
 {
-    // 释放 LVGL draw_buf
-    if (draw_buf_) {
-        lv_draw_buf_destroy(draw_buf_);
-        draw_buf_ = nullptr;
+    if (canvas_buf_) {
+        heap_caps_free(canvas_buf_);
+        canvas_buf_ = nullptr;
+        ESP_LOGI(TAG, "Canvas buffer freed");
+    }
+}
+
+void LottieAnimation::RenderFrame()
+{
+    if (!tvg_canvas_ || !tvg_animation_ || !canvas_buf_) {
+        return;
     }
     
-    // 释放我们自己的 buffer（如果还在使用）
-    if (buffer_) {
-        ESP_LOGI(TAG, "Freeing buffer at %p (%ldx%ld)", 
-                 buffer_, buffer_width_, buffer_height_);
-        heap_caps_free(buffer_);
-        buffer_ = nullptr;
-        buffer_width_ = 0;
-        buffer_height_ = 0;
-        buffer_size_ = 0;
+    // 设置当前帧（参考官方 demo line 150）
+    tvg_animation_set_frame(tvg_animation_, current_frame_);
+    
+    // 更新 canvas
+    tvg_canvas_update(tvg_canvas_);
+    
+    // 渲染到 buffer
+    tvg_canvas_draw(tvg_canvas_);
+    
+    // 等待渲染完成
+    tvg_canvas_sync(tvg_canvas_);
+    
+    // 通知 LVGL 更新 canvas 显示
+    if (canvas_obj_) {
+        lv_obj_invalidate(canvas_obj_);
+    }
+}
+
+void LottieAnimation::RenderTimerCallback(lv_timer_t* timer)
+{
+    auto* self = static_cast<LottieAnimation*>(lv_timer_get_user_data(timer));
+    if (!self || !self->is_playing_) {
+        return;
+    }
+    
+    // 渲染当前帧
+    self->RenderFrame();
+    
+    // 前进到下一帧
+    self->current_frame_ += 1.0f;
+    
+    // 检查是否播放完成
+    if (self->current_frame_ >= self->total_frames_) {
+        if (self->loop_) {
+            // 循环播放：回到第一帧
+            self->current_frame_ = 0.0f;
+        } else {
+            // 停止播放
+            self->Stop();
+            
+            // 调用完成回调
+            if (self->complete_callback_) {
+                self->complete_callback_();
+            }
+        }
     }
 }
 

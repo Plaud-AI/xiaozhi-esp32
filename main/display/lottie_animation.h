@@ -1,7 +1,7 @@
 #pragma once
 
 #include "lvgl.h"
-#include "widgets/lottie/lv_lottie.h"
+#include "thorvg_capi.h"  // 🔑 ThorVG C API
 #include <string>
 #include <functional>
 
@@ -142,19 +142,33 @@ public:
     bool IsPlaying() const;
 
 private:
-    lv_obj_t* parent_;              // 父对象
-    lv_obj_t* lottie_obj_;          // ThorVG Lottie 对象
+    // 🔑 重构：使用 ThorVG C API 代替 LVGL widget
+    lv_obj_t* parent_;              // 父对象（LVGL容器，用于显示）
+    lv_obj_t* canvas_obj_;          // LVGL Canvas 对象（用于显示渲染结果）
+    
+    // ThorVG 对象
+    Tvg_Canvas* tvg_canvas_;        // ThorVG 软件渲染 canvas
+    Tvg_Animation* tvg_animation_;  // ThorVG 动画对象
+    Tvg_Paint* tvg_picture_;        // ThorVG 图片对象（从动画获取）
+    
+    // 渲染 buffer（ARGB8888）
+    uint32_t* canvas_buf_;          // ThorVG 渲染目标 buffer
+    int32_t width_;                 // 动画宽度
+    int32_t height_;                // 动画高度
+    
+    // 动画控制
     std::function<void()> complete_callback_;  // 完成回调
     bool is_playing_;               // 播放状态
-    void* buffer_;                  // ARGB8888 buffer for rendering
-    int32_t buffer_width_;          // Buffer width
-    int32_t buffer_height_;         // Buffer height
-    size_t buffer_size_;            // Buffer size in bytes
-    lv_draw_buf_t* draw_buf_;       // LVGL draw buffer (persistent)
-
-    static void OnAnimComplete(lv_event_t* e);
-    bool AllocateBuffer(int32_t width, int32_t height);  // 分配渲染 buffer
-    void FreeBuffer();              // 释放 buffer
+    bool loop_;                     // 是否循环
+    float total_frames_;            // 总帧数
+    float current_frame_;           // 当前帧
+    lv_timer_t* render_timer_;      // 渲染定时器（逐帧更新）
+    
+    // 私有方法
+    bool AllocateCanvas(int32_t width, int32_t height);  // 分配 canvas buffer
+    void FreeCanvas();              // 释放 canvas
+    void RenderFrame();             // 渲染当前帧
+    static void RenderTimerCallback(lv_timer_t* timer);  // 定时器回调
 };
 
 } // namespace lottie
