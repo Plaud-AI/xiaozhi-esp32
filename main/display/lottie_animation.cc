@@ -88,6 +88,17 @@ bool LottieAnimation::LoadFromData(const void* data, size_t size)
     lv_coord_t w_after = lv_obj_get_width(lottie_obj_);
     lv_coord_t h_after = lv_obj_get_height(lottie_obj_);
     ESP_LOGI(TAG, "Object size after loading data: %ldx%ld", w_after, h_after);
+    
+    // 🔑 修复：如果对象大小仍然是 0，强制刷新并验证
+    if (w_after == 0 || h_after == 0) {
+        ESP_LOGW(TAG, "⚠️ Object size is still 0 after loading, force refreshing object");
+        lv_obj_invalidate(lottie_obj_);  // 标记为脏，触发重绘
+        lv_refr_now(NULL);  // 立即刷新一次（在 LVGL 任务中调用是安全的）
+        
+        w_after = lv_obj_get_width(lottie_obj_);
+        h_after = lv_obj_get_height(lottie_obj_);
+        ESP_LOGI(TAG, "Object size after refresh: %ldx%ld", w_after, h_after);
+    }
 
     ESP_LOGI(TAG, "Animation loaded successfully from data");
     return true;
