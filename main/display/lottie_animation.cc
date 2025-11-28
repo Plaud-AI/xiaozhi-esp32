@@ -141,8 +141,8 @@ void LottieAnimation::Play(bool loop)
     is_playing_ = true;
     current_frame_ = 0.0f;
     
-    // 启动渲染定时器（30 FPS = 33ms per frame，根据 speed_ 调整）
-    uint32_t period_ms = (uint32_t)(33.0f / speed_);  // 根据速度调整周期
+    // 启动渲染定时器（15 FPS = 66ms per frame，降低CPU负载）
+    uint32_t period_ms = (uint32_t)(66.0f / speed_);  // 根据速度调整周期
     if (period_ms < 1) period_ms = 1;  // 最小 1ms
     
     if (!render_timer_) {
@@ -152,8 +152,8 @@ void LottieAnimation::Play(bool loop)
         lv_timer_resume(render_timer_);
     }
     
-    ESP_LOGI(TAG, "🎬 Animation started (loop=%d, frames=%.0f, speed=%.2fx, period=%lums)", 
-             loop, total_frames_, speed_, period_ms);
+    ESP_LOGI(TAG, "🎬 Animation started (loop=%d, frames=%.0f, speed=%.2fx, period=%lums, ~%.1f FPS)", 
+             loop, total_frames_, speed_, period_ms, 1000.0f / period_ms);
 }
 
 void LottieAnimation::Pause()
@@ -200,7 +200,7 @@ void LottieAnimation::SetSpeed(float speed)
     
     // 如果动画正在播放，更新定时器周期
     if (is_playing_ && render_timer_) {
-        uint32_t period_ms = (uint32_t)(33.0f / speed_);  // 33ms = 30 FPS base
+        uint32_t period_ms = (uint32_t)(66.0f / speed_);  // 66ms = 15 FPS base（降低CPU负载）
         if (period_ms < 1) period_ms = 1;  // 最小 1ms
         lv_timer_set_period(render_timer_, period_ms);
         ESP_LOGI(TAG, "Timer period updated to %lums (%.1f FPS)", period_ms, 1000.0f / period_ms);
