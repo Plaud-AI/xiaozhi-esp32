@@ -244,6 +244,85 @@ void EmotionCoordinator::OnEmotionChanged(const EmotionChangeEvent& event)
     PlayEmotionAnimation(event.to_state);
 }
 
+// 异步动画加载的数据结构
+struct AsyncAnimLoadData {
+    EmotionState emotion;
+    EmotionCoordinator* coordinator;
+    EmotionSystemConfig config;
+    lv_obj_t* parent;
+    std::function<void(const char*)> start_callback;
+};
+
+// LVGL 定时器回调：在 LVGL 任务中执行动画加载
+static void async_anim_load_timer_cb(lv_timer_t* timer) {
+    static const char* TAG = "EmotionCoord";  // 定义 TAG 用于日志
+    
+    // 使用 LVGL API 获取 user_data
+    auto* load_data = static_cast<AsyncAnimLoadData*>(lv_timer_get_user_data(timer));
+    if (!load_data) {
+        ESP_LOGE(TAG, "Invalid load data");
+        lv_timer_del(timer);
+        return;
+    }
+
+    ESP_LOGI(TAG, "🎬 [LVGL Task] Loading animation: %s", 
+             EmotionStateToString(load_data->emotion));
+
+    // 停止当前动画
+    auto& lottie_mgr = lottie::AnimationManager::Instance();
+    lottie_mgr.Stop();
+
+    // 获取动画数据
+    void* data = nullptr;
+    size_t size = 0;
+    bool loop = false;
+
+    if (!EmotionAssetsLoader::GetAnimationData(load_data->emotion, data, size, loop)) {
+        ESP_LOGW(TAG, "No animation data found for: %s", 
+                 EmotionStateToString(load_data->emotion));
+        delete load_data;
+        lv_timer_del(timer);
+        return;
+    }
+
+    ESP_LOGI(TAG, "Loading animation from assets: %s (%u bytes)", 
+             EmotionStateToString(load_data->emotion), size);
+
+    // 创建动画（在 LVGL 任务中，不会阻塞主任务）
+    auto* anim = EmotionAssetsLoader::CreateAnimationFromAssets(
+        load_data->parent, load_data->emotion, 
+        load_data->config.screen_width, load_data->config.screen_height);
+    
+    if (!anim) {
+        ESP_LOGE(TAG, "Failed to create animation");
+        delete load_data;
+        lv_timer_del(timer);
+        return;
+    }
+
+    // 设置位置和可见性
+    lv_obj_t* lottie_obj = anim->GetObject();
+    lv_obj_set_pos(lottie_obj, 0, 0);
+    lv_obj_clear_flag(lottie_obj, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(lottie_obj);
+    
+    ESP_LOGI(TAG, "✅ Animation ready: size=%ldx%ld, pos=(0,0)", 
+             load_data->config.screen_width, load_data->config.screen_height);
+
+    // 开始播放
+    anim->Play(loop);
+    ESP_LOGI(TAG, "✅ Animation playback started (loop=%d)", loop);
+
+    // 回调通知
+    if (load_data->start_callback) {
+        load_data->start_callback(EmotionStateToString(load_data->emotion));
+    }
+
+    // 清理
+    delete load_data;
+    lv_timer_del(timer);
+}
+
 void EmotionCoordinator::PlayEmotionAnimation(EmotionState emotion)
 {
     ESP_LOGI(TAG, "PlayEmotionAnimation: %s", EmotionStateToString(emotion));
@@ -252,65 +331,27 @@ void EmotionCoordinator::PlayEmotionAnimation(EmotionState emotion)
     bool use_assets = (config_.animation_base_path == "assets:");
     
     if (use_assets) {
-        // 停止当前动画（通过 AnimationManager）
-        auto& lottie_mgr = lottie::AnimationManager::Instance();
-        lottie_mgr.Stop();
-        ESP_LOGI(TAG, "Stopped previous animation");
-        
-        // 从 assets 分区加载（memory-mapped 方式）
-        void* data = nullptr;
-        size_t size = 0;
-        bool loop = false;
+        // 🔑 关键修复：使用异步加载，避免在主任务中阻塞
+        // 创建加载数据
+        auto* load_data = new AsyncAnimLoadData{
+            .emotion = emotion,
+            .coordinator = this,
+            .config = config_,
+            .parent = animation_container_ ? animation_container_ : lv_scr_act(),
+            .start_callback = animation_start_callback_
+        };
 
-        if (!EmotionAssetsLoader::GetAnimationData(emotion, data, size, loop)) {
-            ESP_LOGW(TAG, "No animation data found for: %s", EmotionStateToString(emotion));
-            return;
-        }
-
-        ESP_LOGI(TAG, "Loading animation from assets: %s (%u bytes)", 
-                 EmotionStateToString(emotion), size);
-
-        // 使用保存的动画容器（如果没有则回退到当前屏幕）
-        lv_obj_t* parent = animation_container_ ? animation_container_ : lv_scr_act();
-        ESP_LOGI(TAG, "Creating animation on parent: %p (container=%p, screen=%p)", 
-                 parent, animation_container_, lv_scr_act());
+        ESP_LOGI(TAG, "🔄 Scheduling async animation load in LVGL task...");
         
-        // 🔑 关键修复：创建时传递屏幕大小，内部会先设置大小（分配 buffer）再加载数据
-        // 这样 lv_lottie_set_src_data 就不会触发 invalidate 死循环
-        auto* anim = EmotionAssetsLoader::CreateAnimationFromAssets(
-            parent, emotion, config_.screen_width, config_.screen_height);
-        if (!anim) {
-            ESP_LOGE(TAG, "Failed to create animation");
-            return;
-        }
-
-        // 设置位置（左上角对齐）
-        lv_obj_t* lottie_obj = anim->GetObject();
-        lv_obj_set_pos(lottie_obj, 0, 0);
+        // 创建单次定时器（10ms 后在 LVGL 任务中执行）
+        lv_timer_t* timer = lv_timer_create(async_anim_load_timer_cb, 10, load_data);
+        lv_timer_set_repeat_count(timer, 1);  // 只执行一次
         
-        // 清除隐藏标志
-        lv_obj_clear_flag(lottie_obj, LV_OBJ_FLAG_HIDDEN);
-        
-        // 确保动画显示在最前面（避免被状态栏等UI元素遮挡）
-        lv_obj_move_foreground(lottie_obj);
-        
-        ESP_LOGI(TAG, "Animation ready: size=%ldx%ld, pos=(0,0)", 
-                 config_.screen_width, config_.screen_height);
-        
-        // 开始播放
-        ESP_LOGI(TAG, "✅ Starting animation playback...");
-        anim->Play(loop);
-        ESP_LOGI(TAG, "✅ Animation playback started successfully");
-
-        ESP_LOGI(TAG, "Animation playing from assets (loop=%d)", loop);
-
-        // 通知动画开始回调
-        if (animation_start_callback_) {
-            animation_start_callback_(EmotionStateToString(emotion));
-        }
+        ESP_LOGI(TAG, "✅ Animation load scheduled");
 
         // TODO: 管理动画对象的生命周期（避免内存泄漏）
         // 简单实现：先不删除，让 LVGL 管理
+        return;  // 异步执行，直接返回
         
     } else {
         // 从文件系统加载（原有逻辑）

@@ -379,6 +379,14 @@ void BLEWiFiProvisioner::HandleReceivedData(const std::string& data) {
         ESP_LOGI(TAG, "➜ 执行: 重置唤醒词命令");
         HandleResetWakeWordsCommand();
     }
+    else if (cmd == "set_ota_url") {
+        ESP_LOGI(TAG, "➜ 执行: 设置 OTA URL 命令");
+        HandleSetOtaUrlCommand(root);
+    }
+    else if (cmd == "get_ota_url") {
+        ESP_LOGI(TAG, "➜ 执行: 获取 OTA URL 命令");
+        HandleGetOtaUrlCommand();
+    }
     else {
         ESP_LOGW(TAG, "⚠️  未知命令: %s", cmd.c_str());
         SendErrorResponse(cmd, ERROR_JSON_PARSE_FAILED, "未知命令");
@@ -1579,6 +1587,109 @@ void BLEWiFiProvisioner::HandleResetWakeWordsCommand() {
         ESP_LOGE(TAG, "❌ 唤醒词重置失败");
         SendErrorResponse("reset_wake_words", -3, "NVS存储失败");
     }
+    
+    ESP_LOGI(TAG, "========================================");
+}
+
+void BLEWiFiProvisioner::HandleSetOtaUrlCommand(cJSON* root) {
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "设置 OTA URL");
+    
+    // 从 JSON 中提取 URL
+    cJSON* data_item = cJSON_GetObjectItem(root, "data");
+    if (!data_item || !cJSON_IsObject(data_item)) {
+        ESP_LOGE(TAG, "❌ data字段缺失或格式错误");
+        SendErrorResponse("set_ota_url", ERROR_JSON_PARSE_FAILED, "data字段缺失");
+        ESP_LOGI(TAG, "========================================");
+        return;
+    }
+    
+    cJSON* url_item = cJSON_GetObjectItem(data_item, "url");
+    if (!url_item || !cJSON_IsString(url_item)) {
+        ESP_LOGE(TAG, "❌ url字段缺失或格式错误");
+        SendErrorResponse("set_ota_url", ERROR_JSON_PARSE_FAILED, "url字段缺失");
+        ESP_LOGI(TAG, "========================================");
+        return;
+    }
+    
+    std::string url = url_item->valuestring;
+    ESP_LOGI(TAG, "新的 OTA URL: %s", url.c_str());
+    
+    // 基本验证：检查 URL 格式
+    if (url.empty() || (url.find("http://") != 0 && url.find("https://") != 0)) {
+        ESP_LOGE(TAG, "❌ 无效的 URL 格式");
+        SendErrorResponse("set_ota_url", ERROR_JSON_PARSE_FAILED, "URL格式无效，必须以http://或https://开头");
+        ESP_LOGI(TAG, "========================================");
+        return;
+    }
+    
+    // 保存到 NVS
+    try {
+        Settings settings("system", true);
+        settings.SetString("ota_url", url);
+        
+        ESP_LOGI(TAG, "✓ OTA URL 已保存到 NVS");
+        
+        // 构建成功响应
+        cJSON* response = cJSON_CreateObject();
+        cJSON_AddStringToObject(response, "cmd", "set_ota_url");
+        cJSON_AddStringToObject(response, "status", "success");
+        
+        cJSON* response_data = cJSON_CreateObject();
+        cJSON_AddStringToObject(response_data, "message", "OTA URL设置成功");
+        cJSON_AddStringToObject(response_data, "url", url.c_str());
+        cJSON_AddItemToObject(response, "data", response_data);
+        
+        char* json_str = cJSON_PrintUnformatted(response);
+        SendResponse(std::string(json_str));
+        free(json_str);
+        cJSON_Delete(response);
+        
+    } catch (const std::exception& e) {
+        ESP_LOGE(TAG, "❌ 保存 OTA URL 失败: %s", e.what());
+        SendErrorResponse("set_ota_url", ERROR_STORAGE_WRITE_FAILED, "NVS存储失败");
+    }
+    
+    ESP_LOGI(TAG, "========================================");
+}
+
+void BLEWiFiProvisioner::HandleGetOtaUrlCommand() {
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "获取 OTA URL");
+    
+    std::string custom_url;
+    std::string default_url = CONFIG_OTA_URL;
+    bool has_custom = false;
+    
+    // 尝试从 NVS 读取自定义 URL
+    try {
+        Settings settings("system", false);
+        custom_url = settings.GetString("ota_url", "");
+        if (!custom_url.empty()) {
+            has_custom = true;
+            ESP_LOGI(TAG, "✓ 找到自定义 OTA URL: %s", custom_url.c_str());
+        } else {
+            ESP_LOGI(TAG, "ℹ️  使用默认 OTA URL: %s", default_url.c_str());
+        }
+    } catch (const std::exception& e) {
+        ESP_LOGW(TAG, "⚠️  读取自定义 OTA URL 失败: %s，使用默认值", e.what());
+    }
+    
+    // 构建响应
+    cJSON* response = cJSON_CreateObject();
+    cJSON_AddStringToObject(response, "cmd", "get_ota_url");
+    cJSON_AddStringToObject(response, "status", "success");
+    
+    cJSON* response_data = cJSON_CreateObject();
+    cJSON_AddStringToObject(response_data, "default_url", default_url.c_str());
+    cJSON_AddStringToObject(response_data, "current_url", has_custom ? custom_url.c_str() : default_url.c_str());
+    cJSON_AddBoolToObject(response_data, "is_custom", has_custom);
+    cJSON_AddItemToObject(response, "data", response_data);
+    
+    char* json_str = cJSON_PrintUnformatted(response);
+    SendResponse(std::string(json_str));
+    free(json_str);
+    cJSON_Delete(response);
     
     ESP_LOGI(TAG, "========================================");
 }

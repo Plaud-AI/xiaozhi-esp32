@@ -41,9 +41,22 @@ Ota::~Ota() {
 }
 
 std::string Ota::GetCheckVersionUrl() {
-    // 强制使用新的配置，忽略 NVS 中的旧配置
-    std::string url = CONFIG_OTA_URL;
-    ESP_LOGI(TAG, "Using OTA URL (forced): %s", url.c_str());
+    // 优先使用 NVS 中的自定义 OTA URL，如果没有则使用默认配置
+    std::string url;
+    try {
+        Settings settings("system", false);
+        url = settings.GetString("ota_url", "");
+        if (!url.empty()) {
+            ESP_LOGI(TAG, "Using custom OTA URL from NVS: %s", url.c_str());
+            return url;
+        }
+    } catch (const std::exception& e) {
+        ESP_LOGW(TAG, "Failed to read custom OTA URL from NVS: %s", e.what());
+    }
+    
+    // 使用默认配置
+    url = CONFIG_OTA_URL;
+    ESP_LOGI(TAG, "Using default OTA URL: %s", url.c_str());
     return url;
 }
 

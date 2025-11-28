@@ -74,10 +74,20 @@ bool LottieAnimation::LoadFromData(const void* data, size_t size)
 
     ESP_LOGI(TAG, "Loading lottie animation from data (%u bytes)", size);
 
+    // 验证对象大小（应该在 SetSize 中已设置）
+    lv_coord_t w_before = lv_obj_get_width(lottie_obj_);
+    lv_coord_t h_before = lv_obj_get_height(lottie_obj_);
+    ESP_LOGI(TAG, "Object size before loading data: %ldx%ld", w_before, h_before);
+
     // LVGL 9.x API
-    // 注意：此时 buffer 应该已经通过 SetSize() 设置，所以 lv_lottie_set_src_data
-    // 不会触发 invalidate 死循环
+    // 注意：lv_lottie_set_src_data 会立即调用 lottie_update(0) 渲染第一帧
+    // 并且会更新动画的时长，动画会自动开始播放
     lv_lottie_set_src_data(lottie_obj_, data, size);
+
+    // 验证对象大小（可能在加载后改变）
+    lv_coord_t w_after = lv_obj_get_width(lottie_obj_);
+    lv_coord_t h_after = lv_obj_get_height(lottie_obj_);
+    ESP_LOGI(TAG, "Object size after loading data: %ldx%ld", w_after, h_after);
 
     ESP_LOGI(TAG, "Animation loaded successfully from data");
     return true;
@@ -174,22 +184,35 @@ void LottieAnimation::SetPosition(int32_t x, int32_t y)
 void LottieAnimation::SetSize(int32_t width, int32_t height)
 {
     if (lottie_obj_) {
-        // 🔑 关键修复：先分配 buffer，再设置大小
-        // 这样在加载数据时（lv_lottie_set_src_data）就不会触发 invalidate 死循环
+        // 🔑 关键修复：先分配 buffer，再设置到 Lottie 对象
+        // Lottie widget 继承自 Canvas，其大小由 buffer 决定，不应手动设置
         if (!AllocateBuffer(width, height)) {
             ESP_LOGE(TAG, "Failed to allocate buffer for %ldx%ld", width, height);
             return;
         }
         
-        // 设置 buffer 到 LVGL Lottie 对象（必须在 lv_lottie_set_src_data 之前）
+        // 设置 buffer 到 LVGL Lottie 对象（这会自动设置对象大小）
+        // 必须在 lv_lottie_set_src_data 之前调用
 #if LV_USE_LOTTIE
         lv_lottie_set_buffer(lottie_obj_, width, height, buffer_);
         ESP_LOGI(TAG, "✅ Buffer set: %ldx%ld at %p", width, height, buffer_);
-#endif
         
-        // 设置对象大小
-        lv_obj_set_size(lottie_obj_, width, height);
-        ESP_LOGI(TAG, "🎨 Set animation size: %ldx%ld", width, height);
+        // ⚠️ 修复看门狗超时：不要在主任务中同步调用 lv_obj_update_layout()
+        // LVGL 会在下一次刷新周期自动更新布局，避免阻塞
+        // 
+        // 如果需要立即获取大小，可以手动设置（不触发布局计算）
+        lv_coord_t obj_w = lv_obj_get_width(lottie_obj_);
+        lv_coord_t obj_h = lv_obj_get_height(lottie_obj_);
+        
+        if (obj_w == 0 || obj_h == 0) {
+            ESP_LOGI(TAG, "🎨 Object size is 0, setting size to %ldx%ld (layout will update async)", 
+                     width, height);
+            lv_obj_set_size(lottie_obj_, width, height);
+            // 不调用 lv_obj_update_layout()，让 LVGL 在渲染时异步处理
+        } else {
+            ESP_LOGI(TAG, "🎨 Object size after buffer set: %ldx%ld", obj_w, obj_h);
+        }
+#endif
         
         // 确保对象可见
         lv_obj_clear_flag(lottie_obj_, LV_OBJ_FLAG_HIDDEN);
@@ -328,8 +351,8 @@ bool LottieAnimation::AllocateBuffer(int32_t width, int32_t height)
     buffer_width_ = width;
     buffer_height_ = height;
     
-    ESP_LOGI(TAG, "Allocated buffer: %ldx%ld (%zu bytes) at %p", 
-             width, height, buffer_size, buffer_);
+    ESP_LOGI(TAG, "Allocated buffer: %ldx%ld (%u bytes) at %p", 
+             width, height, (unsigned int)buffer_size, buffer_);
     
     return true;
 }

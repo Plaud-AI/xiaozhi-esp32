@@ -136,6 +136,16 @@ private:
     void HandleResetWakeWordsCommand();
 
     /**
+     * @brief 处理设置 OTA URL 命令
+     */
+    void HandleSetOtaUrlCommand(cJSON* root);
+
+    /**
+     * @brief 处理获取 OTA URL 命令
+     */
+    void HandleGetOtaUrlCommand();
+
+    /**
      * @brief 发送响应数据到手机
      * @param json_response JSON响应字符串
      * @return true 发送成功，false 发送失败
