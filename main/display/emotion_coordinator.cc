@@ -282,17 +282,22 @@ void EmotionCoordinator::PlayEmotionAnimation(EmotionState emotion)
             return;
         }
 
-        // ⚠️ 不要立即设置大小和居中！Lottie 对象的大小在首次渲染前是 0
-        // 设置位置到左上角 (0, 0)，让动画填满父容器
-        lv_obj_set_pos(anim->GetObject(), 0, 0);
+        // ⚠️ 关键修复：不要调用 Center()！它会导致 watchdog 超时
+        // 原因：Lottie 对象在首次渲染前大小是 0，Center() 会触发无效的 invalidate 循环
         
-        // 设置对象大小为内容大小（让 Lottie 自己决定）
-        lv_obj_set_size(anim->GetObject(), LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+        // 直接设置大小和位置（不调用 Center）
+        lv_obj_t* lottie_obj = anim->GetObject();
+        lv_obj_set_size(lottie_obj, config_.screen_width, config_.screen_height);
+        lv_obj_set_pos(lottie_obj, 0, 0);  // 左上角对齐
+        
+        // 清除隐藏标志
+        lv_obj_clear_flag(lottie_obj, LV_OBJ_FLAG_HIDDEN);
         
         // 确保动画显示在最前面（避免被状态栏等UI元素遮挡）
-        lv_obj_move_foreground(anim->GetObject());
+        lv_obj_move_foreground(lottie_obj);
         
-        ESP_LOGI(TAG, "Animation positioned at (0,0) with content size");
+        ESP_LOGI(TAG, "Animation set: size=%dx%d, pos=(0,0)", 
+                 config_.screen_width, config_.screen_height);
         
         // 播放
         anim->Play(loop);
