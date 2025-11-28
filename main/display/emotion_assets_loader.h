@@ -160,17 +160,17 @@ public:
 
         auto* anim = new lottie::LottieAnimation(parent);
         
-        // 🔑 关键修复：先设置大小（分配 buffer），再加载数据
-        // 这样 lv_lottie_set_src_data 就不会触发 invalidate 死循环
-        anim->SetSize(width, height);
-        
-        // 使用内存数据加载
+        // 🔑 关键修复：必须先加载数据，再设置 buffer！（参考 LVGL 官方示例）
+        // 官方顺序：lv_lottie_set_src_data() -> lv_lottie_set_buffer()
         if (!anim->LoadFromData(data, size)) {
             ESP_LOGE(TAG, "Failed to load animation data for: %s", 
                      EmotionStateToString(emotion));
             delete anim;
             return nullptr;
         }
+        
+        // 加载数据后再设置 buffer
+        anim->SetSize(width, height);
 
         ESP_LOGI(TAG, "Created animation from assets: %s (%ldx%ld)", 
                  EmotionStateToString(emotion), width, height);

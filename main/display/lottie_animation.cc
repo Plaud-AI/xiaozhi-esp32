@@ -74,23 +74,10 @@ bool LottieAnimation::LoadFromData(const void* data, size_t size)
 
     ESP_LOGI(TAG, "Loading lottie animation from data (%u bytes)", size);
 
-    // LVGL 9.x API
-    // 注意：lv_lottie_set_src_data 会立即调用 lottie_update(0) 渲染第一帧
-    // 并且会更新动画的时长，动画会自动开始播放
+    // 🔑 按 LVGL 官方示例：必须先调用 lv_lottie_set_src_data，再调用 lv_lottie_set_buffer
     lv_lottie_set_src_data(lottie_obj_, data, size);
 
-    // 🔑 关键修复：lv_lottie_set_src_data 会重置对象大小为 Lottie JSON 中的原始尺寸
-    // 必须在加载数据后立即重新设置为我们的 buffer 尺寸
-    if (buffer_width_ > 0 && buffer_height_ > 0) {
-        lv_obj_set_size(lottie_obj_, buffer_width_, buffer_height_);
-        ESP_LOGI(TAG, "✅ Re-applied object size after loading: %ldx%ld", buffer_width_, buffer_height_);
-        
-        lv_coord_t w = lv_obj_get_width(lottie_obj_);
-        lv_coord_t h = lv_obj_get_height(lottie_obj_);
-        ESP_LOGI(TAG, "✅ Final object size: %ldx%ld", w, h);
-    }
-
-    ESP_LOGI(TAG, "✅ Animation loaded successfully from data");
+    ESP_LOGI(TAG, "✅ Animation data loaded");
     return true;
 #else
     ESP_LOGE(TAG, "LV_USE_LOTTIE not enabled");
@@ -184,29 +171,32 @@ void LottieAnimation::SetPosition(int32_t x, int32_t y)
 
 void LottieAnimation::SetSize(int32_t width, int32_t height)
 {
-    if (lottie_obj_) {
-        // 🔑 关键修复：必须先设置对象大小，再分配 buffer！
-        // ThorVG 需要对象大小已设置才能正确初始化内部结构
-        // 参考 Demo: lv_obj_set_size() -> lv_lottie_set_buffer() -> lv_lottie_set_src_data()
-        lv_obj_set_size(lottie_obj_, width, height);
-        ESP_LOGI(TAG, "✅ Object size set: %ldx%ld", width, height);
-        
-        if (!AllocateBuffer(width, height)) {
-            ESP_LOGE(TAG, "Failed to allocate buffer for %ldx%ld", width, height);
-            return;
-        }
-        
-        // 设置 buffer 到 LVGL Lottie 对象
-        // 必须在 lv_lottie_set_src_data 之前调用
 #if LV_USE_LOTTIE
-        lv_lottie_set_buffer(lottie_obj_, width, height, buffer_);
-        ESP_LOGI(TAG, "✅ Buffer set: %ldx%ld at %p", width, height, buffer_);
-#endif
-        
-        // 确保对象可见
-        lv_obj_clear_flag(lottie_obj_, LV_OBJ_FLAG_HIDDEN);
-        ESP_LOGI(TAG, "✅ Object ready for animation");
+    if (!lottie_obj_) return;
+    
+    // 分配 buffer
+    if (!AllocateBuffer(width, height)) {
+        ESP_LOGE(TAG, "Failed to allocate buffer for %ldx%ld", width, height);
+        return;
     }
+    
+    // 按 LVGL 官方示例：直接调用 lv_lottie_set_buffer
+    lv_lottie_set_buffer(lottie_obj_, width, height, buffer_);
+    ESP_LOGI(TAG, "✅ Buffer set: %ldx%ld at %p", width, height, buffer_);
+    
+    // 🔑 关键修复：按照 LVGL 官方示例，调用 lv_obj_center 来居中对象
+    // 这会触发 LVGL 的布局更新，确保对象被正确放置和渲染
+    lv_obj_center(lottie_obj_);
+    ESP_LOGI(TAG, "✅ Object centered on screen");
+    
+    // 确保对象可见
+    lv_obj_clear_flag(lottie_obj_, LV_OBJ_FLAG_HIDDEN);
+    
+    // 验证对象大小（调试用，即使为0也可能正常渲染）
+    lv_coord_t obj_w = lv_obj_get_width(lottie_obj_);
+    lv_coord_t obj_h = lv_obj_get_height(lottie_obj_);
+    ESP_LOGI(TAG, "✅ Object size after center: %ldx%ld", obj_w, obj_h);
+#endif
 }
 
 void LottieAnimation::Center()
@@ -327,23 +317,20 @@ bool LottieAnimation::AllocateBuffer(int32_t width, int32_t height)
     // 释放旧buffer
     FreeBuffer();
     
-    // 🔑 关键修复：使用 calloc 而不是 malloc，确保 buffer 清零
-    // ThorVG 渲染需要干净的 buffer，未初始化的内存会导致崩溃
-    // 分配新buffer（ARGB8888 = 4 bytes per pixel）
-    size_t buffer_size = width * height * 4;
-    buffer_ = heap_caps_calloc(1, buffer_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    // 🔑使用 calloc 分配并清零（ARGB8888 = 4 bytes per pixel）
+    // 参考 ThorVG Demo: heap_caps_calloc(width * height, sizeof(uint32_t), MALLOC_CAP_SPIRAM)
+    buffer_ = heap_caps_calloc(width * height, sizeof(uint32_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     
     if (!buffer_) {
-        ESP_LOGE(TAG, "Failed to allocate buffer (%zu bytes) for %ldx%ld", 
-                 buffer_size, width, height);
+        ESP_LOGE(TAG, "Failed to allocate buffer for %ldx%ld", width, height);
         return false;
     }
     
     buffer_width_ = width;
     buffer_height_ = height;
     
-    ESP_LOGI(TAG, "Allocated and cleared buffer: %ldx%ld (%u bytes) at %p", 
-             width, height, (unsigned int)buffer_size, buffer_);
+    ESP_LOGI(TAG, "✅ Allocated buffer: %ldx%ld (%u bytes) at %p", 
+             width, height, (unsigned int)(width * height * 4), buffer_);
     
     return true;
 }
