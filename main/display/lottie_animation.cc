@@ -116,7 +116,7 @@ bool LottieAnimation::LoadFromData(const void* data, size_t size)
     }
     
     // 加载 Lottie 数据（JSON）
-    if (tvg_picture_load_data(tvg_picture_, data, size, "lottie", 1) != TVG_RESULT_SUCCESS) {
+    if (tvg_picture_load_data(tvg_picture_, static_cast<const char*>(data), size, "lottie", 1) != TVG_RESULT_SUCCESS) {
         ESP_LOGE(TAG, "Failed to load lottie data");
         return false;
     }
@@ -253,7 +253,7 @@ void LottieAnimation::SetVisible(bool visible)
     }
 }
 
-void LottieAnimation::SetOnCompleteCallback(std::function<void()> callback)
+void LottieAnimation::SetCompleteCallback(std::function<void()> callback)
 {
     complete_callback_ = callback;
 }
