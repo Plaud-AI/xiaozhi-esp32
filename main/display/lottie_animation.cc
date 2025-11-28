@@ -1,5 +1,6 @@
 #include "lottie_animation.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 
 namespace lottie {
 
@@ -23,15 +24,6 @@ LottieAnimation::LottieAnimation(lv_obj_t* parent)
     if (lottie_obj_ == nullptr) {
         ESP_LOGE(TAG, "Failed to create lottie object");
         return;
-    }
-    
-    // 🔑 关键修复：lv_lottie_constructor 会立即启动动画（lv_anim_start）
-    // 必须立即暂停，避免在设置大小前触发 lv_obj_invalidate() 死循环
-    lv_anim_t* anim = lv_lottie_get_anim(lottie_obj_);
-    if (anim) {
-        lv_anim_set_repeat_count(anim, 0);  // 设置为不重复
-        lv_anim_set_time(anim, 0);          // 时长设为 0（实际暂停）
-        ESP_LOGI(TAG, "Paused constructor auto-start animation");
     }
     
     ESP_LOGI(TAG, "Lottie animation object created successfully");
@@ -60,14 +52,11 @@ bool LottieAnimation::LoadFromFile(const char* file_path)
     ESP_LOGI(TAG, "Loading lottie animation from file: %s", file_path);
 
     // LVGL 9.x API
+    // 注意：此时 buffer 应该已经通过 SetSize() 设置，所以 lv_lottie_set_src_file
+    // 不会触发 invalidate 死循环
     lv_lottie_set_src_file(lottie_obj_, file_path);
-    
-    // 🔑 关键修复：删除加载时自动启动的动画
-    // 我们会在后续手动调用 Play() 时重新启动
-    lv_anim_delete(lottie_obj_, nullptr);
-    ESP_LOGI(TAG, "Deleted auto-started animation after loading file");
 
-    ESP_LOGI(TAG, "Animation loaded successfully");
+    ESP_LOGI(TAG, "Animation loaded successfully from file");
     return true;
 #else
     ESP_LOGE(TAG, "LV_USE_LOTTIE not enabled");
@@ -86,12 +75,9 @@ bool LottieAnimation::LoadFromData(const void* data, size_t size)
     ESP_LOGI(TAG, "Loading lottie animation from data (%u bytes)", size);
 
     // LVGL 9.x API
+    // 注意：此时 buffer 应该已经通过 SetSize() 设置，所以 lv_lottie_set_src_data
+    // 不会触发 invalidate 死循环
     lv_lottie_set_src_data(lottie_obj_, data, size);
-    
-    // 🔑 关键修复：删除加载时自动启动的动画
-    // lv_lottie_set_src_data 会触发动画自动播放，立即删除，稍后手动重启
-    lv_anim_delete(lottie_obj_, nullptr);
-    ESP_LOGI(TAG, "Deleted auto-started animation after loading data");
 
     ESP_LOGI(TAG, "Animation loaded successfully from data");
     return true;

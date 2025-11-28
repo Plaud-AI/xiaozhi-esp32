@@ -146,7 +146,8 @@ public:
      * @return LottieAnimation* 动画对象（失败返回 nullptr）
      */
     static lottie::LottieAnimation* CreateAnimationFromAssets(lv_obj_t* parent, 
-                                                               EmotionState emotion)
+                                                               EmotionState emotion,
+                                                               int32_t width, int32_t height)
     {
         void* data = nullptr;
         size_t size = 0;
@@ -159,7 +160,11 @@ public:
 
         auto* anim = new lottie::LottieAnimation(parent);
         
-        // 使用内存数据加载（关键！）
+        // 🔑 关键修复：先设置大小（分配 buffer），再加载数据
+        // 这样 lv_lottie_set_src_data 就不会触发 invalidate 死循环
+        anim->SetSize(width, height);
+        
+        // 使用内存数据加载
         if (!anim->LoadFromData(data, size)) {
             ESP_LOGE(TAG, "Failed to load animation data for: %s", 
                      EmotionStateToString(emotion));
@@ -167,7 +172,8 @@ public:
             return nullptr;
         }
 
-        ESP_LOGI(TAG, "Created animation from assets: %s", EmotionStateToString(emotion));
+        ESP_LOGI(TAG, "Created animation from assets: %s (%ldx%ld)", 
+                 EmotionStateToString(emotion), width, height);
         
         return anim;
     }
