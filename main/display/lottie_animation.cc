@@ -1,6 +1,7 @@
 #include "lottie_animation.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+// #include "esp_cache.h" // REMOVED: esp_cache.h is not available in this IDF version
 
 namespace lottie {
 
@@ -47,6 +48,7 @@ LottieAnimation::LottieAnimation(lv_obj_t* parent)
         ESP_LOGE(TAG, "Failed to create canvas object");
         return;
     }
+    ESP_LOGI(TAG, "✅ Canvas object created in parent %p", parent_);
     
     ESP_LOGI(TAG, "✅ Lottie animation object created (ThorVG C API mode)");
 }
@@ -251,13 +253,31 @@ void LottieAnimation::SetSize(int32_t width, int32_t height)
         tvg_canvas_push(tvg_canvas_, tvg_picture_);
     }
     
+    // 🔑 关键：必须在设置 buffer 之前先设置对象尺寸
+    ESP_LOGI(TAG, "Setting canvas object size to %ldx%ld before buffer setup", width, height);
+    lv_obj_set_size(canvas_obj_, width, height);
+    
     // 设置 LVGL canvas 的 buffer
     lv_canvas_set_buffer(canvas_obj_, canvas_buf_, width, height, LV_COLOR_FORMAT_ARGB8888);
+
+    // 再次设置尺寸，确保 buffer 设置没有重置尺寸
+    lv_obj_set_size(canvas_obj_, width, height);
+    
+    // 确保canvas可见
+    lv_obj_clear_flag(canvas_obj_, LV_OBJ_FLAG_HIDDEN);
     
     // 居中对象
     lv_obj_center(canvas_obj_);
     
-    ESP_LOGI(TAG, "✅ Canvas configured: %ldx%ld", width, height);
+    // 获取canvas的实际位置和大小
+    lv_obj_update_layout(canvas_obj_); // 强制更新布局以获取正确大小
+    lv_coord_t x = lv_obj_get_x(canvas_obj_);
+    lv_coord_t y = lv_obj_get_y(canvas_obj_);
+    lv_coord_t w = lv_obj_get_width(canvas_obj_);
+    lv_coord_t h = lv_obj_get_height(canvas_obj_);
+    
+    ESP_LOGI(TAG, "✅ Canvas configured: %ldx%ld, pos=(%d,%d), size=%dx%d, visible=%d", 
+             width, height, x, y, w, h, !lv_obj_has_flag(canvas_obj_, LV_OBJ_FLAG_HIDDEN));
 }
 
 void LottieAnimation::Center()
@@ -344,27 +364,49 @@ void LottieAnimation::RenderFrame()
         return;
     }
     
-    // 每30帧打印一次日志（避免日志过多）
+    // 1. 清除 Buffer (重置为全透明)
+    // Lottie 渲染每一帧都需要一个干净的 buffer，否则会有残留
+    memset(canvas_buf_, 0, width_ * height_ * sizeof(uint32_t));
+
+    // 2. 设置当前帧
+    if (tvg_animation_set_frame(tvg_animation_, current_frame_) != TVG_RESULT_SUCCESS) {
+        ESP_LOGW(TAG, "Failed to set frame %.1f", current_frame_);
+    }
+    
+    // 3. 更新 canvas (应用动画变更)
+    tvg_canvas_update(tvg_canvas_);
+    
+    // 4. 渲染到 buffer
+    if (tvg_canvas_draw(tvg_canvas_) != TVG_RESULT_SUCCESS) {
+        ESP_LOGE(TAG, "ThorVG draw failed");
+    }
+    
+    // 5. 等待渲染完成
+    tvg_canvas_sync(tvg_canvas_);
+
+    // 6. 确保数据同步 (Cache Writeback)
+    // 虽然 CPU 写入通常是缓存一致的，但在涉及显示刷新时，确保回写到 SPIRAM 是安全的
+    #if CONFIG_SPIRAM
+    if (esp_ptr_external_ram(canvas_buf_)) {
+        // 在旧版本 IDF 中，或者如果不确定 esp_cache_msync 是否可用，可以使用 Cache_WriteBack_Addr
+        // 但这里为了兼容性，先注释掉显式的 cache 操作，依赖硬件自动处理
+        // 如果画面撕裂或不显示，可能需要使用 esp_rom_cache_writeback_addr 或类似函数
+        // esp_cache_msync(canvas_buf_, width_ * height_ * sizeof(uint32_t), ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+        
+        // 尝试使用更通用的方式：如果有 Cache 维护 API
+        // Cache_WriteBack_Addr((uint32_t)canvas_buf_, width_ * height_ * sizeof(uint32_t)); // ESP32/ESP32S3 ROM API
+    }
+    #endif
+    
+    // 7. 通知 LVGL 更新 canvas 显示
+    if (canvas_obj_) {
+        lv_obj_invalidate(canvas_obj_);
+    }
+
+    // 每30帧打印一次日志
     static uint32_t frame_count = 0;
     if (frame_count++ % 30 == 0) {
         ESP_LOGI(TAG, "🎬 Rendering frame %.1f/%.0f (every 30 frames)", current_frame_, total_frames_);
-    }
-    
-    // 设置当前帧（参考官方 demo line 150）
-    tvg_animation_set_frame(tvg_animation_, current_frame_);
-    
-    // 更新 canvas
-    tvg_canvas_update(tvg_canvas_);
-    
-    // 渲染到 buffer
-    tvg_canvas_draw(tvg_canvas_);
-    
-    // 等待渲染完成
-    tvg_canvas_sync(tvg_canvas_);
-    
-    // 通知 LVGL 更新 canvas 显示
-    if (canvas_obj_) {
-        lv_obj_invalidate(canvas_obj_);
     }
 }
 

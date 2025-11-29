@@ -5,6 +5,7 @@
 #include <esp_lvgl_port.h>
 #include <esp_psram.h>
 #include <lvgl.h>
+// #include "esp_cache.h" // REMOVED: esp_cache.h is not available in this IDF version
 
 #define TAG "LcdEmotionDisplay"
 
