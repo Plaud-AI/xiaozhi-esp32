@@ -235,9 +235,12 @@ void WifiBoard::StartNetwork() {
     wifi_station.Start();
 
     // Try to connect to WiFi, if failed, launch the WiFi configuration AP
-    // 优化：减少等待时间从 60 秒到 20 秒，加快进入配网模式
-    if (!wifi_station.WaitForConnected(20 * 1000)) {
-        ESP_LOGW(TAG, "WiFi连接超时（20秒），进入配网模式");
+    // 等待时间设置为 60 秒，给足够的时间进行扫描和连接
+    // 注意：WiFi 扫描所有信道需要 5-10 秒，连接握手可能需要更多时间
+    ESP_LOGI(TAG, "⏳ 等待 WiFi 连接（最多 60 秒）...");
+    if (!wifi_station.WaitForConnected(60 * 1000)) {
+        ESP_LOGW(TAG, "WiFi连接超时（60秒），进入配网模式");
+        ESP_LOGW(TAG, "提示：请检查 WiFi 信号强度和路由器状态");
         wifi_station.Stop();
         wifi_config_mode_ = true;
         EnterWifiConfigMode();

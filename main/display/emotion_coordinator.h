@@ -275,6 +275,10 @@ private:
     // 基于 Assets 的当前动画对象（手动管理生命周期）
     lottie::LottieAnimation* current_asset_anim_ = nullptr;
 
+    // 当前正在播放（或加载中）的情感状态
+    EmotionState current_playing_emotion_; 
+    bool has_emotion_set_ = false;
+
     std::function<void(const std::string&)> animation_start_callback_;
 };
 

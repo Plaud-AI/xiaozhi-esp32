@@ -809,12 +809,12 @@ void Application::SetDeviceState(DeviceState state) {
             break;
         case kDeviceStateConnecting:
             display->SetStatus(Lang::Strings::CONNECTING);
-            display->SetEmotion("neutral");
+            display->SetEmotion("connecting");
             display->SetChatMessage("system", "");
             break;
         case kDeviceStateListening:
             display->SetStatus(Lang::Strings::LISTENING);
-            display->SetEmotion("neutral");
+            display->SetEmotion("listening");
 
             // Make sure the audio processor is running
             if (!audio_service_.IsAudioProcessorRunning()) {
@@ -842,6 +842,7 @@ void Application::SetDeviceState(DeviceState state) {
             break;
         case kDeviceStateSpeaking:
             display->SetStatus(Lang::Strings::SPEAKING);
+            display->SetEmotion("speaking");
 
             if (listening_mode_ != kListeningModeRealtime) {
                 audio_service_.EnableVoiceProcessing(false);

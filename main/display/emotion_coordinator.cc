@@ -1,6 +1,7 @@
 #include "emotion_coordinator.h"
 #include "emotion_assets_loader.h"
 #include "esp_log.h"
+#include "esp_lvgl_port.h"
 
 static const char* TAG = "EmotionCoord";
 
@@ -435,6 +436,26 @@ void EmotionCoordinator::PlayEmotionAnimation(EmotionState emotion)
     bool use_assets = (config_.animation_base_path == "assets:");
     
     if (use_assets) {
+        // 优化：如果当前已经在播放（或加载）同一个情感，则跳过重新加载
+        // 这可以防止画面闪烁，并解决频繁 SetEmotion 导致的资源竞争问题
+        if (has_emotion_set_ && current_playing_emotion_ == emotion) {
+            if (current_asset_anim_) {
+                // 已经在播放，确保它是运行状态（应对意外暂停）
+                // ESP_LOGD(TAG, "Emotion %s is already active, ensuring playback", EmotionStateToString(emotion));
+                // current_asset_anim_->Play(true); // 可选：强制重播
+                return;
+            } else {
+                // current_asset_anim_ 为空但 emotion 匹配，说明正在异步加载中
+                // 避免重复调度
+                ESP_LOGD(TAG, "Emotion %s is loading, skipping duplicate request", EmotionStateToString(emotion));
+                return;
+            }
+        }
+
+        // 更新当前情感状态
+        current_playing_emotion_ = emotion;
+        has_emotion_set_ = true;
+
         // 🔑 关键修复：使用异步加载，避免在主任务中阻塞
         // 创建加载数据
         auto* load_data = new AsyncAnimLoadData{
@@ -447,11 +468,18 @@ void EmotionCoordinator::PlayEmotionAnimation(EmotionState emotion)
 
         ESP_LOGI(TAG, "🔄 Scheduling async animation load in LVGL task...");
         
-        // 创建单次定时器（10ms 后在 LVGL 任务中执行）
-        lv_timer_t* timer = lv_timer_create(async_anim_load_timer_cb, 10, load_data);
-        lv_timer_set_repeat_count(timer, 1);  // 只执行一次
-        
-        ESP_LOGI(TAG, "✅ Animation load scheduled");
+        // 🔒 锁定 LVGL 以安全创建定时器（防止与 LVGL 任务发生资源竞争）
+        if (lvgl_port_lock(100)) {
+            // 创建单次定时器（10ms 后在 LVGL 任务中执行）
+            lv_timer_t* timer = lv_timer_create(async_anim_load_timer_cb, 10, load_data);
+            lv_timer_set_repeat_count(timer, 1);  // 只执行一次
+            lvgl_port_unlock();
+            ESP_LOGI(TAG, "✅ Animation load scheduled");
+        } else {
+            ESP_LOGE(TAG, "❌ Failed to lock LVGL, animation load skipped");
+            delete load_data;
+            return;
+        }
 
         // TODO: 管理动画对象的生命周期（避免内存泄漏）
         // 简单实现：先不删除，让 LVGL 管理
