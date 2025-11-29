@@ -1,6 +1,8 @@
 #include "wifi_board.h"
 
 #include "display.h"
+#include "lcd_emotion_display.h"
+#include "emotion_state_manager.h"
 #include "application.h"
 #include "system_info.h"
 #include "settings.h"
@@ -281,6 +283,10 @@ void WifiBoard::StartNetwork() {
     }
     
     ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "✅ WiFi/BLE 初始化完成，情感动画由应用流程自动控制");
+    
+    // 注意：不在这里手动触发动画，避免与应用流程中的动画冲突
+    // 应用会在合适的时机（如 Assets 加载完成后）自动显示情感动画
 }
 
 NetworkInterface* WifiBoard::GetNetwork() {

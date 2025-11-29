@@ -46,16 +46,19 @@ bool BLEWiFiProvisioner::Initialize(const std::string& device_name) {
         return true;
     }
 
+    // 🔧 优化：精简日志输出，减少 CPU 占用（避免与动画渲染冲突）
+    ESP_LOGI(TAG, "初始化 BLE WiFi Provisioner (设备: %s)...", device_name.c_str());
+    
+    /* 原装饰性日志已注释（减少 CPU 占用）:
     ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
     ESP_LOGI(TAG, "║ 🔧 初始化 BLE WiFi Provisioner");
     ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════");
     ESP_LOGI(TAG, "║ 📱 设备名称: %s", device_name.c_str());
     ESP_LOGI(TAG, "║ 🎯 功能: WiFi配网 + 设备配置");
     ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
+    */
 
     // 初始化蓝牙服务
-    ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "步骤 1/3: 初始化蓝牙服务...");
     auto& ble_service = BluetoothService::GetInstance();
     if (!ble_service.Initialize(device_name)) {
         ESP_LOGE(TAG, "❌ 蓝牙服务初始化失败");
@@ -66,39 +69,27 @@ bool BLEWiFiProvisioner::Initialize(const std::string& device_name) {
         return false;
     }
 
-    ESP_LOGI(TAG, "✅ 步骤 1/3 完成：蓝牙服务初始化成功");
-    ESP_LOGI(TAG, "   设备 MAC 地址: %s", ble_service.GetMacAddress().c_str());
-    ESP_LOGI(TAG, "   设备名称: %s", ble_service.GetDeviceName().c_str());
+    ESP_LOGI(TAG, "✅ 蓝牙服务初始化成功 (MAC: %s)", ble_service.GetMacAddress().c_str());
 
     // 设置数据接收回调
-    ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "步骤 2/3: 设置数据接收回调...");
     ble_service.SetDataReceivedCallback([this](const std::string& data) {
-        ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
-        ESP_LOGI(TAG, "║ 📥 BLE 数据接收事件");
-        ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════");
-        ESP_LOGI(TAG, "║ 数据长度: %d 字节", data.length());
-        ESP_LOGI(TAG, "║ 数据内容: %s", data.c_str());
-        ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
+        // 🔧 优化：精简日志，只在需要调试时输出
+        ESP_LOGD(TAG, "📥 BLE 数据接收: %d 字节", data.length());
         this->HandleReceivedData(data);
     });
 
-    ESP_LOGI(TAG, "✅ 步骤 2/3 完成：数据接收回调设置成功");
-
     initialized_ = true;
+    ESP_LOGI(TAG, "✅ BLE WiFi Provisioner 初始化完成");
     
-    ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "✅ 步骤 3/3 完成：BLE WiFi Provisioner 初始化完成");
-    ESP_LOGI(TAG, "");
+    /* 原装饰性日志已注释（减少 CPU 占用）:
+    ESP_LOGI(TAG, "   设备 MAC 地址: %s", ble_service.GetMacAddress().c_str());
+    ESP_LOGI(TAG, "   设备名称: %s", ble_service.GetDeviceName().c_str());
+    ESP_LOGI(TAG, "步骤 2/3: 设置数据接收回调...");
     ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
-    ESP_LOGI(TAG, "║ ✅ 初始化成功摘要");
-    ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════");
-    ESP_LOGI(TAG, "║ 设备名称: %s", device_name.c_str());
-    ESP_LOGI(TAG, "║ MAC 地址: %s", ble_service.GetMacAddress().c_str());
-    ESP_LOGI(TAG, "║ 状态: 已初始化，未启动广播");
-    ESP_LOGI(TAG, "║ 下一步: 调用 Start() 启动 BLE 广播");
+    ESP_LOGI(TAG, "║ 📥 BLE 数据接收事件");
+    ... (更多装饰性日志)
     ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
-    ESP_LOGI(TAG, "");
+    */
 
     return true;
 }

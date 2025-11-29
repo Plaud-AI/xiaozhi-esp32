@@ -333,8 +333,12 @@ bool LcdEmotionDisplay::InitEmotionSystem() {
     emotion_system_initialized_ = true;
     ESP_LOGI(TAG, "✅ Emotion system initialized successfully");
 
-    // 🔑 测试修复：使用 HAPPY 动画替代 CALM，验证动画是否能显示
-    // TODO: 确认动画显示正常后改回 CALM
+    // 🔧 优化：延迟动画播放到 WiFi/BLE 初始化完成后，避免与 BLE 初始化争抢 CPU
+    // 动画将在 WifiBoard::StartNetwork() 中的 BLE 初始化完成后播放
+    ESP_LOGI(TAG, "⏳ 初始动画已延迟，将在 WiFi/BLE 初始化完成后播放");
+    
+    // 原自动播放代码已注释（避免动画与 BLE 初始化冲突）:
+    /*
     ESP_LOGI(TAG, "Scheduling initial emotion animation (HAPPY) in 500ms");
     
     if (!Lock(1000)) {
@@ -346,9 +350,9 @@ bool LcdEmotionDisplay::InitEmotionSystem() {
         auto* self = static_cast<LcdEmotionDisplay*>(lv_timer_get_user_data(timer));
         if (self) {
             ESP_LOGI("LcdEmotionDisplay", "🎬 Playing initial HAPPY animation (timer callback)");
-            self->ShowEmotion(emotion::EmotionState::HAPPY);  // 🔑 使用 HAPPY 测试
+            self->ShowEmotion(emotion::EmotionState::HAPPY);
         }
-        lv_timer_del(timer);  // 一次性定时器
+        lv_timer_del(timer);
     }, 500, this);
     
     Unlock();
@@ -356,6 +360,7 @@ bool LcdEmotionDisplay::InitEmotionSystem() {
     if (!init_timer) {
         ESP_LOGW(TAG, "Failed to create init timer");
     }
+    */
 
     return true;
 }
