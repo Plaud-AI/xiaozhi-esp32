@@ -299,6 +299,12 @@ void LcdEmotionDisplay::SetEmotion(const char* emotion) {
         state = emotion::EmotionState::SURPRISED;
     } else if (strcmp(emotion, "listening") == 0) {
         state = emotion::EmotionState::LISTENING;
+    } else if (strcmp(emotion, "speaking") == 0) {
+        state = emotion::EmotionState::SPEAKING;
+    } else if (strcmp(emotion, "connecting") == 0) {
+        state = emotion::EmotionState::CONNECTING;
+    } else if (strcmp(emotion, "thinking") == 0) {
+        state = emotion::EmotionState::THINKING;
     } else {
         ESP_LOGW(TAG, "Unknown emotion: %s, using CALM", emotion);
     }
