@@ -136,14 +136,14 @@ void LcdEmotionDisplay::SetupUI() {
     // 注意：动画区域由 EmotionCoordinator 直接在 screen_ 上创建
     // 我们的 status_bar_ 会自动显示在动画上方
 
-    // 🧪 临时测试：创建一个简单的白色矩形，验证 LVGL 渲染
-    lv_obj_t* test_rect = lv_obj_create(screen_);
-    lv_obj_set_size(test_rect, 100, 100);
-    lv_obj_center(test_rect);
-    lv_obj_set_style_bg_color(test_rect, lv_color_hex(0xFFFFFF), 0);  // 白色
-    lv_obj_set_style_bg_opa(test_rect, LV_OPA_COVER, 0);
-    lv_obj_clear_flag(test_rect, LV_OBJ_FLAG_SCROLLABLE);  // 禁用滚动
-    ESP_LOGI(TAG, "🧪 Test: Created white 100x100 rectangle on screen");
+    // 🧪 临时测试：创建一个简单的白色矩形，验证 LVGL 渲染（已屏蔽）
+    // lv_obj_t* test_rect = lv_obj_create(screen_);
+    // lv_obj_set_size(test_rect, 100, 100);
+    // lv_obj_center(test_rect);
+    // lv_obj_set_style_bg_color(test_rect, lv_color_hex(0xFFFFFF), 0);  // 白色
+    // lv_obj_set_style_bg_opa(test_rect, LV_OPA_COVER, 0);
+    // lv_obj_clear_flag(test_rect, LV_OBJ_FLAG_SCROLLABLE);  // 禁用滚动
+    // ESP_LOGI(TAG, "🧪 Test: Created white 100x100 rectangle on screen");
 
     Unlock();
 

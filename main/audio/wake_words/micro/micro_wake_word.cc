@@ -225,40 +225,77 @@ size_t MicroWakeWord::GetFeedSize() {
 }
 
 void MicroWakeWord::EncodeWakeWordData() {
-  ESP_LOGI(TAG, "Encoding wake word data to OPUS");
+  ESP_LOGI(TAG, "Encoding wake word data to OPUS (Async)");
   
   if (wake_word_pcm_.empty()) {
     ESP_LOGW(TAG, "No wake word PCM data to encode");
     return;
   }
 
-  auto encoder = std::make_unique<OpusEncoderWrapper>(16000, 1, OPUS_FRAME_DURATION_MS);
-  if (!encoder) {
-    ESP_LOGE(TAG, "Failed to create OPUS encoder");
+  const size_t stack_size = 4096 * 7;
+  if (wake_word_encode_task_stack_ == nullptr) {
+    wake_word_encode_task_stack_ = (StackType_t*)heap_caps_malloc(stack_size, MALLOC_CAP_SPIRAM);
+  }
+  if (wake_word_encode_task_buffer_ == nullptr) {
+    wake_word_encode_task_buffer_ = (StaticTask_t*)heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  }
+
+  if (!wake_word_encode_task_stack_ || !wake_word_encode_task_buffer_) {
+    ESP_LOGE(TAG, "Failed to allocate task resources for encoding");
     return;
   }
-  
-  encoder->SetComplexity(0);  // Fastest encoding
 
-  wake_word_opus_.clear();
-  
-  // 🔧 修复：避免在回调中捕获 this，直接使用局部引用
-  auto& wake_word_opus_ref = wake_word_opus_;
-  
-  // Encode the PCM data
-  encoder->Encode(std::move(wake_word_pcm_), [&wake_word_opus_ref](std::vector<uint8_t>&& opus) {
-    wake_word_opus_ref.insert(wake_word_opus_ref.end(), opus.begin(), opus.end());
-  });
+  {
+      std::lock_guard<std::mutex> lock(wake_word_mutex_);
+      wake_word_opus_.clear();
+  }
 
-  ESP_LOGI(TAG, "Wake word encoding complete: %zu bytes", wake_word_opus_.size());
+  wake_word_encode_task_ = xTaskCreateStatic([](void* arg) {
+    auto* this_ = static_cast<MicroWakeWord*>(arg);
+    
+    std::vector<int16_t> pcm_data;
+    pcm_data = std::move(this_->wake_word_pcm_);
+    
+    auto start_time = esp_timer_get_time();
+    auto encoder = std::make_unique<OpusEncoderWrapper>(16000, 1, OPUS_FRAME_DURATION_MS);
+    
+    int packets = 0;
+    if (encoder) {
+        encoder->SetComplexity(0);
+        encoder->Encode(std::move(pcm_data), [this_, &packets](std::vector<uint8_t>&& opus) {
+            std::lock_guard<std::mutex> lock(this_->wake_word_mutex_);
+            this_->wake_word_opus_.emplace_back(std::move(opus));
+            this_->wake_word_cv_.notify_all();
+            packets++;
+        });
+    }
+    
+    // Push empty packet as sentinel
+    {
+        std::lock_guard<std::mutex> lock(this_->wake_word_mutex_);
+        this_->wake_word_opus_.emplace_back(std::vector<uint8_t>());
+        this_->wake_word_cv_.notify_all();
+    }
+    
+    auto end_time = esp_timer_get_time();
+    ESP_LOGI(TAG, "Encoded %d wake word packets in %ld ms", packets, (long)((end_time - start_time) / 1000));
+
+    vTaskDelete(NULL);
+  }, "mw_encode", stack_size, this, 2, wake_word_encode_task_stack_, wake_word_encode_task_buffer_);
 }
 
 bool MicroWakeWord::GetWakeWordOpus(std::vector<uint8_t> &opus) {
-  if (wake_word_opus_.empty()) {
-    return false;
+  std::unique_lock<std::mutex> lock(wake_word_mutex_);
+  wake_word_cv_.wait(lock, [this]() {
+    return !wake_word_opus_.empty();
+  });
+  
+  opus = std::move(wake_word_opus_.front());
+  wake_word_opus_.pop_front();
+  
+  if (opus.empty()) {
+      return false;
   }
-  opus = std::move(wake_word_opus_);  // 移动而非复制，同时清空 wake_word_opus_
-  ESP_LOGD(TAG, "✅ Wake word OPUS data moved to caller (%zu bytes), internal buffer now empty", opus.size());
   return true;
 }
 
@@ -375,6 +412,15 @@ void MicroWakeWord::deallocate_buffers_() {
     audio_samples_allocator.deallocate(this->ring_buffer_, this->ring_buffer_size_);
     this->ring_buffer_ = nullptr;
     this->ring_buffer_size_ = 0;
+  }
+
+  if (wake_word_encode_task_stack_) {
+    heap_caps_free(wake_word_encode_task_stack_);
+    wake_word_encode_task_stack_ = nullptr;
+  }
+  if (wake_word_encode_task_buffer_) {
+    heap_caps_free(wake_word_encode_task_buffer_);
+    wake_word_encode_task_buffer_ = nullptr;
   }
   
   ring_buffer_read_pos_ = 0;
@@ -611,7 +657,10 @@ void MicroWakeWord::reset_states_() {
   }
   
   wake_word_pcm_.clear();
-  wake_word_opus_.clear();
+  {
+      std::lock_guard<std::mutex> lock(wake_word_mutex_);
+      wake_word_opus_.clear();
+  }
 }
 
 bool MicroWakeWord::register_streaming_ops_(tflite::MicroMutableOpResolver<20> &op_resolver) {

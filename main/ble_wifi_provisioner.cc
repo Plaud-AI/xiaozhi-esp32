@@ -125,6 +125,8 @@ bool BLEWiFiProvisioner::Start() {
             ESP_LOGW(TAG, "无法禁用 WiFi 省电模式: %s", esp_err_to_name(err));
         } else {
             ESP_LOGI(TAG, "✅ WiFi 省电模式已禁用");
+            // 给一点时间让 PS 状态切换生效
+            vTaskDelay(pdMS_TO_TICKS(100));
         }
     }
 

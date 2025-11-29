@@ -11,9 +11,14 @@
 #include <tensorflow/lite/micro/micro_mutable_op_resolver.h>
 
 #include <vector>
+#include <deque>
 #include <memory>
 #include <functional>
 #include <string>
+#include <mutex>
+#include <condition_variable>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 namespace micro_wake_word {
 
@@ -85,7 +90,14 @@ class MicroWakeWord : public WakeWord {
 
   // Wake word recording for OPUS encoding
   std::vector<int16_t> wake_word_pcm_;
-  std::vector<uint8_t> wake_word_opus_;
+  std::deque<std::vector<uint8_t>> wake_word_opus_;
+
+  // Async encoding task members
+  std::mutex wake_word_mutex_;
+  std::condition_variable wake_word_cv_;
+  TaskHandle_t wake_word_encode_task_ = nullptr;
+  StackType_t* wake_word_encode_task_stack_ = nullptr;
+  StaticTask_t* wake_word_encode_task_buffer_ = nullptr;
 
   void set_state_(State state);
 

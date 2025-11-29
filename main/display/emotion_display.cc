@@ -420,13 +420,13 @@ void EmotionDisplay::CreateAnimationArea() {
 
     ESP_LOGI(TAG, "Animation area created (%dx%d at y=%d)", width_, anim_height, anim_y);
     
-    // 🧪 临时测试：创建一个简单的白色矩形，验证容器可见性
-    lv_obj_t* test_rect = lv_obj_create(animation_container_);
-    lv_obj_set_size(test_rect, 100, 100);
-    lv_obj_center(test_rect);
-    lv_obj_set_style_bg_color(test_rect, lv_color_hex(0xFFFFFF), 0);  // 白色
-    lv_obj_set_style_bg_opa(test_rect, LV_OPA_COVER, 0);
-    ESP_LOGI(TAG, "🧪 Test: Created white 100x100 rectangle in animation container");
+    // 🧪 临时测试：创建一个简单的白色矩形，验证容器可见性（已屏蔽）
+    // lv_obj_t* test_rect = lv_obj_create(animation_container_);
+    // lv_obj_set_size(test_rect, 100, 100);
+    // lv_obj_center(test_rect);
+    // lv_obj_set_style_bg_color(test_rect, lv_color_hex(0xFFFFFF), 0);  // 白色
+    // lv_obj_set_style_bg_opa(test_rect, LV_OPA_COVER, 0);
+    // ESP_LOGI(TAG, "🧪 Test: Created white 100x100 rectangle in animation container");
 }
 
 void EmotionDisplay::OnTopBarTimeout(lv_timer_t* timer) {

@@ -402,8 +402,10 @@ bool BluetoothService::StartAdvertising() {
     // 设置广播参数
     adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
     adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
-    adv_params.itvl_min = 0x20;  // 20ms
-    adv_params.itvl_max = 0x40;  // 40ms
+    // 增加广播间隔以避免 WiFi/BLE 共存冲突 (rwble.c 508 assert)
+    // 0xA0 * 0.625ms = 100ms
+    adv_params.itvl_min = 0xA0;  
+    adv_params.itvl_max = 0xA0;
 
     // 开始广播
     rc = ble_gap_adv_start(BLE_OWN_ADDR_PUBLIC, NULL, BLE_HS_FOREVER,
