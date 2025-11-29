@@ -47,7 +47,7 @@ LottieAnimation::LottieAnimation(lv_obj_t* parent)
         ESP_LOGE(TAG, "Failed to create canvas object");
         return;
     }
-
+    
     ESP_LOGI(TAG, "✅ Lottie animation object created (ThorVG C API mode)");
 }
 
@@ -221,9 +221,9 @@ void LottieAnimation::SetSize(int32_t width, int32_t height)
     // 分配 canvas buffer
     if (!AllocateCanvas(width, height)) {
         ESP_LOGE(TAG, "Failed to allocate canvas for %ldx%ld", width, height);
-        return;
-    }
-    
+            return;
+        }
+        
     width_ = width;
     height_ = height;
     
@@ -339,7 +339,15 @@ void LottieAnimation::FreeCanvas()
 void LottieAnimation::RenderFrame()
 {
     if (!tvg_canvas_ || !tvg_animation_ || !canvas_buf_) {
+        ESP_LOGW(TAG, "RenderFrame: Missing components (canvas=%p, anim=%p, buf=%p)", 
+                 tvg_canvas_, tvg_animation_, canvas_buf_);
         return;
+    }
+    
+    // 每30帧打印一次日志（避免日志过多）
+    static uint32_t frame_count = 0;
+    if (frame_count++ % 30 == 0) {
+        ESP_LOGI(TAG, "🎬 Rendering frame %.1f/%.0f (every 30 frames)", current_frame_, total_frames_);
     }
     
     // 设置当前帧（参考官方 demo line 150）
@@ -363,7 +371,12 @@ void LottieAnimation::RenderFrame()
 void LottieAnimation::RenderTimerCallback(lv_timer_t* timer)
 {
     auto* self = static_cast<LottieAnimation*>(lv_timer_get_user_data(timer));
-    if (!self || !self->is_playing_) {
+    if (!self) {
+        ESP_LOGE(TAG, "Timer callback: self is NULL!");
+        return;
+    }
+    
+    if (!self->is_playing_) {
         return;
     }
     
