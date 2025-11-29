@@ -40,6 +40,7 @@ private:
     bool is_speaking_ = false;
     // Use PSRAM allocator for output buffer to save SRAM
     std::vector<int16_t, micro_wake_word::ExternalRAMAllocator<int16_t>> output_buffer_;
+    TaskHandle_t task_handle_ = nullptr;
 
     void AudioProcessorTask();
 };

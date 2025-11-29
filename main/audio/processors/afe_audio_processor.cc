@@ -11,6 +11,12 @@ AfeAudioProcessor::AfeAudioProcessor()
 }
 
 void AfeAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms, srmodel_list_t* models_list) {
+    // 防止重复初始化
+    if (afe_data_ != nullptr) {
+        ESP_LOGW(TAG, "AfeAudioProcessor already initialized, skipping");
+        return;
+    }
+
     codec_ = codec;
     frame_samples_ = frame_duration_ms * 16000 / 1000;
 
@@ -77,14 +83,14 @@ void AfeAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms, srm
         ESP_LOGI("AfeAudioProcessor", "🚀 AFE task started on core %d!", xPortGetCoreID());
         this_->AudioProcessorTask();
         vTaskDelete(NULL);
-    }, "afe_proc", 2560, this, 4, NULL, 0);  // 栈 2.5KB，优先级 4，固定到 Core 0
+    }, "afe_proc", 8192, this, 4, &task_handle_, 0);  // 栈 8KB，优先级 4，固定到 Core 0
     
     if (task_created != pdPASS) {
         ESP_LOGE(TAG, "❌ CRITICAL: Failed to create AFE task!");
         ESP_LOGE(TAG, "   Free SRAM: %zu bytes", heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
         ESP_LOGE(TAG, "   Free PSRAM: %zu bytes", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     } else {
-        ESP_LOGI(TAG, "✅ AFE task created (stack: 2560, core: 0, prio: 4)");
+        ESP_LOGI(TAG, "✅ AFE task created (stack: 8192, core: 0, prio: 4)");
     }
 }
 

@@ -74,10 +74,10 @@ int EmotionAnimationMapper::RegisterStandardMappings()
         {EmotionState::SLEEPY,     "sleepy.json",     false},
         {EmotionState::SURPRISED,  "surprised.json",  false},
         {EmotionState::LISTENING,  "listening.json",  true},
-        {EmotionState::THINKING,   "calm.json",       true},   // fallback: thinking.json missing
-        {EmotionState::SPEAKING,   "singing.json",    true},   // fallback: speaking.json missing, use singing
-        {EmotionState::CONNECTING, "calm.json",       true},   // new: connecting state
-        {EmotionState::BUSY,       "calm.json",       true},   // new: busy state
+        {EmotionState::THINKING,   "champion.json",   true},   // using champion for thinking (distinct)
+        {EmotionState::SPEAKING,   "singing.json",    true},   // using singing for speaking
+        {EmotionState::CONNECTING, "disdain.json",    true},   // using disdain for connecting (distinct)
+        {EmotionState::BUSY,       "disgust.json",    true},   // using disgust for busy (distinct)
     };
 
     for (const auto& m : standard_mappings) {
