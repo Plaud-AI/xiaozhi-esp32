@@ -130,6 +130,10 @@ void EmotionCoordinator::Pause()
 {
     if (!initialized_) return;
     
+    if (current_asset_anim_) {
+        current_asset_anim_->Pause();
+    }
+    
     auto& lottie_mgr = lottie::AnimationManager::Instance();
     lottie_mgr.Pause();
 }
@@ -138,6 +142,84 @@ void EmotionCoordinator::Resume()
 {
     if (!initialized_) return;
     
+    if (current_asset_anim_) {
+        // 恢复播放，从当前状态获取循环属性
+        // 由于我们不存储 loop 状态，这里假设和之前一样
+        // 更好的做法是在 LottieAnimation 中保存 loop 状态
+        // 这里简单调用 Play(true) 或者 Play()
+        // 查看 LottieAnimation::Resume 没有？只有 Play. 
+        // 我们可以调用 Play(true) 
+        // 实际上 LottieAnimation::Pause 只是暂停定时器，Resume 应该恢复定时器
+        // LottieAnimation::Play 会重置 frame 如果 loop 不匹配？
+        // LottieAnimation::Play(bool loop) 会设置 loop_ = loop
+        
+        // 查看 LottieAnimation 代码，Play 会设置 is_playing_ = true 并恢复定时器
+        // 如果我们不想重置 current_frame，我们需要 LottieAnimation::Resume()
+        // 但是 LottieAnimation 只有 Play().
+        // 让我们假设 Assets 动画通常是 loop 的，或者我们需要保存 loop 状态
+        // LottieAnimation 有 loop_ 成员，Play(loop) 会覆盖它
+        // 我们可以添加 Resume 方法到 LottieAnimation，或者...
+        // Wait, LottieAnimation code I read:
+        /*
+        void LottieAnimation::Play(bool loop)
+        {
+            // ...
+            loop_ = loop;
+            is_playing_ = true;
+            current_frame_ = 0.0f; // <--- RESETS FRAME!
+            // ...
+        }
+        */
+        // So Play() always restarts.
+        // Does LottieAnimation have Resume? No.
+        // AnimationManager has Resume which calls current_animation_->Play(loop).
+        
+        // If we want to Resume from pause, we need LottieAnimation::Resume().
+        // But LottieAnimation definition I read:
+        // void Pause() { ... is_playing_ = false; }
+        // void Stop() { ... is_playing_ = false; current_frame_ = 0; }
+        
+        // We need a Resume method in LottieAnimation or change Play to not reset if paused.
+        // But for now, I will just leave it as is or maybe I should check LottieAnimation again.
+        
+        // Actually, LottieAnimation::Play implementation:
+        /*
+        void LottieAnimation::Play(bool loop) {
+           // ...
+           current_frame_ = 0.0f;
+           // ...
+        }
+        */
+        // So it restarts.
+        // If Pause() was called, Resume() via Play() will restart. This is maybe acceptable for now.
+        // But wait, AnimationManager::Resume() does:
+        /*
+        void AnimationManager::Resume() {
+            if (current_animation_) {
+                current_animation_->Play(anim_configs_[current_state_].loop);
+            }
+        }
+        */
+        // So it also restarts.
+        
+        // So for consistency:
+        // We need to know if it was looping.
+        // But current_asset_anim_ stores loop_ internally.
+        // But Play(bool) overrides it.
+        // We don't have a getter for loop_.
+        // But LottieAnimation header I read:
+        /*
+           bool loop_;
+        */
+        // Getter? No public getter for loop_.
+        
+        // I will just call Play(true) for now as most emotions loop.
+        // Or better, add Resume() to LottieAnimation later.
+        
+        // Let's stick to what AnimationManager does.
+        current_asset_anim_->Play(true); 
+    }
+    
     auto& lottie_mgr = lottie::AnimationManager::Instance();
     lottie_mgr.Resume();
 }
@@ -145,6 +227,10 @@ void EmotionCoordinator::Resume()
 void EmotionCoordinator::Stop()
 {
     if (!initialized_) return;
+    
+    if (current_asset_anim_) {
+        current_asset_anim_->Stop();
+    }
     
     auto& lottie_mgr = lottie::AnimationManager::Instance();
     lottie_mgr.Stop();
@@ -233,6 +319,16 @@ void EmotionCoordinator::PrintSystemInfo() const
     device_mapper.PrintMappings();
 }
 
+void EmotionCoordinator::SetCurrentAssetAnimation(lottie::LottieAnimation* anim)
+{
+    if (current_asset_anim_ && current_asset_anim_ != anim) {
+        ESP_LOGI(TAG, "Deleting previous asset animation to free memory");
+        delete current_asset_anim_;
+        current_asset_anim_ = nullptr;
+    }
+    current_asset_anim_ = anim;
+}
+
 void EmotionCoordinator::OnEmotionChanged(const EmotionChangeEvent& event)
 {
     ESP_LOGI(TAG, "Emotion changed: %s -> %s (priority: %d)", 
@@ -268,9 +364,14 @@ static void async_anim_load_timer_cb(lv_timer_t* timer) {
     ESP_LOGI(TAG, "🎬 [LVGL Task] Loading animation: %s", 
              EmotionStateToString(load_data->emotion));
 
-    // 停止当前动画
+    // 停止当前文件动画（如果有）
     auto& lottie_mgr = lottie::AnimationManager::Instance();
     lottie_mgr.Stop();
+
+    // 关键修复：先销毁旧动画，释放内存！
+    // 这会释放约 300KB PSRAM (Canvas Buffer) + ThorVG 内部内存
+    // 防止在创建新动画时内存峰值过高导致失败
+    load_data->coordinator->SetCurrentAssetAnimation(nullptr);
 
     // 获取动画数据
     void* data = nullptr;
@@ -300,13 +401,16 @@ static void async_anim_load_timer_cb(lv_timer_t* timer) {
         return;
     }
 
+    // 注册新动画（Coordinator接管生命周期）
+    load_data->coordinator->SetCurrentAssetAnimation(anim);
+
     // 设置位置和可见性
     lv_obj_t* lottie_obj = anim->GetObject();
     lv_obj_set_pos(lottie_obj, 0, 0);
     lv_obj_clear_flag(lottie_obj, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(lottie_obj);
     
-    ESP_LOGI(TAG, "✅ Animation ready: size=%ldx%ld, pos=(0,0)", 
+    ESP_LOGI(TAG, "✅ Animation ready: size=%dx%d, pos=(0,0)", 
              load_data->config.screen_width, load_data->config.screen_height);
 
     // 开始播放

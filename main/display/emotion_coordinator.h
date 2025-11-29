@@ -246,6 +246,15 @@ public:
     DeviceStateMapper& GetDeviceMapper() { return DeviceStateMapper::Instance(); }
     lottie::AnimationManager& GetAnimationManager() { return lottie::AnimationManager::Instance(); }
 
+    /**
+     * @brief 设置当前基于 Assets 的动画对象
+     * 
+     * 用于管理内存生命周期，自动释放旧动画对象
+     * 
+     * @param anim 新动画对象指针（所有权转移给 Coordinator）
+     */
+    void SetCurrentAssetAnimation(lottie::LottieAnimation* anim);
+
 private:
     EmotionCoordinator() = default;
     ~EmotionCoordinator() = default;
@@ -263,6 +272,9 @@ private:
     EmotionSystemConfig config_;
     lv_obj_t* animation_container_ = nullptr;  // LVGL 动画容器（用于创建动画对象）
     
+    // 基于 Assets 的当前动画对象（手动管理生命周期）
+    lottie::LottieAnimation* current_asset_anim_ = nullptr;
+
     std::function<void(const std::string&)> animation_start_callback_;
 };
 

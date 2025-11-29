@@ -115,6 +115,19 @@ bool BLEWiFiProvisioner::Start() {
         return false;
     }
 
+    // 🔧 关键修复：禁用 WiFi 省电模式以防止 BLE/WiFi 共存冲突 (rwble.c 508 assert)
+    // 当 WiFi 进入睡眠 (pm_go_to_sleep) 而 BLE 需要射频时，可能会导致控制器崩溃
+    wifi_mode_t mode;
+    if (esp_wifi_get_mode(&mode) == ESP_OK) {
+        ESP_LOGW(TAG, "⚠️  禁用 WiFi 省电模式以保证 BLE 稳定性...");
+        esp_err_t err = esp_wifi_set_ps(WIFI_PS_NONE);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "无法禁用 WiFi 省电模式: %s", esp_err_to_name(err));
+        } else {
+            ESP_LOGI(TAG, "✅ WiFi 省电模式已禁用");
+        }
+    }
+
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
     ESP_LOGI(TAG, "║ 🚀 启动 BLE WiFi Provisioner");
@@ -175,6 +188,13 @@ void BLEWiFiProvisioner::Stop() {
     auto& ble_service = BluetoothService::GetInstance();
     ble_service.StopAdvertising();
     
+    // 恢复 WiFi 省电模式
+    wifi_mode_t mode;
+    if (esp_wifi_get_mode(&mode) == ESP_OK) {
+        ESP_LOGI(TAG, "恢复 WiFi 省电模式 (MIN_MODEM)...");
+        esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+    }
+
     is_provisioning_ = false;
     ESP_LOGI(TAG, "✓ BLE WiFi Provisioner 已停止");
 }

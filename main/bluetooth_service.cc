@@ -1,6 +1,7 @@
 #include "bluetooth_service.h"
 #include <esp_log.h>
 #include <esp_mac.h>
+#include <esp_bt.h>  // Added for esp_bt_controller_get_status
 #include <nvs_flash.h>
 #include <nimble/nimble_port.h>
 #include <nimble/nimble_port_freertos.h>
@@ -273,10 +274,9 @@ static void ble_on_sync(void) {
     
     ESP_LOGI(TAG, "地址类型: %d", own_addr_type);
 
-    // 开始广播
-    if (g_instance) {
-        g_instance->StartAdvertising();
-    }
+    // ⚠️ 注意：不在这里自动开始广播
+    // 广播应由应用层（如 BLEWiFiProvisioner）在确保环境安全（如WiFi PS已禁用）后显式启动
+    // 之前在 ble_on_sync 中自动启动会导致 WiFi/BLE 共存冲突 (rwble.c 508 assert)
 }
 
 static void ble_on_reset(int reason) {
@@ -299,20 +299,26 @@ bool BluetoothService::Initialize(const std::string& device_name) {
     static bool nimble_port_initialized = false;
     
     if (!nimble_port_initialized) {
-        ESP_LOGI(TAG, "初始化 NimBLE 端口...");
-        int ret = nimble_port_init();
-        if (ret != ESP_OK) {
-            // 如果返回 ESP_ERR_INVALID_STATE，说明已经初始化过了
-            if (ret == ESP_ERR_INVALID_STATE) {
-                ESP_LOGI(TAG, "NimBLE 端口已在启动时初始化");
-                nimble_port_initialized = true;
-            } else {
-                ESP_LOGE(TAG, "NimBLE端口初始化失败: %d", ret);
-                return false;
-            }
+        // Check if controller is already enabled (e.g. initialized in main.cc)
+        if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_ENABLED) {
+             ESP_LOGI(TAG, "Bluetooth controller already enabled (by main.cc)");
+             nimble_port_initialized = true;
         } else {
-            ESP_LOGI(TAG, "✅ NimBLE 端口初始化成功");
-            nimble_port_initialized = true;
+            ESP_LOGI(TAG, "初始化 NimBLE 端口...");
+            int ret = nimble_port_init();
+            if (ret != ESP_OK) {
+                // 如果返回 ESP_ERR_INVALID_STATE，说明已经初始化过了
+                if (ret == ESP_ERR_INVALID_STATE) {
+                    ESP_LOGI(TAG, "NimBLE 端口已在启动时初始化");
+                    nimble_port_initialized = true;
+                } else {
+                    ESP_LOGE(TAG, "NimBLE端口初始化失败: %d", ret);
+                    return false;
+                }
+            } else {
+                ESP_LOGI(TAG, "✅ NimBLE 端口初始化成功");
+                nimble_port_initialized = true;
+            }
         }
     } else {
         ESP_LOGI(TAG, "✓ NimBLE 端口已初始化，跳过");
