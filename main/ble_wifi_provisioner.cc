@@ -185,6 +185,12 @@ bool BLEWiFiProvisioner::Start() {
 }
 
 void BLEWiFiProvisioner::Stop() {
+    // 检查是否正在运行，避免重复停止
+    if (!is_provisioning_) {
+        ESP_LOGD(TAG, "BLE WiFi Provisioner 已经停止，跳过");
+        return;
+    }
+
     ESP_LOGI(TAG, "停止 BLE WiFi Provisioner");
     
     auto& ble_service = BluetoothService::GetInstance();
@@ -196,7 +202,7 @@ void BLEWiFiProvisioner::Stop() {
         ESP_LOGI(TAG, "恢复 WiFi 省电模式 (MIN_MODEM)...");
         esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
     }
-
+    
     is_provisioning_ = false;
     ESP_LOGI(TAG, "✓ BLE WiFi Provisioner 已停止");
 }

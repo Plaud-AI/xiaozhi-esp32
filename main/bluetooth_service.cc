@@ -304,20 +304,20 @@ bool BluetoothService::Initialize(const std::string& device_name) {
              ESP_LOGI(TAG, "Bluetooth controller already enabled (by main.cc)");
              nimble_port_initialized = true;
         } else {
-            ESP_LOGI(TAG, "初始化 NimBLE 端口...");
-            int ret = nimble_port_init();
-            if (ret != ESP_OK) {
-                // 如果返回 ESP_ERR_INVALID_STATE，说明已经初始化过了
-                if (ret == ESP_ERR_INVALID_STATE) {
-                    ESP_LOGI(TAG, "NimBLE 端口已在启动时初始化");
-                    nimble_port_initialized = true;
-                } else {
-                    ESP_LOGE(TAG, "NimBLE端口初始化失败: %d", ret);
-                    return false;
-                }
-            } else {
-                ESP_LOGI(TAG, "✅ NimBLE 端口初始化成功");
+        ESP_LOGI(TAG, "初始化 NimBLE 端口...");
+        int ret = nimble_port_init();
+        if (ret != ESP_OK) {
+            // 如果返回 ESP_ERR_INVALID_STATE，说明已经初始化过了
+            if (ret == ESP_ERR_INVALID_STATE) {
+                ESP_LOGI(TAG, "NimBLE 端口已在启动时初始化");
                 nimble_port_initialized = true;
+            } else {
+                ESP_LOGE(TAG, "NimBLE端口初始化失败: %d", ret);
+                return false;
+            }
+        } else {
+            ESP_LOGI(TAG, "✅ NimBLE 端口初始化成功");
+            nimble_port_initialized = true;
             }
         }
     } else {
@@ -421,6 +421,12 @@ bool BluetoothService::StartAdvertising() {
 
 void BluetoothService::StopAdvertising() {
     if (!initialized_) {
+        return;
+    }
+
+    // 检查是否正在广播，避免重复停止导致控制器崩溃 (rwble.c 508 assert)
+    if (!ble_gap_adv_active()) {
+        ESP_LOGD(TAG, "BLE广播未在运行，跳过停止操作");
         return;
     }
 

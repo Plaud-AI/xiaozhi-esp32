@@ -118,7 +118,7 @@ bool WebsocketProtocol::OpenAudioChannel() {
 
     websocket_->OnData([this](const char* data, size_t len, bool binary) {
         if (binary) {
-            ESP_LOGI(TAG, "🎵 Received AUDIO packet: %zu bytes", len);
+            // ESP_LOGI(TAG, "🎵 Received AUDIO packet: %zu bytes", len);  // 已屏蔽
             if (on_incoming_audio_ != nullptr) {
                 if (version_ == 2) {
                     BinaryProtocol2* bp2 = (BinaryProtocol2*)data;

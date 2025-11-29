@@ -540,6 +540,16 @@ void Application::Start() {
                     Schedule([this]() {
                         Reboot();
                     });
+                } else if (strcmp(command->valuestring, "start_config") == 0) {
+                    ESP_LOGI(TAG, "Received start_config command from LLM");
+                    Schedule([this]() {
+                        StartConfigMode();
+                    });
+                } else if (strcmp(command->valuestring, "exit_config") == 0) {
+                    ESP_LOGI(TAG, "Received exit_config command from LLM");
+                    Schedule([this]() {
+                        StopConfigMode();
+                    });
                 } else {
                     ESP_LOGW(TAG, "Unknown system command: %s", command->valuestring);
                 }
@@ -999,6 +1009,73 @@ void Application::PlaySound(const std::string_view& sound) {
 void Application::PlaySuccessSound() {
     ESP_LOGI(TAG, "🔊 播放成功提示音");
     audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
+}
+
+#include "ble_wifi_provisioner.h"
+
+void Application::StartConfigMode() {
+    if (device_state_ == kDeviceStateWifiConfiguring) {
+        ESP_LOGW(TAG, "Already in config mode, skipping");
+        return;
+    }
+
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "🚀 进入配置模式 (Config Mode)");
+    ESP_LOGI(TAG, "   - 停止音频服务");
+    ESP_LOGI(TAG, "   - 关闭音频连接");
+    ESP_LOGI(TAG, "   - 启动 BLE 广播");
+    ESP_LOGI(TAG, "========================================");
+
+    // 1. 切换状态，防止其他逻辑干扰
+    SetDeviceState(kDeviceStateWifiConfiguring);
+
+    // 2. 停止音频服务 (关键！释放 CPU 和 避免 WiFi 数据流)
+    // 暂时停止唤醒词检测和语音处理
+    audio_service_.EnableWakeWordDetection(false);
+    audio_service_.EnableVoiceProcessing(false);
+    
+    // 3. 关闭当前可能存在的音频连接
+    if (protocol_ && protocol_->IsAudioChannelOpened()) {
+        ESP_LOGI(TAG, "Closing audio channel...");
+        protocol_->CloseAudioChannel();
+    }
+
+    // 4. 更改显示，提示用户 (静态画面，降低渲染负载)
+    auto display = Board::GetInstance().GetDisplay();
+    display->SetStatus(Lang::Strings::CONFIGURING);
+    // 确保有一个低负载的动画或静态图，这里暂时用 neutral
+    // 理想情况下应该有一个 "bluetooth" 或 "settings" 的 lottie
+    display->SetEmotion("neutral"); 
+    display->SetChatMessage("system", "蓝牙已开启\n请通过手机连接配置");
+
+    // 5. 启动 BLE
+    // 注意：BLEWiFiProvisioner::Start 内部已经有禁用 WiFi PS 的逻辑
+    ESP_LOGI(TAG, "Starting BLE Provisioner...");
+    BLEWiFiProvisioner::GetInstance().Start();
+}
+
+void Application::StopConfigMode() {
+    if (device_state_ != kDeviceStateWifiConfiguring) {
+        ESP_LOGW(TAG, "Not in config mode, skipping exit");
+        return;
+    }
+
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "🛑 退出配置模式");
+    ESP_LOGI(TAG, "   - 停止 BLE 广播");
+    ESP_LOGI(TAG, "   - 恢复 IDLE 状态");
+    ESP_LOGI(TAG, "========================================");
+
+    // 1. 停止 BLE
+    BLEWiFiProvisioner::GetInstance().Stop();
+
+    // 2. 恢复状态到 Idle
+    // SetDeviceState(Idle) 会自动恢复唤醒词检测和默认表情
+    // 见 Application::SetDeviceState 中的 switch case
+    SetDeviceState(kDeviceStateIdle);
+    
+    auto display = Board::GetInstance().GetDisplay();
+    display->SetChatMessage("system", "");
 }
 
 bool Application::ApplyWakeWordConfig() {

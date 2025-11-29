@@ -65,6 +65,8 @@ public:
     void PlaySuccessSound();  // 播放成功提示音（通用方法，可在多处复用）
     AudioService& GetAudioService() { return audio_service_; }
     bool ApplyWakeWordConfig();  // 应用唤醒词配置（运行时生效）
+    void StartConfigMode();
+    void StopConfigMode();
 
 private:
     Application();
