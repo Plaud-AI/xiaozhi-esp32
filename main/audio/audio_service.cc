@@ -30,11 +30,26 @@
 
 AudioService::AudioService() {
     event_group_ = xEventGroupCreate();
+    if (!event_group_) {
+        ESP_LOGE(TAG, "❌ Failed to create event group!");
+    } else {
+        ESP_LOGI(TAG, "✅ AudioService event_group_ created at %p", event_group_);
+    }
 }
 
 AudioService::~AudioService() {
+    ESP_LOGW(TAG, "⚠️  AudioService destructor called! This should NOT happen during normal operation!");
+    
+    // 先停止服务，确保所有任务退出
+    Stop();
+    
+    // 等待任务真正退出
+    vTaskDelay(pdMS_TO_TICKS(100));
+    
     if (event_group_ != nullptr) {
+        ESP_LOGI(TAG, "Deleting event_group_ at %p", event_group_);
         vEventGroupDelete(event_group_);
+        event_group_ = nullptr;
     }
 }
 
@@ -216,6 +231,12 @@ bool AudioService::ReadAudioData(std::vector<int16_t>& data, int sample_rate, in
 
 void AudioService::AudioInputTask() {    
     while (true) {
+        // 关键修复：检查 event_group_ 有效性，防止内存损坏导致崩溃
+        if (!event_group_) {
+            ESP_LOGE(TAG, "❌ event_group_ is NULL! Memory corruption detected!");
+            break;
+        }
+        
         EventBits_t bits = xEventGroupWaitBits(event_group_, AS_EVENT_AUDIO_TESTING_RUNNING |
             AS_EVENT_WAKE_WORD_RUNNING | AS_EVENT_AUDIO_PROCESSOR_RUNNING,
             pdFALSE, pdFALSE, portMAX_DELAY);

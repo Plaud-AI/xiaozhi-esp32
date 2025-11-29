@@ -324,8 +324,17 @@ void EmotionCoordinator::SetCurrentAssetAnimation(lottie::LottieAnimation* anim)
 {
     if (current_asset_anim_ && current_asset_anim_ != anim) {
         ESP_LOGI(TAG, "Deleting previous asset animation to free memory");
+        
+        // 关键修复：先停止动画，Stop() 会立即删除 timer
+        // 不能在这里使用 vTaskDelay，因为这个函数在 LVGL 任务中调用！
+        current_asset_anim_->Stop();
+        
+        // Stop() 已经删除了 timer，现在可以安全删除对象
+        // LVGL timer 删除是同步的，所以不需要延迟
         delete current_asset_anim_;
         current_asset_anim_ = nullptr;
+        
+        ESP_LOGI(TAG, "✅ Previous animation deleted safely");
     }
     current_asset_anim_ = anim;
 }

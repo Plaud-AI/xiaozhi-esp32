@@ -4,7 +4,7 @@
 
 #define TAG "OpusResampler"
 
-OpusResampler::OpusResampler() {
+OpusResampler::OpusResampler() : input_sample_rate_(0), output_sample_rate_(0) {
 }
 
 OpusResampler::~OpusResampler() {
@@ -30,5 +30,9 @@ void OpusResampler::Process(const int16_t *input, int input_samples, int16_t *ou
 }
 
 int OpusResampler::GetOutputSamples(int input_samples) const {
-    return input_samples * output_sample_rate_ / input_sample_rate_;
+    if (input_sample_rate_ == 0) {
+        return 0;
+    }
+    // Round up and add safety margin to prevent buffer overflow
+    return (input_samples * output_sample_rate_ + input_sample_rate_ - 1) / input_sample_rate_ + 2;
 }
