@@ -244,40 +244,20 @@ void WifiBoard::StartNetwork() {
         return;
     }
     
-    // ====== WiFi连接成功后，启动BLE服务（用于其他功能设置）======
+    // ====== WiFi连接成功后，STOP BLE 服务以确保稳定性 (Coexistence) ======
+    // ⚠️ CRITICAL: 在 ESP32-S3 上，如果同时运行 BLE 广播、WiFi 音频传输和 Lottie 动画渲染，
+    // 会导致 BLE 控制器崩溃 (rwble.c 508 assert)。
+    // 因此，当 WiFi 连接成功且设备进入正常工作模式时，我们必须禁用 BLE 广播。
     ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "WiFi连接成功，启动BLE服务...");
+    ESP_LOGI(TAG, "✅ WiFi 连接成功，停止 BLE 服务以确保系统稳定");
     ESP_LOGI(TAG, "========================================");
     
-    // 启动BLE服务，用于常规功能配置（非配网模式）
     auto& provisioner = BLEWiFiProvisioner::GetInstance();
+    provisioner.Stop();
     
-    // 在正常模式下，配网成功回调不需要重启设备
-    provisioner.SetProvisionSuccessCallback([](const std::string& ssid, const std::string& password) {
-        ESP_LOGI(TAG, "╔════════════════════════════════════════╗");
-        ESP_LOGI(TAG, "║   ✅ BLE WiFi配网成功（已更新WiFi）    ║");
-        ESP_LOGI(TAG, "╚════════════════════════════════════════╝");
-        ESP_LOGI(TAG, "新SSID: %s", ssid.c_str());
-        ESP_LOGW(TAG, "⚠️  WiFi配置已更新，重启后生效");
-        // 注意：不自动重启，让用户决定何时重启
-    });
-    
-    provisioner.SetProvisionFailureCallback([](const std::string& error_message) {
-        ESP_LOGE(TAG, "╔════════════════════════════════════════╗");
-        ESP_LOGE(TAG, "║   ❌ BLE WiFi配置失败                  ║");
-        ESP_LOGE(TAG, "╚════════════════════════════════════════╝");
-        ESP_LOGE(TAG, "错误: %s", error_message.c_str());
-    });
-    
+    // 仅初始化用于 MAC 地址查询等功能，但不启动广播
     if (provisioner.Initialize("ESP32-PLAUD")) {
-        if (provisioner.Start()) {
-            ESP_LOGI(TAG, "✓ BLE服务已启动（正常模式）");
-            ESP_LOGI(TAG, "✓ BLE可用于功能配置和设置");
-        } else {
-            ESP_LOGW(TAG, "⚠️  BLE服务启动失败（不影响正常功能）");
-        }
-    } else {
-        ESP_LOGW(TAG, "⚠️  BLE服务初始化失败（不影响正常功能）");
+        ESP_LOGI(TAG, "✓ BLE服务已初始化（被动模式）");
     }
     
     ESP_LOGI(TAG, "========================================");

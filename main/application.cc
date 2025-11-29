@@ -748,6 +748,10 @@ void Application::SetListeningMode(ListeningMode mode) {
     SetDeviceState(kDeviceStateListening);
 }
 
+#include "ble_wifi_provisioner.h"
+
+// ... existing includes ...
+
 void Application::SetDeviceState(DeviceState state) {
     if (device_state_ == state) {
         return;
@@ -760,6 +764,12 @@ void Application::SetDeviceState(DeviceState state) {
 
     // Send the state change event
     DeviceStateEventManager::GetInstance().PostStateChangeEvent(previous_state, state);
+
+    // ⚠️ CRITICAL: Ensure BLE Provisioner is STOPPED when entering active states
+    // to prevent BLE controller from crashing due to coexistence issues with WiFi/Audio.
+    if (state == kDeviceStateConnecting || state == kDeviceStateListening || state == kDeviceStateSpeaking) {
+        BLEWiFiProvisioner::GetInstance().Stop();
+    }
 
     auto& board = Board::GetInstance();
     auto display = board.GetDisplay();
