@@ -378,6 +378,7 @@ void Application::Start() {
     
     // 初始化设备状态到动画的直接映射（简化方案）
     ESP_LOGI(TAG, "Initializing DeviceAnimationMapper...");
+    // 路径格式：系统会先尝试文件系统，失败后从 Assets 分区加载（提取文件名）
     display::DeviceAnimationMapper::GetInstance().Init("/spiffs/anim/");
     display::DeviceAnimationMapper::GetInstance().RegisterDefaultMappings();
     display::DeviceAnimationMapper::GetInstance().PrintMappings();
@@ -492,11 +493,18 @@ void Application::Start() {
             auto state = cJSON_GetObjectItem(root, "state");
             ESP_LOGI(TAG, "📢 TTS event: state=%s", state->valuestring);
             if (strcmp(state->valuestring, "start") == 0) {
+                ESP_LOGI(TAG, "📢 TTS event: state=start");
                 ESP_LOGI(TAG, "🎙️  TTS started, switching to SPEAKING state");
                 Schedule([this]() {
+                    ESP_LOGI(TAG, "🔄 Schedule callback executing for TTS start, current state: %s", 
+                             STATE_STRINGS[device_state_]);
                     aborted_ = false;
                     if (device_state_ == kDeviceStateIdle || device_state_ == kDeviceStateListening) {
+                        ESP_LOGI(TAG, "✅ Condition met, calling SetDeviceState(kDeviceStateSpeaking)");
                         SetDeviceState(kDeviceStateSpeaking);
+                    } else {
+                        ESP_LOGW(TAG, "⚠️  Cannot switch to SPEAKING: current state is %s", 
+                                 STATE_STRINGS[device_state_]);
                     }
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {

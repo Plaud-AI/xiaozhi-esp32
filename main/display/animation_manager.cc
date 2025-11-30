@@ -1,5 +1,6 @@
 #include "animation_manager.h"
 #include "esp_log.h"
+#include "esp_lvgl_port.h" // 🔑 For lvgl_port_lock/unlock
 #include "assets.h" // 🔑 Added for Assets fallback
 
 static const char* TAG = "AnimMgr";
@@ -169,10 +170,17 @@ void AnimationManager::LoadAndPlayAnimation(AnimState state)
 
     const AnimConfig& config = it->second;
 
-    // 删除旧动画
+    // 🔒 关键修复：删除旧动画前必须获取 LVGL 锁
+    // LVGL 是单线程库，所有 UI 操作必须在 LVGL 锁保护下进行
+    if (!lvgl_port_lock(1000)) {
+        ESP_LOGE(TAG, "Failed to lock LVGL, cannot delete old animation");
+        return;
+    }
+
+    // 删除旧动画（在 LVGL 锁保护下）
     current_animation_.reset();
 
-    // 创建新动画
+    // 创建新动画（也需要在 LVGL 锁保护下）
     current_animation_ = std::make_unique<LottieAnimation>(parent_);
 
     // 设置大小
@@ -213,6 +221,8 @@ void AnimationManager::LoadAndPlayAnimation(AnimState state)
 
     if (!loaded) {
         ESP_LOGE(TAG, "❌ Failed to load animation: %s (tried file and assets)", config.file_path.c_str());
+        // 释放 LVGL 锁
+        lvgl_port_unlock();
         // 可以考虑显示一个错误图标或默认动画
         return;
     }
@@ -232,6 +242,9 @@ void AnimationManager::LoadAndPlayAnimation(AnimState state)
 
     // 播放动画
     current_animation_->Play(config.loop);
+
+    // 释放 LVGL 锁
+    lvgl_port_unlock();
 
     ESP_LOGI(TAG, "Animation loaded and playing: %s (loop: %d, size: %dx%d)", 
              config.file_path.c_str(), config.loop, width, height);
