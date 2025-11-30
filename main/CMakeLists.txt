@@ -770,6 +770,9 @@ function(build_default_assets_bin)
     list(APPEND BUILD_ARGS "--esp_sr_model_path" "${ESP_SR_MODEL_PATH}")
     list(APPEND BUILD_ARGS "--xiaozhi_fonts_path" "${XIAOZHI_FONTS_PATH}")
     
+    # Collect animation files as dependencies
+    file(GLOB ANIMATION_FILES "${PROJECT_DIR}/assets_source/anim/*.json")
+    
     # Create custom command to build assets
     add_custom_command(
         OUTPUT ${GENERATED_ASSETS_BIN}
@@ -777,6 +780,7 @@ function(build_default_assets_bin)
         DEPENDS
             ${SDKCONFIG}
             ${PROJECT_DIR}/scripts/build_default_assets.py
+            ${ANIMATION_FILES}
         COMMENT "Building default assets.bin based on configuration"
         VERBATIM
     )
