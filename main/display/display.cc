@@ -40,6 +40,12 @@ void Display::SetEmotion(const char* emotion) {
     ESP_LOGW(TAG, "SetEmotion: %s", emotion);
 }
 
+void Display::ShowAnimationByPath(const char* animation_path, bool loop) {
+    // 默认实现：不支持动画的显示器直接忽略
+    ESP_LOGD(TAG, "ShowAnimationByPath: %s (loop=%d) - not supported by this display", 
+             animation_path ? animation_path : "null", loop);
+}
+
 void Display::SetChatMessage(const char* role, const char* content) {
     ESP_LOGW(TAG, "Role:%s", role);
     ESP_LOGW(TAG, "     %s", content);

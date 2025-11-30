@@ -284,33 +284,63 @@ void LcdEmotionDisplay::SetEmotion(const char* emotion) {
     ESP_LOGI(TAG, "SetEmotion called with: %s", emotion);
     
     // 对于常见的情感名称，映射到对应的 EmotionState
-    emotion::EmotionState state = emotion::EmotionState::CALM;  // 默认
+    emotion::EmotionState state = emotion::EmotionState::NEUTRAL;  // 默认为 NEUTRAL (idle.json)
     
+    // 核心交互状态
     if (strcmp(emotion, "neutral") == 0 || strcmp(emotion, "calm") == 0) {
-        state = emotion::EmotionState::CALM;
-    } else if (strcmp(emotion, "happy") == 0) {
-        state = emotion::EmotionState::HAPPY;
-    } else if (strcmp(emotion, "sad") == 0) {
-        state = emotion::EmotionState::SAD;
-    } else if (strcmp(emotion, "excited") == 0) {
-        state = emotion::EmotionState::EXCITED;
-    } else if (strcmp(emotion, "sleepy") == 0) {
-        state = emotion::EmotionState::SLEEPY;
-    } else if (strcmp(emotion, "surprised") == 0) {
-        state = emotion::EmotionState::SURPRISED;
+        state = emotion::EmotionState::NEUTRAL;  // idle.json - 待机
     } else if (strcmp(emotion, "listening") == 0) {
-        state = emotion::EmotionState::LISTENING;
+        state = emotion::EmotionState::LISTENING;  // listening.json - 倾听
     } else if (strcmp(emotion, "speaking") == 0) {
-        state = emotion::EmotionState::SPEAKING;
-    } else if (strcmp(emotion, "connecting") == 0) {
-        state = emotion::EmotionState::CONNECTING;
+        state = emotion::EmotionState::SPEAKING;  // speaking.json - 说话
     } else if (strcmp(emotion, "thinking") == 0) {
-        state = emotion::EmotionState::THINKING;
+        state = emotion::EmotionState::THINKING;  // loading.json - 思考
+    
+    // 网络和系统状态
+    } else if (strcmp(emotion, "connecting") == 0) {
+        state = emotion::EmotionState::CONNECTING;  // loading.json - 连接
+    } else if (strcmp(emotion, "busy") == 0) {
+        state = emotion::EmotionState::BUSY;  // loading.json - 忙碌
+    
+    // 情感状态
+    } else if (strcmp(emotion, "happy") == 0) {
+        state = emotion::EmotionState::HAPPY;  // success.json - 开心
+    } else if (strcmp(emotion, "excited") == 0) {
+        state = emotion::EmotionState::EXCITED;  // success.json - 兴奋
+    } else if (strcmp(emotion, "sad") == 0) {
+        state = emotion::EmotionState::SAD;  // error.json - 悲伤
+    } else if (strcmp(emotion, "sleepy") == 0) {
+        state = emotion::EmotionState::SLEEPY;  // idle.json - 困倦
+    } else if (strcmp(emotion, "surprised") == 0) {
+        state = emotion::EmotionState::SURPRISED;  // settings.json - 惊讶/好奇
+    
+    // 错误状态
+    } else if (strcmp(emotion, "error") == 0) {
+        state = emotion::EmotionState::ERROR;  // error.json - 错误
+    
+    // 其他（可能从服务器发来的自定义情感名称）
     } else {
-        ESP_LOGW(TAG, "Unknown emotion: %s, using CALM", emotion);
+        ESP_LOGW(TAG, "Unknown emotion: %s, using NEUTRAL", emotion);
+        state = emotion::EmotionState::NEUTRAL;
     }
     
+    // 注意：当前阶段 SetEmotion 仍可正常工作
+    // 但主要由 Application::SetDeviceState() -> ShowAnimationByPath() 驱动
     ShowEmotion(state);
+}
+
+void LcdEmotionDisplay::ShowAnimationByPath(const char* animation_path, bool loop) {
+    if (!animation_path || !emotion_system_initialized_) {
+        ESP_LOGW(TAG, "Cannot show animation: path=%s, initialized=%d",
+                 animation_path ? animation_path : "null", emotion_system_initialized_);
+        return;
+    }
+
+    ESP_LOGI(TAG, "ShowAnimationByPath: %s (loop=%d)", animation_path, loop);
+    
+    // 直接通过 EmotionCoordinator 播放动画文件
+    // 这是设备状态驱动的简化方案，不涉及复杂的情感映射
+    emotion::EmotionCoordinator::Instance().PlayAnimationFile(animation_path, loop);
 }
 
 void LcdEmotionDisplay::UpdateStatusBar(bool update_all) {
@@ -349,9 +379,8 @@ bool LcdEmotionDisplay::InitEmotionSystem() {
     emotion_system_initialized_ = true;
     ESP_LOGI(TAG, "✅ Emotion system initialized successfully");
 
-    // 🔑 测试修复：使用 HAPPY 动画替代 CALM，验证动画是否能显示
-    // TODO: 确认动画显示正常后改回 CALM
-    ESP_LOGI(TAG, "Scheduling initial emotion animation (HAPPY) in 500ms");
+    // 使用 NEUTRAL 动画作为初始状态
+    ESP_LOGI(TAG, "Scheduling initial emotion animation (NEUTRAL) in 500ms");
     
     if (!Lock(1000)) {
         ESP_LOGW(TAG, "Failed to lock for timer creation");
@@ -361,8 +390,8 @@ bool LcdEmotionDisplay::InitEmotionSystem() {
     lv_timer_t* init_timer = lv_timer_create([](lv_timer_t* timer) {
         auto* self = static_cast<LcdEmotionDisplay*>(lv_timer_get_user_data(timer));
         if (self) {
-            ESP_LOGI("LcdEmotionDisplay", "🎬 Playing initial HAPPY animation (timer callback)");
-            self->ShowEmotion(emotion::EmotionState::HAPPY);  // 🔑 使用 HAPPY 测试
+            ESP_LOGI("LcdEmotionDisplay", "🎬 Playing initial NEUTRAL animation (timer callback)");
+            self->ShowEmotion(emotion::EmotionState::NEUTRAL);
         }
         lv_timer_del(timer);  // 一次性定时器
     }, 500, this);

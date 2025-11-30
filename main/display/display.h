@@ -34,6 +34,7 @@ public:
     virtual void ShowNotification(const char* notification, int duration_ms = 3000);
     virtual void ShowNotification(const std::string &notification, int duration_ms = 3000);
     virtual void SetEmotion(const char* emotion);
+    virtual void ShowAnimationByPath(const char* animation_path, bool loop = true);
     virtual void SetChatMessage(const char* role, const char* content);
     virtual void SetTheme(Theme* theme);
     virtual Theme* GetTheme() { return current_theme_; }

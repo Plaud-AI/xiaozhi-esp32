@@ -75,6 +75,17 @@ public:
      */
     void ShowEmotion(emotion::EmotionState emotion);
 
+    /**
+     * @brief 直接播放动画文件（设备状态驱动，简化方案）
+     * 
+     * 这是一个简化的接口，专门用于设备状态直接驱动动画显示
+     * 不涉及复杂的情感映射和状态管理
+     * 
+     * @param animation_path 动画文件路径
+     * @param loop 是否循环
+     */
+    void ShowAnimationByPath(const char* animation_path, bool loop = true);
+
 private:
     esp_lcd_panel_io_handle_t panel_io_;
     esp_lcd_panel_handle_t panel_;

@@ -486,9 +486,18 @@ void Application::Start() {
             if (strcmp(state->valuestring, "start") == 0) {
                 ESP_LOGI(TAG, "🎙️  TTS started, switching to SPEAKING state");
                 Schedule([this]() {
+                    ESP_LOGI(TAG, "🔄 Schedule callback: TTS start, current state=%d (%s)", 
+                             device_state_, STATE_STRINGS[device_state_]);
                     aborted_ = false;
-                    if (device_state_ == kDeviceStateIdle || device_state_ == kDeviceStateListening) {
+                    // 扩展条件：从 IDLE、LISTENING 或 CONNECTING 都可以切换到 SPEAKING
+                    if (device_state_ == kDeviceStateIdle || 
+                        device_state_ == kDeviceStateListening ||
+                        device_state_ == kDeviceStateConnecting) {
+                        ESP_LOGI(TAG, "✅ Switching to SPEAKING state");
                         SetDeviceState(kDeviceStateSpeaking);
+                    } else {
+                        ESP_LOGW(TAG, "⚠️ Cannot switch to SPEAKING from state: %s", 
+                                 STATE_STRINGS[device_state_]);
                     }
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {

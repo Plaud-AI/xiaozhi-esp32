@@ -19,7 +19,8 @@
 
 namespace emotion {
 
-static const char* TAG = "EmotionAssetsLoader";
+// 使用宏避免与其他文件的 TAG 冲突
+#define ASSETS_LOADER_TAG "EmotionAssetsLoader"
 
 /**
  * @brief 从 Assets 分区加载动画的助手类
@@ -42,7 +43,7 @@ public:
         
         // 检查 assets 分区是否有效
         if (!assets.partition_valid()) {
-            ESP_LOGW(TAG, "Assets partition not valid");
+            ESP_LOGW(ASSETS_LOADER_TAG, "Assets partition not valid");
             return false;
         }
 
@@ -51,11 +52,11 @@ public:
         
         // 从 assets 获取数据
         if (!assets.GetAssetData(asset_name, data_ptr, data_size)) {
-            ESP_LOGD(TAG, "  ❌ Asset not found: %s", asset_name.c_str());
+            ESP_LOGD(ASSETS_LOADER_TAG, "  ❌ Asset not found: %s", asset_name.c_str());
             return false;
         }
 
-        ESP_LOGI(TAG, "  ✅ Loaded: %s (%u bytes) -> %s", 
+        ESP_LOGI(ASSETS_LOADER_TAG, "  ✅ Loaded: %s (%u bytes) -> %s", 
                  asset_name.c_str(), data_size, EmotionStateToString(emotion));
 
         // 缓存数据信息
@@ -67,7 +68,7 @@ public:
         
         GetAnimationCache()[emotion] = cache;
 
-        ESP_LOGI(TAG, "Registered animation: %s -> asset:%s", 
+        ESP_LOGI(ASSETS_LOADER_TAG, "Registered animation: %s -> asset:%s", 
                  EmotionStateToString(emotion), asset_name.c_str());
         
         return true;
@@ -91,18 +92,26 @@ public:
 
         // 🔧 资源名称必须与 assets 分区中的文件名完全匹配
         // assets_source/anim/ 目录下的 .json 文件会被打包到 assets 分区
-        // 可用动画: calm, champion, disdain, disgust, excited, happy, 
-        //          listening, sad, singing, sleepy, surprised
+        // 新动画文件: idle, listening, speaking, loading, settings, error, success, updating
         EmotionMapping mappings[] = {
-            {EmotionState::HAPPY,      "happy.json",      true},   // 循环播放，持续展示
-            {EmotionState::SAD,        "sad.json",        true},   // 循环播放，持续展示
-            {EmotionState::EXCITED,    "excited.json",    true},   // 循环播放，持续展示
-            {EmotionState::CALM,       "calm.json",       true},   // 循环播放，持续展示
-            {EmotionState::SLEEPY,     "sleepy.json",     true},   // 循环播放，持续展示
-            {EmotionState::SURPRISED,  "surprised.json",  true},   // 循环播放，持续展示
-            {EmotionState::LISTENING,  "listening.json",  true},   // 循环播放
-            {EmotionState::THINKING,   "calm.json",       true},   // 🔄 使用 calm 作为 thinking 备用
-            {EmotionState::SPEAKING,   "singing.json",    true},   // 🎵 使用 singing 作为 speaking 动画
+            // 核心交互状态
+            {EmotionState::NEUTRAL,    "idle.json",       true},   // 待机呼吸
+            {EmotionState::CALM,       "idle.json",       true},   // 平静=待机
+            {EmotionState::LISTENING,  "listening.json",  true},   // 倾听（声波扩散）
+            {EmotionState::SPEAKING,   "speaking.json",   true},   // 说话（嘴巴张合）
+            {EmotionState::THINKING,   "loading.json",    true},   // 思考=加载
+            
+            // 网络和系统状态 - 暂时使用 idle.json 避免切换崩溃
+            {EmotionState::CONNECTING, "idle.json",       true},   // 连接中（使用 idle 避免崩溃）
+            {EmotionState::BUSY,       "idle.json",       true},   // 忙碌（使用 idle 避免崩溃）
+            
+            // 情感状态（复用 success/error）
+            {EmotionState::HAPPY,      "success.json",    true},   // 开心=成功
+            {EmotionState::EXCITED,    "success.json",    true},   // 兴奋=成功
+            {EmotionState::SAD,        "error.json",      true},   // 悲伤=错误表情
+            {EmotionState::SLEEPY,     "idle.json",       true},   // 困倦=待机
+            {EmotionState::SURPRISED,  "settings.json",   true},   // 惊讶=好奇（设置图标）
+            {EmotionState::ERROR,      "error.json",      true},   // 错误（叉号+抖动）
         };
 
         int count = 0;
@@ -112,7 +121,7 @@ public:
             }
         }
 
-        ESP_LOGI(TAG, "Registered %d animations from assets", count);
+        ESP_LOGI(ASSETS_LOADER_TAG, "Registered %d animations from assets", count);
         return count;
     }
 
@@ -169,13 +178,13 @@ public:
 
 #ifdef USE_SIMPLE_FALLBACK_ANIMATION
         // 使用简单备用动画进行测试
-        ESP_LOGW(TAG, "⚠️ Using SIMPLE fallback animation for: %s", EmotionStateToString(emotion));
+        ESP_LOGW(ASSETS_LOADER_TAG, "⚠️ Using SIMPLE fallback animation for: %s", EmotionStateToString(emotion));
         data = const_cast<char*>(SIMPLE_FALLBACK_LOTTIE);
         size = strlen(SIMPLE_FALLBACK_LOTTIE);
         loop = true;
 #else
         if (!GetAnimationData(emotion, data, size, loop)) {
-            ESP_LOGE(TAG, "No animation data for: %s", EmotionStateToString(emotion));
+            ESP_LOGE(ASSETS_LOADER_TAG, "No animation data for: %s", EmotionStateToString(emotion));
             return nullptr;
         }
 #endif
@@ -185,7 +194,7 @@ public:
         // 🔑 关键修复：必须先加载数据，再设置 buffer！（参考 LVGL 官方示例）
         // 官方顺序：lv_lottie_set_src_data() -> lv_lottie_set_buffer()
         if (!anim->LoadFromData(data, size)) {
-            ESP_LOGE(TAG, "Failed to load animation data for: %s", 
+            ESP_LOGE(ASSETS_LOADER_TAG, "Failed to load animation data for: %s", 
                      EmotionStateToString(emotion));
             delete anim;
             return nullptr;
@@ -194,7 +203,7 @@ public:
         // 加载数据后再设置 buffer
         anim->SetSize(width, height);
 
-        ESP_LOGI(TAG, "Created animation from assets: %s (%ldx%ld)", 
+        ESP_LOGI(ASSETS_LOADER_TAG, "Created animation from assets: %s (%ldx%ld)", 
                  EmotionStateToString(emotion), width, height);
         
         return anim;
@@ -228,44 +237,44 @@ inline bool InitEmotionSystemFromAssets(Display* display,
                                         int width = 240,
                                         int height = 240)
 {
-    ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "🎭 Initializing Emotion System from Assets");
-    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(ASSETS_LOADER_TAG, "========================================");
+    ESP_LOGI(ASSETS_LOADER_TAG, "🎭 Initializing Emotion System from Assets");
+    ESP_LOGI(ASSETS_LOADER_TAG, "========================================");
     
     if (!display) {
-        ESP_LOGW(TAG, "❌ Display is null");
+        ESP_LOGW(ASSETS_LOADER_TAG, "❌ Display is null");
         return false;
     }
 
     // 检查 Assets 是否可用
     auto& assets = Assets::GetInstance();
-    ESP_LOGI(TAG, "Checking Assets partition...");
+    ESP_LOGI(ASSETS_LOADER_TAG, "Checking Assets partition...");
     
     if (!assets.partition_valid()) {
-        ESP_LOGW(TAG, "❌ Assets partition not valid, skipping emotion system");
-        ESP_LOGW(TAG, "   Hint: 请确保 assets 分区已正确烧录");
+        ESP_LOGW(ASSETS_LOADER_TAG, "❌ Assets partition not valid, skipping emotion system");
+        ESP_LOGW(ASSETS_LOADER_TAG, "   Hint: 请确保 assets 分区已正确烧录");
         return false;
     }
-    ESP_LOGI(TAG, "✅ Assets partition is valid");
+    ESP_LOGI(ASSETS_LOADER_TAG, "✅ Assets partition is valid");
 
     // 获取 LVGL 屏幕对象
     lv_obj_t* screen = lv_scr_act();
     if (!screen) {
-        ESP_LOGE(TAG, "❌ LVGL screen not available");
+        ESP_LOGE(ASSETS_LOADER_TAG, "❌ LVGL screen not available");
         return false;
     }
-    ESP_LOGI(TAG, "✅ LVGL screen available");
+    ESP_LOGI(ASSETS_LOADER_TAG, "✅ LVGL screen available");
 
     // 🔧 关键修复：先注册动画，再初始化协调器
     // 1. 从 assets 分区注册动画
-    ESP_LOGI(TAG, "Loading Lottie animations from assets...");
+    ESP_LOGI(ASSETS_LOADER_TAG, "Loading Lottie animations from assets...");
     int count = EmotionAssetsLoader::RegisterStandardAnimationsFromAssets();
-    ESP_LOGI(TAG, "Registered %d animations from assets partition", count);
+    ESP_LOGI(ASSETS_LOADER_TAG, "Registered %d animations from assets partition", count);
 
     if (count == 0) {
-        ESP_LOGW(TAG, "⚠️  No animations found in assets!");
-        ESP_LOGW(TAG, "   检查 assets_source/anim/ 目录是否包含 .json 动画文件");
-        ESP_LOGW(TAG, "   运行 'idf.py build flash' 重新构建并烧录");
+        ESP_LOGW(ASSETS_LOADER_TAG, "⚠️  No animations found in assets!");
+        ESP_LOGW(ASSETS_LOADER_TAG, "   检查 assets_source/anim/ 目录是否包含 .json 动画文件");
+        ESP_LOGW(ASSETS_LOADER_TAG, "   运行 'idf.py build flash' 重新构建并烧录");
         return false;
     }
 
@@ -277,21 +286,78 @@ inline bool InitEmotionSystemFromAssets(Display* display,
     config.animation_base_path = "assets:";  // 特殊标记，表示从 assets 加载
     config.screen_width = width;
     config.screen_height = height;
-    config.default_emotion = EmotionState::CALM;
+    config.default_emotion = EmotionState::NEUTRAL;  // 使用 NEUTRAL (idle.json)
     config.auto_register_mappings = true;
     config.enable_auto_restore = true;
     config.auto_restore_delay_ms = 5000;
 
     if (!coordinator.Init(config, screen)) {
-        ESP_LOGE(TAG, "❌ Failed to initialize emotion coordinator");
+        ESP_LOGE(ASSETS_LOADER_TAG, "❌ Failed to initialize emotion coordinator");
         return false;
     }
 
-    ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "✅ Emotion System Ready!");
-    ESP_LOGI(TAG, "   Loaded %d animations", count);
-    ESP_LOGI(TAG, "   Screen: %dx%d", width, height);
-    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(ASSETS_LOADER_TAG, "========================================");
+    ESP_LOGI(ASSETS_LOADER_TAG, "✅ Emotion System Ready!");
+    ESP_LOGI(ASSETS_LOADER_TAG, "   Loaded %d animations", count);
+    ESP_LOGI(ASSETS_LOADER_TAG, "   Screen: %dx%d", width, height);
+    ESP_LOGI(ASSETS_LOADER_TAG, "========================================");
+    
+    return true;
+}
+
+/**
+ * @brief 仅初始化动画管理器（简化方案，用于设备状态驱动）
+ * 
+ * 这是一个简化的初始化函数，只初始化 AnimationManager
+ * 不涉及复杂的情感状态管理
+ * 
+ * @param display Display 对象
+ * @param width 屏幕宽度
+ * @param height 屏幕高度
+ * @return true 成功
+ */
+inline bool InitAnimationManagerOnly(Display* display, 
+                                      int width = 240,
+                                      int height = 240)
+{
+    ESP_LOGI(ASSETS_LOADER_TAG, "========================================");
+    ESP_LOGI(ASSETS_LOADER_TAG, "🎭 Initializing Animation Manager Only (Phase 1)");
+    ESP_LOGI(ASSETS_LOADER_TAG, "========================================");
+    
+    if (!display) {
+        ESP_LOGW(ASSETS_LOADER_TAG, "❌ Display is null");
+        return false;
+    }
+
+    // 获取 LVGL 屏幕对象
+    lv_obj_t* screen = lv_scr_act();
+    if (!screen) {
+        ESP_LOGE(ASSETS_LOADER_TAG, "❌ LVGL screen not available");
+        return false;
+    }
+    ESP_LOGI(ASSETS_LOADER_TAG, "✅ LVGL screen available");
+
+    // 只初始化 EmotionCoordinator 的 AnimationManager 部分
+    auto& coordinator = EmotionCoordinator::Instance();
+    
+    EmotionSystemConfig config;
+    config.animation_base_path = "/spiffs/anim/";  // 文件系统路径，会自动 fallback 到 Assets
+    config.screen_width = width;
+    config.screen_height = height;
+    config.default_emotion = EmotionState::NEUTRAL;
+    config.auto_register_mappings = false;  // 不自动注册情感映射
+    config.enable_auto_restore = false;
+
+    if (!coordinator.Init(config, screen)) {
+        ESP_LOGE(ASSETS_LOADER_TAG, "❌ Failed to initialize animation manager");
+        return false;
+    }
+
+    ESP_LOGI(ASSETS_LOADER_TAG, "========================================");
+    ESP_LOGI(ASSETS_LOADER_TAG, "✅ Animation Manager Ready (Phase 1)");
+    ESP_LOGI(ASSETS_LOADER_TAG, "   Screen: %dx%d", width, height);
+    ESP_LOGI(ASSETS_LOADER_TAG, "   Mode: Device state driven");
+    ESP_LOGI(ASSETS_LOADER_TAG, "========================================");
     
     return true;
 }

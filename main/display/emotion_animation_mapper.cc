@@ -67,17 +67,24 @@ int EmotionAnimationMapper::RegisterStandardMappings()
     };
 
     Mapping standard_mappings[] = {
-        {EmotionState::HAPPY,      "happy.json",      false},
-        {EmotionState::SAD,        "sad.json",        false},
-        {EmotionState::EXCITED,    "excited.json",    false},
-        {EmotionState::CALM,       "calm.json",       false},
-        {EmotionState::SLEEPY,     "sleepy.json",     false},
-        {EmotionState::SURPRISED,  "surprised.json",  false},
-        {EmotionState::LISTENING,  "listening.json",  true},
-        {EmotionState::THINKING,   "champion.json",   true},   // using champion for thinking (distinct)
-        {EmotionState::SPEAKING,   "singing.json",    true},   // using singing for speaking
-        {EmotionState::CONNECTING, "disdain.json",    true},   // using disdain for connecting (distinct)
-        {EmotionState::BUSY,       "disgust.json",    true},   // using disgust for busy (distinct)
+        // 核心交互状态
+        {EmotionState::NEUTRAL,    "idle.json",       true},   // 待机呼吸
+        {EmotionState::CALM,       "idle.json",       true},   // 平静=待机
+        {EmotionState::LISTENING,  "listening.json",  true},   // 倾听（声波扩散）
+        {EmotionState::SPEAKING,   "speaking.json",   true},   // 说话（嘴巴张合）
+        {EmotionState::THINKING,   "loading.json",    true},   // 思考=加载
+        
+        // 网络和系统状态
+        {EmotionState::CONNECTING, "loading.json",    true},   // 连接中（旋转环）
+        {EmotionState::BUSY,       "loading.json",    true},   // 忙碌=加载
+        
+        // 情感状态（复用 success/error）
+        {EmotionState::HAPPY,      "success.json",    false},  // 开心=成功
+        {EmotionState::EXCITED,    "success.json",    false},  // 兴奋=成功
+        {EmotionState::SAD,        "error.json",      false},  // 悲伤=错误表情
+        {EmotionState::SLEEPY,     "idle.json",       true},   // 困倦=待机
+        {EmotionState::SURPRISED,  "settings.json",   true},   // 惊讶=好奇（设置图标）
+        {EmotionState::ERROR,      "error.json",      true},   // 错误（叉号+抖动）
     };
 
     for (const auto& m : standard_mappings) {
@@ -98,8 +105,8 @@ int EmotionAnimationMapper::RegisterDefaultMappings()
 {
     int count = RegisterStandardMappings();
     
-    // 设置全局回退动画（使用 calm 作为默认）
-    std::string fallback = anim_base_path_ + "calm.json";
+    // 设置全局回退动画（使用 idle 作为默认）
+    std::string fallback = anim_base_path_ + "idle.json";
     if (FileExists(fallback.c_str())) {
         SetGlobalFallback(fallback);
     }

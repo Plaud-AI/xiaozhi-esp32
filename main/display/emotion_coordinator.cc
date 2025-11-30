@@ -241,10 +241,35 @@ void EmotionCoordinator::PlayCustomAnimation(const std::string& animation_path,
                                              bool loop, 
                                              bool auto_return)
 {
-    if (!initialized_) return;
+    if (!initialized_) {
+        ESP_LOGW(TAG, "PlayCustomAnimation: EmotionCoordinator not initialized!");
+        return;
+    }
+    
+    ESP_LOGI(TAG, "PlayCustomAnimation: %s (loop=%d, auto_return=%d)", 
+             animation_path.c_str(), loop, auto_return);
     
     auto& lottie_mgr = lottie::AnimationManager::Instance();
     lottie_mgr.PlayCustomAnimation(animation_path, loop, auto_return);
+}
+
+void EmotionCoordinator::PlayAnimationFile(const char* animation_path, bool loop)
+{
+    if (!initialized_) {
+        ESP_LOGW(TAG, "EmotionCoordinator not initialized");
+        return;
+    }
+    
+    if (!animation_path) {
+        ESP_LOGW(TAG, "Invalid animation_path");
+        return;
+    }
+    
+    ESP_LOGI(TAG, "PlayAnimationFile: %s (loop=%d)", animation_path, loop);
+    
+    // 直接播放动画文件，不涉及情感状态管理
+    // 这是设备状态驱动的简化方案
+    PlayCustomAnimation(animation_path, loop, false);
 }
 
 EmotionState EmotionCoordinator::GetCurrentEmotion() const
