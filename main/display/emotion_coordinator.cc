@@ -429,19 +429,15 @@ static void async_anim_load_timer_cb(lv_timer_t* timer) {
     // 设置位置和可见性
     lv_obj_t* lottie_obj = anim->GetObject();
     
-    // 缩小的 Canvas 居中显示（不拉伸）
-    // 计算居中位置
-    int32_t center_x = (load_data->config.screen_width - render_width) / 2;
-    int32_t center_y = (load_data->config.screen_height - render_height) / 2;
-    lv_obj_set_pos(lottie_obj, center_x, center_y);
+    // 使用 LVGL 原生居中函数确保动画在屏幕正中央
+    lv_obj_center(lottie_obj);
     
     lv_obj_clear_flag(lottie_obj, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(lottie_obj);
     
-    ESP_LOGI(TAG, "✅ Animation ready: render=%dx%d, display=%dx%d, pos=(%d,%d)", 
+    ESP_LOGI(TAG, "✅ Animation ready: render=%dx%d, display=%dx%d (centered)", 
              render_width, render_height,
-             load_data->config.screen_width, load_data->config.screen_height,
-             center_x, center_y);
+             load_data->config.screen_width, load_data->config.screen_height);
 
     // 开始播放
     anim->Play(loop);
