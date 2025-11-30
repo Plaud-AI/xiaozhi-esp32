@@ -48,6 +48,7 @@ public:
     void ShowNotification(const char* message, int duration_ms = 3000) override;
     void SetChatMessage(const char* role, const char* content) override;
     void SetEmotion(const char* emotion) override;
+    void ShowAnimationByPath(const char* animation_path, bool loop = true) override;
     void UpdateStatusBar(bool update_all = false) override;
 
     // ========================================================================

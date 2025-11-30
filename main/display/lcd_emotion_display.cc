@@ -327,6 +327,20 @@ void LcdEmotionDisplay::SetEmotion(const char* emotion) {
     ShowEmotion(state);
 }
 
+void LcdEmotionDisplay::ShowAnimationByPath(const char* animation_path, bool loop) {
+    if (!animation_path || !emotion_system_initialized_) {
+        ESP_LOGW(TAG, "Cannot show animation: path=%s, initialized=%d",
+                 animation_path ? animation_path : "null", emotion_system_initialized_);
+        return;
+    }
+
+    ESP_LOGI(TAG, "ShowAnimationByPath: %s (loop=%d)", animation_path, loop);
+    
+    // 直接通过 EmotionCoordinator 播放动画文件
+    // 这是设备状态驱动的简化方案，不涉及复杂的情感映射
+    emotion::EmotionCoordinator::Instance().PlayAnimationFile(animation_path, loop);
+}
+
 void LcdEmotionDisplay::UpdateStatusBar(bool update_all) {
     // 情感显示界面的状态栏比较简单，暂时不需要复杂更新
     // 可以根据需要扩展

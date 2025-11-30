@@ -3,7 +3,7 @@
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
 
-static const char* TAG = "EmotionCoord";
+static const char* TAG __attribute__((unused)) = "EmotionCoord";
 
 namespace emotion {
 
@@ -245,6 +245,25 @@ void EmotionCoordinator::PlayCustomAnimation(const std::string& animation_path,
     
     auto& lottie_mgr = lottie::AnimationManager::Instance();
     lottie_mgr.PlayCustomAnimation(animation_path, loop, auto_return);
+}
+
+void EmotionCoordinator::PlayAnimationFile(const char* animation_path, bool loop)
+{
+    if (!initialized_) {
+        ESP_LOGW(TAG, "EmotionCoordinator not initialized");
+        return;
+    }
+    
+    if (!animation_path) {
+        ESP_LOGW(TAG, "Invalid animation_path");
+        return;
+    }
+    
+    ESP_LOGI(TAG, "PlayAnimationFile: %s (loop=%d)", animation_path, loop);
+    
+    // 直接播放动画文件，不涉及情感状态管理
+    // 这是设备状态驱动的简化方案
+    PlayCustomAnimation(animation_path, loop, false);
 }
 
 EmotionState EmotionCoordinator::GetCurrentEmotion() const

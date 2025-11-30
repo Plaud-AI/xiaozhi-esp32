@@ -24,6 +24,10 @@ void operator delete(void* ptr) noexcept {
     free(ptr);
 }
 
+void operator delete(void* ptr, std::size_t size) noexcept {
+    free(ptr);
+}
+
 void* operator new[](std::size_t size) {
     void* ptr = heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
     if (ptr) return ptr;
@@ -35,6 +39,10 @@ void* operator new[](std::size_t size) {
 }
 
 void operator delete[](void* ptr) noexcept {
+    free(ptr);
+}
+
+void operator delete[](void* ptr, std::size_t size) noexcept {
     free(ptr);
 }
 

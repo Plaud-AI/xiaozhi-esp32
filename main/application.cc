@@ -11,6 +11,7 @@
 #include "settings.h"
 #include "wake_word_manager.h"
 #include "audio/wake_words/custom_wake_word.h"
+#include "display/device_animation_mapper.h"
 
 #ifdef CONFIG_ENABLE_DOLL_INTERACTION
 #include "doll/doll_interaction_manager.h"
@@ -374,6 +375,13 @@ void Application::StopListening() {
 
 void Application::Start() {
     auto& board = Board::GetInstance();
+    
+    // 初始化设备状态到动画的直接映射（简化方案）
+    ESP_LOGI(TAG, "Initializing DeviceAnimationMapper...");
+    display::DeviceAnimationMapper::GetInstance().Init("/spiffs/anim/");
+    display::DeviceAnimationMapper::GetInstance().RegisterDefaultMappings();
+    display::DeviceAnimationMapper::GetInstance().PrintMappings();
+    
     SetDeviceState(kDeviceStateStarting);
 
     /* Setup the display */
@@ -798,7 +806,11 @@ void Application::SetDeviceState(DeviceState state) {
         case kDeviceStateIdle:
             ESP_LOGI(TAG, "Entering IDLE state, enabling wake word detection...");
             display->SetStatus(Lang::Strings::STANDBY);
-            display->SetEmotion("neutral");  // idle.json - 待机呼吸动画
+            // 使用设备状态直接映射动画（简化方案）
+            display->ShowAnimationByPath(
+                display::DeviceAnimationMapper::GetInstance().GetAnimationPath(state).c_str(),
+                true  // loop
+            );
             audio_service_.EnableVoiceProcessing(false);
             audio_service_.EnableWakeWordDetection(true);
             
@@ -817,16 +829,25 @@ void Application::SetDeviceState(DeviceState state) {
             break;
         case kDeviceStateStarting:
             display->SetStatus(Lang::Strings::INITIALIZING);
-            display->SetEmotion("connecting");  // loading.json - 启动加载动画
+            display->ShowAnimationByPath(
+                display::DeviceAnimationMapper::GetInstance().GetAnimationPath(state).c_str(),
+                true
+            );
             break;
         case kDeviceStateConnecting:
             display->SetStatus(Lang::Strings::CONNECTING);
-            display->SetEmotion("connecting");  // loading.json - 连接加载动画
+            display->ShowAnimationByPath(
+                display::DeviceAnimationMapper::GetInstance().GetAnimationPath(state).c_str(),
+                true
+            );
             display->SetChatMessage("system", "");
             break;
         case kDeviceStateListening:
             display->SetStatus(Lang::Strings::LISTENING);
-            display->SetEmotion("listening");  // listening.json - 倾听声波动画
+            display->ShowAnimationByPath(
+                display::DeviceAnimationMapper::GetInstance().GetAnimationPath(state).c_str(),
+                true
+            );
 
             // Make sure the audio processor is running
             if (!audio_service_.IsAudioProcessorRunning()) {
@@ -854,7 +875,10 @@ void Application::SetDeviceState(DeviceState state) {
             break;
         case kDeviceStateSpeaking:
             display->SetStatus(Lang::Strings::SPEAKING);
-            display->SetEmotion("speaking");  // speaking.json - 说话嘴巴张合动画
+            display->ShowAnimationByPath(
+                display::DeviceAnimationMapper::GetInstance().GetAnimationPath(state).c_str(),
+                true
+            );
 
             if (listening_mode_ != kListeningModeRealtime) {
                 audio_service_.EnableVoiceProcessing(false);
@@ -865,23 +889,38 @@ void Application::SetDeviceState(DeviceState state) {
             break;
         case kDeviceStateWifiConfiguring:
             display->SetStatus(Lang::Strings::CONFIGURING);
-            display->SetEmotion("surprised");  // settings.json - WiFi配网动画
+            display->ShowAnimationByPath(
+                display::DeviceAnimationMapper::GetInstance().GetAnimationPath(state).c_str(),
+                true
+            );
             break;
         case kDeviceStateAudioTesting:
             display->SetStatus("音频测试");
-            display->SetEmotion("surprised");  // settings.json - 音频测试动画
+            display->ShowAnimationByPath(
+                display::DeviceAnimationMapper::GetInstance().GetAnimationPath(state).c_str(),
+                true
+            );
             break;
         case kDeviceStateUpgrading:
             display->SetStatus(Lang::Strings::OTA_UPGRADE);
-            display->SetEmotion("thinking");  // updating.json - 升级下载动画
+            display->ShowAnimationByPath(
+                display::DeviceAnimationMapper::GetInstance().GetAnimationPath(state).c_str(),
+                true
+            );
             break;
         case kDeviceStateActivating:
             display->SetStatus(Lang::Strings::ACTIVATION);
-            display->SetEmotion("connecting");  // loading.json - 激活加载动画
+            display->ShowAnimationByPath(
+                display::DeviceAnimationMapper::GetInstance().GetAnimationPath(state).c_str(),
+                true
+            );
             break;
         case kDeviceStateFatalError:
             display->SetStatus(Lang::Strings::ERROR);
-            display->SetEmotion("sad");  // error.json - 错误动画
+            display->ShowAnimationByPath(
+                display::DeviceAnimationMapper::GetInstance().GetAnimationPath(state).c_str(),
+                true
+            );
             break;
         default:
             // Do nothing

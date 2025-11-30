@@ -40,6 +40,10 @@ void Display::SetEmotion(const char* emotion) {
     ESP_LOGW(TAG, "SetEmotion: %s", emotion);
 }
 
+void Display::ShowAnimationByPath(const char* animation_path, bool loop) {
+    ESP_LOGW(TAG, "ShowAnimationByPath: %s (loop=%d)", animation_path, loop);
+}
+
 void Display::SetChatMessage(const char* role, const char* content) {
     ESP_LOGW(TAG, "Role:%s", role);
     ESP_LOGW(TAG, "     %s", content);
