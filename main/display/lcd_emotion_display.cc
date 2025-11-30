@@ -324,7 +324,8 @@ void LcdEmotionDisplay::SetEmotion(const char* emotion) {
         state = emotion::EmotionState::NEUTRAL;
     }
     
-    ShowEmotion(state);
+    // 🚧 第一阶段：不调用 ShowEmotion，情感系统已禁用
+    ESP_LOGD(TAG, "Emotion '%s' mapped to state %d, but not displayed (Phase 1)", emotion, static_cast<int>(state));
 }
 
 void LcdEmotionDisplay::ShowAnimationByPath(const char* animation_path, bool loop) {
@@ -358,50 +359,33 @@ bool LcdEmotionDisplay::InitEmotionSystem() {
 
     ESP_LOGI(TAG, "Initializing emotion system from Assets...");
 
-    // 🔒 重要：持有 LVGL 锁（InitEmotionSystemFromAssets 会创建LVGL对象）
-    if (!Lock(1000)) {
-        ESP_LOGE(TAG, "Failed to lock display for emotion system init");
-        return false;
-    }
-
-    // 使用 emotion_assets_loader 的初始化函数
-    bool init_success = emotion::InitEmotionSystemFromAssets(this, width_, height_);
+    // 🚧 第一阶段：屏蔽情感系统，只支持设备状态驱动的动画
+    // 情感系统接口保留，但不初始化，为将来扩展预留
+    ESP_LOGI(TAG, "⚠️ Emotion system disabled in Phase 1 (Device state animations only)");
+    ESP_LOGI(TAG, "📝 Emotion interfaces preserved for future implementation");
+    ESP_LOGI(TAG, "✅ Use ShowAnimationByPath() for device state animations");
     
-    Unlock();
-
-    if (!init_success) {
-        ESP_LOGE(TAG, "Failed to initialize emotion system");
-        return false;
-    }
-
-    emotion_system_initialized_ = true;
-    ESP_LOGI(TAG, "✅ Emotion system initialized successfully");
-
-    // ⚠️ 禁用初始动画：避免与 starting state animation 冲突
-    // Application::SetDeviceState(kDeviceStateStarting) 会立即播放 loading.json
-    // 如果这里再播放 HAPPY animation，会导致定时器冲突和崩溃
-    ESP_LOGI(TAG, "Initial animation disabled (will be set by Application state)");
+    // 设置标志为 false，表示情感系统未初始化
+    // ShowAnimationByPath() 仍然可用（用于设备状态动画）
+    emotion_system_initialized_ = false;
 
     return true;
 }
 
 void LcdEmotionDisplay::SetDeviceState(emotion::DeviceState state) {
-    if (!emotion_system_initialized_) {
-        ESP_LOGW(TAG, "Emotion system not initialized");
-        return;
-    }
-
-    auto& coordinator = emotion::EmotionCoordinator::Instance();
-    coordinator.SetDeviceState(state);
+    // 🚧 第一阶段：情感系统已禁用
+    // 此接口为将来的 DeviceState → EmotionState 映射预留
+    ESP_LOGD(TAG, "SetDeviceState(state=%d) called but emotion system is disabled (Phase 1)", static_cast<int>(state));
+    
+    // 不执行任何操作
+    // 第一阶段使用 Application::SetDeviceState() → ShowAnimationByPath() 的直接路径
 }
 
 void LcdEmotionDisplay::ShowEmotion(emotion::EmotionState emotion) {
-    if (!emotion_system_initialized_) {
-        ESP_LOGW(TAG, "Emotion system not initialized");
-        return;
-    }
-
-    auto& state_mgr = emotion::EmotionStateManager::Instance();
-    state_mgr.SetEmotion(emotion);
+    // 🚧 第一阶段：情感系统已禁用
+    // 接口保留，但不执行任何操作
+    ESP_LOGD(TAG, "ShowEmotion(emotion=%d) called but emotion system is disabled (Phase 1)", static_cast<int>(emotion));
+    
+    // 不执行任何操作，避免与设备状态动画冲突
 }
 
