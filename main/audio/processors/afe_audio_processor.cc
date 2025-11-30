@@ -47,16 +47,23 @@ void AfeAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms, srm
     afe_config->aec_mode = AEC_MODE_VOIP_HIGH_PERF;
     afe_config->vad_mode = VAD_MODE_0;
     afe_config->vad_min_noise_ms = 100;
+    
+    // ⚠️ CRITICAL: 只有在找到有效的 VAD 模型时才设置模型名称
     if (vad_model_name != nullptr) {
         afe_config->vad_model_name = vad_model_name;
+        ESP_LOGI(TAG, "✅ VAD model found: %s", vad_model_name);
+    } else {
+        ESP_LOGW(TAG, "⚠️ No VAD model found in partition table");
     }
 
     if (ns_model_name != nullptr) {
         afe_config->ns_init = true;
         afe_config->ns_model_name = ns_model_name;
         afe_config->afe_ns_mode = AFE_NS_MODE_NET;
+        ESP_LOGI(TAG, "✅ NS model found: %s", ns_model_name);
     } else {
         afe_config->ns_init = false;
+        ESP_LOGW(TAG, "⚠️ No NS model found, noise suppression disabled");
     }
 
     afe_config->agc_init = false;
@@ -65,9 +72,18 @@ void AfeAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms, srm
 #ifdef CONFIG_USE_DEVICE_AEC
     afe_config->aec_init = true;
     afe_config->vad_init = false;
+    ESP_LOGI(TAG, "Device AEC enabled, VAD disabled");
 #else
     afe_config->aec_init = false;
-    afe_config->vad_init = true;
+    // ⚠️ CRITICAL: 只有在有有效 VAD 模型时才启用 VAD
+    // 如果没有模型但 vad_init = true，会导致 vad_trigger_detect 崩溃 (LoadProhibited)
+    if (vad_model_name != nullptr) {
+        afe_config->vad_init = true;
+        ESP_LOGI(TAG, "✅ VAD enabled with model");
+    } else {
+        afe_config->vad_init = false;
+        ESP_LOGW(TAG, "⚠️ VAD disabled (no model available)");
+    }
 #endif
 
     afe_iface_ = esp_afe_handle_from_config(afe_config);
