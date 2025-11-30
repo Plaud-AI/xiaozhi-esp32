@@ -252,6 +252,11 @@ void LottieAnimation::SetSize(int32_t width, int32_t height)
     lv_obj_center(canvas_obj_);
 }
 
+// ⚠️ DEBUG: 动画帧率配置 (ms)
+// 降低帧率可以减少 PSRAM 总线负载和 CPU 占用，避免与 WiFi 定时器冲突
+// 常用值: 66ms=15fps, 100ms=10fps, 125ms=8fps, 200ms=5fps
+#define LOTTIE_FRAME_PERIOD_MS 125  // 8fps - 大幅降低以测试稳定性
+
 void LottieAnimation::Play(bool loop)
 {
     if (!tvg_animation_ || !canvas_buf_) {
@@ -263,8 +268,8 @@ void LottieAnimation::Play(bool loop)
     is_playing_ = true;
     current_frame_ = 0.0f;
 
-    // 15FPS = 66ms (降低帧率以减少 PSRAM 总线负载，避免与音频任务冲突)
-    uint32_t period = (uint32_t)(66.0f / speed_);
+    // 使用配置的帧率周期，降低 PSRAM/DMA 总线负载
+    uint32_t period = (uint32_t)(LOTTIE_FRAME_PERIOD_MS / speed_);
     if (period < 1) period = 1;
 
     if (render_timer_) {
@@ -274,7 +279,8 @@ void LottieAnimation::Play(bool loop)
         render_timer_ = lv_timer_create(RenderTimerCallback, period, this);
     }
     
-    ESP_LOGI(TAG, "Animation Start: loop=%d", loop);
+    ESP_LOGI(TAG, "Animation Start: loop=%d, period=%dms (%.1ffps)", 
+             loop, (int)period, 1000.0f / period);
 }
 
 void LottieAnimation::Stop()
@@ -340,7 +346,7 @@ void LottieAnimation::SetSpeed(float speed) {
     if(speed > 0) {
         speed_ = speed; 
         if(is_playing_ && render_timer_) {
-             lv_timer_set_period(render_timer_, (uint32_t)(33.0f / speed_));
+             lv_timer_set_period(render_timer_, (uint32_t)(LOTTIE_FRAME_PERIOD_MS / speed_));
         }
     }
 }

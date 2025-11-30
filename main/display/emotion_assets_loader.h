@@ -15,6 +15,7 @@
 #include "esp_log.h"
 #include <string>
 #include <map>
+#include <cstring>  // for strlen
 
 namespace emotion {
 
@@ -145,6 +146,14 @@ public:
      * @param emotion 情感类型
      * @return LottieAnimation* 动画对象（失败返回 nullptr）
      */
+    // ⚠️ DEBUG: 使用简单备用动画（极简呼吸圆圈）
+    // 当启用此选项时，所有动画都使用这个简单的 JSON，用于测试是否是复杂动画导致的问题
+    // #define USE_SIMPLE_FALLBACK_ANIMATION
+    
+    // 极简 Lottie JSON：一个简单的呼吸圆圈（约 500 字节）
+    // 48帧，30fps，1.6秒循环
+    static constexpr const char* SIMPLE_FALLBACK_LOTTIE = R"({"v":"5.5.7","fr":30,"ip":0,"op":48,"w":160,"h":120,"assets":[],"layers":[{"ty":4,"nm":"c","sr":1,"ks":{"o":{"a":0,"k":100},"r":{"a":0,"k":0},"p":{"a":0,"k":[80,60,0]},"s":{"a":1,"k":[{"t":0,"s":[80,80,100],"i":{"x":[0.5],"y":[1]},"o":{"x":[0.5],"y":[0]}},{"t":24,"s":[100,100,100],"i":{"x":[0.5],"y":[1]},"o":{"x":[0.5],"y":[0]}},{"t":48,"s":[80,80,100]}]}},"shapes":[{"ty":"el","p":{"a":0,"k":[0,0]},"s":{"a":0,"k":[60,60]}},{"ty":"fl","c":{"a":0,"k":[0.3,0.6,1,1]},"o":{"a":0,"k":100}}],"ip":0,"op":48,"st":0}]})";
+    
     static lottie::LottieAnimation* CreateAnimationFromAssets(lv_obj_t* parent, 
                                                                EmotionState emotion,
                                                                int32_t width, int32_t height)
@@ -153,10 +162,18 @@ public:
         size_t size = 0;
         bool loop = false;
 
+#ifdef USE_SIMPLE_FALLBACK_ANIMATION
+        // 使用简单备用动画进行测试
+        ESP_LOGW(TAG, "⚠️ Using SIMPLE fallback animation for: %s", EmotionStateToString(emotion));
+        data = const_cast<char*>(SIMPLE_FALLBACK_LOTTIE);
+        size = strlen(SIMPLE_FALLBACK_LOTTIE);
+        loop = true;
+#else
         if (!GetAnimationData(emotion, data, size, loop)) {
             ESP_LOGE(TAG, "No animation data for: %s", EmotionStateToString(emotion));
             return nullptr;
         }
+#endif
 
         auto* anim = new lottie::LottieAnimation(parent);
         

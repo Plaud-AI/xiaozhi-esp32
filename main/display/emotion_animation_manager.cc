@@ -395,7 +395,8 @@ void EmotionAnimationManager::PlayNextInSequence() {
             },
             .arg = this,
             .dispatch_method = ESP_TIMER_TASK,
-            .name = "emotion_seq_timer"
+            .name = "emotion_seq_timer",
+            .skip_unhandled_events = true,  // ⚠️ 防止快速状态切换时回调堆积
         };
         
         if (esp_timer_create(&timer_args, &timer) == ESP_OK) {
@@ -430,7 +431,8 @@ void EmotionAnimationManager::ScheduleAutoReturn() {
         .callback = auto_return_timer_callback,
         .arg = this,
         .dispatch_method = ESP_TIMER_TASK,
-        .name = "auto_return_timer"
+        .name = "auto_return_timer",
+        .skip_unhandled_events = true,  // ⚠️ 防止快速状态切换时回调堆积
     };
 
     esp_timer_handle_t timer;

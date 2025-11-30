@@ -75,15 +75,18 @@ LcdDisplay::LcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_
     current_theme_ = LvglThemeManager::GetInstance().GetTheme(theme_name);
 
     // Create a timer to hide the preview image
+    // ⚠️ CRITICAL: skip_unhandled_events = true 防止定时器回调堆积
     esp_timer_create_args_t preview_timer_args = {
         .callback = [](void* arg) {
             LcdDisplay* display = static_cast<LcdDisplay*>(arg);
-            display->SetPreviewImage(nullptr);
+            if (display) {
+                display->SetPreviewImage(nullptr);
+            }
         },
         .arg = this,
         .dispatch_method = ESP_TIMER_TASK,
         .name = "preview_timer",
-        .skip_unhandled_events = false,
+        .skip_unhandled_events = true,  // ⚠️ 跳过未处理的事件
     };
     esp_timer_create(&preview_timer_args, &preview_timer_);
 }

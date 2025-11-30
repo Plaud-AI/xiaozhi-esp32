@@ -399,10 +399,22 @@ static void async_anim_load_timer_cb(lv_timer_t* timer) {
     ESP_LOGI(TAG, "Loading animation from assets: %s (%u bytes)", 
              EmotionStateToString(load_data->emotion), size);
 
-    // 创建新动画（在干净的父容器中）
+    // ⚠️ DEBUG: Canvas Buffer 缩放因子
+    // 缩小渲染尺寸以减少内存占用和 PSRAM/DMA 负载
+    // 1.0 = 原始尺寸 (320x240, 307KB), 0.5 = 半尺寸 (160x120, 77KB)
+    constexpr float CANVAS_SCALE_FACTOR = 0.5f;  // 50% 尺寸，减少 75% 内存
+    
+    int32_t render_width = static_cast<int32_t>(load_data->config.screen_width * CANVAS_SCALE_FACTOR);
+    int32_t render_height = static_cast<int32_t>(load_data->config.screen_height * CANVAS_SCALE_FACTOR);
+    
+    ESP_LOGI(TAG, "📐 Canvas size: %dx%d (scale: %.0f%%, memory: %dKB)", 
+             render_width, render_height, CANVAS_SCALE_FACTOR * 100,
+             (render_width * render_height * 4) / 1024);
+
+    // 创建新动画（使用缩小的 Canvas）
     auto* anim = EmotionAssetsLoader::CreateAnimationFromAssets(
         load_data->parent, load_data->emotion, 
-        load_data->config.screen_width, load_data->config.screen_height);
+        render_width, render_height);
     
     if (!anim) {
         ESP_LOGE(TAG, "Failed to create animation");
@@ -416,12 +428,20 @@ static void async_anim_load_timer_cb(lv_timer_t* timer) {
 
     // 设置位置和可见性
     lv_obj_t* lottie_obj = anim->GetObject();
-    lv_obj_set_pos(lottie_obj, 0, 0);
+    
+    // 缩小的 Canvas 居中显示（不拉伸）
+    // 计算居中位置
+    int32_t center_x = (load_data->config.screen_width - render_width) / 2;
+    int32_t center_y = (load_data->config.screen_height - render_height) / 2;
+    lv_obj_set_pos(lottie_obj, center_x, center_y);
+    
     lv_obj_clear_flag(lottie_obj, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(lottie_obj);
     
-    ESP_LOGI(TAG, "✅ Animation ready: size=%dx%d, pos=(0,0)", 
-             load_data->config.screen_width, load_data->config.screen_height);
+    ESP_LOGI(TAG, "✅ Animation ready: render=%dx%d, display=%dx%d, pos=(%d,%d)", 
+             render_width, render_height,
+             load_data->config.screen_width, load_data->config.screen_height,
+             center_x, center_y);
 
     // 开始播放
     anim->Play(loop);
@@ -437,9 +457,21 @@ static void async_anim_load_timer_cb(lv_timer_t* timer) {
     lv_timer_del(timer);
 }
 
+// ⚠️ DEBUG: 临时禁用 Lottie 动画以排查 WiFi 定时器崩溃问题
+// 如果禁用后不再崩溃，则确认 Lottie 动画是触发因素
+// #define DISABLE_LOTTIE_FOR_DEBUG  // 已禁用，使用低帧率 (8fps) 测试
+
 void EmotionCoordinator::PlayEmotionAnimation(EmotionState emotion)
 {
     ESP_LOGI(TAG, "PlayEmotionAnimation: %s", EmotionStateToString(emotion));
+
+#ifdef DISABLE_LOTTIE_FOR_DEBUG
+    ESP_LOGW(TAG, "⚠️ Lottie animation DISABLED for debugging (DISABLE_LOTTIE_FOR_DEBUG)");
+    // 更新状态但不播放动画
+    current_playing_emotion_ = emotion;
+    has_emotion_set_ = true;
+    return;
+#endif
 
     // 检查是否从 assets 分区加载
     bool use_assets = (config_.animation_base_path == "assets:");

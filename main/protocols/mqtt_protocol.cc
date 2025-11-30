@@ -26,6 +26,9 @@ MqttProtocol::MqttProtocol() {
             }
         },
         .arg = this,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "mqtt_reconnect",
+        .skip_unhandled_events = true,  // ⚠️ 防止重连时回调堆积
     };
     esp_timer_create(&reconnect_timer_args, &reconnect_timer_);
 }
