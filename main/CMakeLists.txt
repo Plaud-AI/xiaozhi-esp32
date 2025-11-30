@@ -773,6 +773,10 @@ function(build_default_assets_bin)
     # Collect animation files as dependencies
     file(GLOB ANIMATION_FILES "${PROJECT_DIR}/assets_source/anim/*.json")
     
+    # Ensure CMake re-runs if animation files are added/removed
+    # This forces reconfiguration when the directory content changes
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${PROJECT_DIR}/assets_source/anim")
+
     # Create custom command to build assets
     add_custom_command(
         OUTPUT ${GENERATED_ASSETS_BIN}
