@@ -798,7 +798,7 @@ void Application::SetDeviceState(DeviceState state) {
         case kDeviceStateIdle:
             ESP_LOGI(TAG, "Entering IDLE state, enabling wake word detection...");
             display->SetStatus(Lang::Strings::STANDBY);
-            display->SetEmotion("neutral");
+            display->SetEmotion("neutral");  // idle.json - 待机呼吸动画
             audio_service_.EnableVoiceProcessing(false);
             audio_service_.EnableWakeWordDetection(true);
             
@@ -815,14 +815,18 @@ void Application::SetDeviceState(DeviceState state) {
             
             ESP_LOGI(TAG, "IDLE state setup complete");
             break;
+        case kDeviceStateStarting:
+            display->SetStatus(Lang::Strings::INITIALIZING);
+            display->SetEmotion("connecting");  // loading.json - 启动加载动画
+            break;
         case kDeviceStateConnecting:
             display->SetStatus(Lang::Strings::CONNECTING);
-            display->SetEmotion("connecting");
+            display->SetEmotion("connecting");  // loading.json - 连接加载动画
             display->SetChatMessage("system", "");
             break;
         case kDeviceStateListening:
             display->SetStatus(Lang::Strings::LISTENING);
-            display->SetEmotion("listening");
+            display->SetEmotion("listening");  // listening.json - 倾听声波动画
 
             // Make sure the audio processor is running
             if (!audio_service_.IsAudioProcessorRunning()) {
@@ -850,7 +854,7 @@ void Application::SetDeviceState(DeviceState state) {
             break;
         case kDeviceStateSpeaking:
             display->SetStatus(Lang::Strings::SPEAKING);
-            display->SetEmotion("speaking");
+            display->SetEmotion("speaking");  // speaking.json - 说话嘴巴张合动画
 
             if (listening_mode_ != kListeningModeRealtime) {
                 audio_service_.EnableVoiceProcessing(false);
@@ -858,6 +862,26 @@ void Application::SetDeviceState(DeviceState state) {
                 audio_service_.EnableWakeWordDetection(audio_service_.IsAfeWakeWord());
             }
             audio_service_.ResetDecoder();
+            break;
+        case kDeviceStateWifiConfiguring:
+            display->SetStatus(Lang::Strings::CONFIGURING);
+            display->SetEmotion("surprised");  // settings.json - WiFi配网动画
+            break;
+        case kDeviceStateAudioTesting:
+            display->SetStatus("音频测试");
+            display->SetEmotion("surprised");  // settings.json - 音频测试动画
+            break;
+        case kDeviceStateUpgrading:
+            display->SetStatus(Lang::Strings::OTA_UPGRADE);
+            display->SetEmotion("thinking");  // updating.json - 升级下载动画
+            break;
+        case kDeviceStateActivating:
+            display->SetStatus(Lang::Strings::ACTIVATION);
+            display->SetEmotion("connecting");  // loading.json - 激活加载动画
+            break;
+        case kDeviceStateFatalError:
+            display->SetStatus(Lang::Strings::ERROR);
+            display->SetEmotion("sad");  // error.json - 错误动画
             break;
         default:
             // Do nothing
