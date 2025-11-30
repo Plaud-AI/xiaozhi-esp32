@@ -19,6 +19,7 @@
 #include <wifi_configuration_ap.h>
 #include <ssid_manager.h>
 #include "afsk_demod.h"
+#include <esp_bt.h>  // 用于 esp_bt_controller_disable()，解决 WiFi/BLE Coexistence 定时器崩溃问题
 
 static const char *TAG = "WifiBoard";
 
@@ -257,6 +258,19 @@ void WifiBoard::StartNetwork() {
     
     auto& provisioner = BLEWiFiProvisioner::GetInstance();
     provisioner.Stop();
+    
+    // ⚠️ CRITICAL: 彻底禁用 BLE 控制器以防止 Coexistence 定时器崩溃
+    // 当 WiFi Power Save 禁用时，Coexistence 逻辑 (pm_on_data_tx_done) 可能会在处理 WiFi TX 完成中断时
+    // 错误地尝试操作与 BLE 相关的定时器，导致 StoreProhibited in timer_insert。
+    // 通过 esp_bt_controller_disable() 彻底关闭 BLE 控制器，可以消除这种风险。
+    #ifdef CONFIG_BT_ENABLED
+    esp_err_t err = esp_bt_controller_disable();
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "✅ BLE 控制器已禁用 (System Stability Fix)");
+    } else {
+        ESP_LOGW(TAG, "⚠️ 无法禁用 BLE 控制器: %s", esp_err_to_name(err));
+    }
+    #endif
     
     // 禁用 WiFi Power Save 模式，确保 Lottie 播放时 WiFi 吞吐量和延迟稳定
     wifi_station.SetPowerSaveMode(false);

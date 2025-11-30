@@ -94,31 +94,32 @@ void AudioService::Initialize(AudioCodec* codec) {
         }
     });
 
-    esp_timer_create_args_t audio_power_timer_args = {
-        .callback = [](void* arg) {
-            AudioService* audio_service = (AudioService*)arg;
-            audio_service->CheckAndUpdateAudioPowerState();
-        },
-        .arg = this,
-        .dispatch_method = ESP_TIMER_TASK,
-        .name = "audio_power_timer",
-        .skip_unhandled_events = true,
-    };
-    esp_timer_create(&audio_power_timer_args, &audio_power_timer_);
+    // esp_timer_create_args_t audio_power_timer_args = {
+    //     .callback = [](void* arg) {
+    //         AudioService* audio_service = (AudioService*)arg;
+    //         audio_service->CheckAndUpdateAudioPowerState();
+    //     },
+    //     .arg = this,
+    //     .dispatch_method = ESP_TIMER_TASK,
+    //     .name = "audio_power_timer",
+    //     .skip_unhandled_events = true,
+    // };
+    // esp_timer_create(&audio_power_timer_args, &audio_power_timer_);
 }
 
 void AudioService::Start() {
     service_stopped_ = false;
     xEventGroupClearBits(event_group_, AS_EVENT_AUDIO_TESTING_RUNNING | AS_EVENT_WAKE_WORD_RUNNING | AS_EVENT_AUDIO_PROCESSOR_RUNNING);
 
-    esp_timer_start_periodic(audio_power_timer_, 1000000);
+    // esp_timer_start_periodic(audio_power_timer_, 1000000);
 
-    // Allocate stacks in PSRAM to save SRAM
-    // AudioInputTask: 16KB (was 6KB SRAM)
-    if (!audio_input_task_stack_) audio_input_task_stack_ = (StackType_t*)heap_caps_malloc(16384, MALLOC_CAP_SPIRAM);
+    // Allocate stacks
+    // AudioInputTask: 16KB (Move back to SRAM for stability/speed, we have enough SRAM now)
+    // PSRAM stack caused IWDT crashes during high bus load (ThorVG + WiFi)
+    if (!audio_input_task_stack_) audio_input_task_stack_ = (StackType_t*)heap_caps_malloc(16384, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (!audio_input_task_buffer_) audio_input_task_buffer_ = (StaticTask_t*)heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     
-    // AudioOutputTask: 8KB (was 4KB SRAM)
+    // AudioOutputTask: 8KB (Keep in PSRAM, less critical)
     if (!audio_output_task_stack_) audio_output_task_stack_ = (StackType_t*)heap_caps_malloc(8192, MALLOC_CAP_SPIRAM);
     if (!audio_output_task_buffer_) audio_output_task_buffer_ = (StaticTask_t*)heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 
@@ -181,7 +182,7 @@ void AudioService::Start() {
 }
 
 void AudioService::Stop() {
-    esp_timer_stop(audio_power_timer_);
+    // esp_timer_stop(audio_power_timer_);
     service_stopped_ = true;
     xEventGroupSetBits(event_group_, AS_EVENT_AUDIO_TESTING_RUNNING |
         AS_EVENT_WAKE_WORD_RUNNING |
@@ -197,8 +198,8 @@ void AudioService::Stop() {
 
 bool AudioService::ReadAudioData(std::vector<int16_t>& data, int sample_rate, int samples) {
     if (!codec_->input_enabled()) {
-        esp_timer_stop(audio_power_timer_);
-        esp_timer_start_periodic(audio_power_timer_, AUDIO_POWER_CHECK_INTERVAL_MS * 1000);
+        // esp_timer_stop(audio_power_timer_);
+        // esp_timer_start_periodic(audio_power_timer_, AUDIO_POWER_CHECK_INTERVAL_MS * 1000);
         codec_->EnableInput(true);
     }
 
@@ -368,8 +369,8 @@ void AudioService::AudioOutputTask() {
         lock.unlock();
 
         if (!codec_->output_enabled()) {
-            esp_timer_stop(audio_power_timer_);
-            esp_timer_start_periodic(audio_power_timer_, AUDIO_POWER_CHECK_INTERVAL_MS * 1000);
+            // esp_timer_stop(audio_power_timer_);
+            // esp_timer_start_periodic(audio_power_timer_, AUDIO_POWER_CHECK_INTERVAL_MS * 1000);
             codec_->EnableOutput(true);
         }
         codec_->OutputData(task->pcm);
@@ -674,8 +675,8 @@ void AudioService::PlaySound(const std::string_view& ogg) {
     
     if (!codec_->output_enabled()) {
         ESP_LOGI(TAG, "🔊 音频输出未启用，正在启用...");
-        esp_timer_stop(audio_power_timer_);
-        esp_timer_start_periodic(audio_power_timer_, AUDIO_POWER_CHECK_INTERVAL_MS * 1000);
+        // esp_timer_stop(audio_power_timer_);
+        // esp_timer_start_periodic(audio_power_timer_, AUDIO_POWER_CHECK_INTERVAL_MS * 1000);
         codec_->EnableOutput(true);
     }
 
@@ -796,9 +797,9 @@ void AudioService::CheckAndUpdateAudioPowerState() {
     if (output_elapsed > AUDIO_POWER_TIMEOUT_MS && codec_->output_enabled()) {
         codec_->EnableOutput(false);
     }
-    if (!codec_->input_enabled() && !codec_->output_enabled()) {
-        esp_timer_stop(audio_power_timer_);
-    }
+    // if (!codec_->input_enabled() && !codec_->output_enabled()) {
+    //     esp_timer_stop(audio_power_timer_);
+    // }
 }
 
 void AudioService::SetModelsList(srmodel_list_t* models_list) {

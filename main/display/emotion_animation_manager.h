@@ -277,6 +277,9 @@ private:
     bool auto_return_neutral_;                                      // 是否自动返回中性
     int auto_return_delay_ms_;                                      // 自动返回延迟
     void* auto_return_timer_;                                       // 自动返回定时器
+    
+    // 序列播放定时器（修复内存泄漏）
+    void* sequence_timer_;                                          // 序列播放定时器
 };
 
 } // namespace lottie

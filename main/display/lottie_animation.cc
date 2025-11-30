@@ -263,8 +263,8 @@ void LottieAnimation::Play(bool loop)
     is_playing_ = true;
     current_frame_ = 0.0f;
 
-    // 30FPS = 33ms
-    uint32_t period = (uint32_t)(33.0f / speed_);
+    // 15FPS = 66ms (降低帧率以减少 PSRAM 总线负载，避免与音频任务冲突)
+    uint32_t period = (uint32_t)(66.0f / speed_);
     if (period < 1) period = 1;
 
     if (render_timer_) {

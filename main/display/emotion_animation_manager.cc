@@ -44,6 +44,7 @@ bool EmotionAnimationManager::Init(AnimationManager* anim_mgr) {
     auto_return_neutral_ = false;
     auto_return_delay_ms_ = 5000;
     auto_return_timer_ = nullptr;
+    sequence_timer_ = nullptr;  // 初始化序列定时器
     initialized_ = true;
 
     ESP_LOGI(TAG, "EmotionAnimationManager initialized");
@@ -207,6 +208,15 @@ void EmotionAnimationManager::Stop() {
     current_sequence_.clear();
     CancelAutoReturn();
     
+    // 取消序列定时器（修复内存泄漏）
+    if (sequence_timer_) {
+        esp_timer_handle_t timer = static_cast<esp_timer_handle_t>(sequence_timer_);
+        esp_timer_stop(timer);
+        esp_timer_delete(timer);
+        sequence_timer_ = nullptr;
+        ESP_LOGD(TAG, "Sequence timer cancelled");
+    }
+    
     if (anim_mgr_) {
         anim_mgr_->Stop();
     }
@@ -340,13 +350,31 @@ void EmotionAnimationManager::PlayNextInSequence() {
 
     // 设置完成回调
     if (item.duration_ms > 0) {
-        // 使用定时器
+        // 先删除旧的序列定时器（修复内存泄漏）
+        if (sequence_timer_) {
+            esp_timer_handle_t old_timer = static_cast<esp_timer_handle_t>(sequence_timer_);
+            esp_timer_stop(old_timer);
+            esp_timer_delete(old_timer);
+            sequence_timer_ = nullptr;
+        }
+        
+        // 创建新定时器
         esp_timer_handle_t timer;
         esp_timer_create_args_t timer_args = {
             .callback = [](void* arg) {
                 EmotionAnimationManager* mgr = static_cast<EmotionAnimationManager*>(arg);
+                // 保存当前定时器句柄，以便在回调结束后删除
+                esp_timer_handle_t current_timer = static_cast<esp_timer_handle_t>(mgr->sequence_timer_);
+                mgr->sequence_timer_ = nullptr;  // 先清空，防止 PlayNextInSequence 中重复删除
+                
                 mgr->sequence_index_++;
                 mgr->PlayNextInSequence();
+                
+                // 回调结束后删除当前定时器（one-shot 定时器需要手动删除）
+                // 注意：此时 sequence_timer_ 可能已经指向新创建的定时器
+                if (current_timer) {
+                    esp_timer_delete(current_timer);
+                }
             },
             .arg = this,
             .dispatch_method = ESP_TIMER_TASK,
@@ -354,6 +382,7 @@ void EmotionAnimationManager::PlayNextInSequence() {
         };
         
         if (esp_timer_create(&timer_args, &timer) == ESP_OK) {
+            sequence_timer_ = timer;  // 保存定时器句柄
             esp_timer_start_once(timer, item.duration_ms * 1000);
         }
     } else {

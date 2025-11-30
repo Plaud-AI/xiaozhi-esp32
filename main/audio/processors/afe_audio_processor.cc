@@ -73,24 +73,23 @@ void AfeAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms, srm
     afe_iface_ = esp_afe_handle_from_config(afe_config);
     afe_data_ = afe_iface_->create_from_config(afe_config);
     
-    ESP_LOGI(TAG, "Creating AFE processor task (stack: 2560 bytes)...");
-    ESP_LOGI(TAG, "📊 Before AFE task creation: Free SRAM=%zu, Min SRAM ever=%zu", 
-             heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
-             heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    ESP_LOGI(TAG, "Creating AFE processor task (stack: 8192 bytes)...");
     
-    BaseType_t task_created = xTaskCreatePinnedToCore([](void* arg) {
-        auto this_ = (AfeAudioProcessor*)arg;
-        ESP_LOGI("AfeAudioProcessor", "🚀 AFE task started on core %d!", xPortGetCoreID());
-        this_->AudioProcessorTask();
-        vTaskDelete(NULL);
-    }, "afe_proc", 8192, this, 4, &task_handle_, 0);  // 栈 8KB，优先级 4，固定到 Core 0
-    
-    if (task_created != pdPASS) {
-        ESP_LOGE(TAG, "❌ CRITICAL: Failed to create AFE task!");
-        ESP_LOGE(TAG, "   Free SRAM: %zu bytes", heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-        ESP_LOGE(TAG, "   Free PSRAM: %zu bytes", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    // Allocate task stack in PSRAM to save SRAM
+    if (!task_stack_) task_stack_ = (StackType_t*)heap_caps_malloc(8192, MALLOC_CAP_SPIRAM);
+    if (!task_buffer_) task_buffer_ = (StaticTask_t*)heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+
+    if (task_stack_ && task_buffer_) {
+        task_handle_ = xTaskCreateStaticPinnedToCore([](void* arg) {
+            auto this_ = (AfeAudioProcessor*)arg;
+            ESP_LOGI("AfeAudioProcessor", "🚀 AFE task started on core %d!", xPortGetCoreID());
+            this_->AudioProcessorTask();
+            vTaskDelete(NULL);
+        }, "afe_proc", 8192, this, 4, task_stack_, task_buffer_, 0);
+        
+        ESP_LOGI(TAG, "✅ AFE task created (stack: 8192, core: 0, prio: 4, PSRAM)");
     } else {
-        ESP_LOGI(TAG, "✅ AFE task created (stack: 8192, core: 0, prio: 4)");
+        ESP_LOGE(TAG, "❌ Failed to allocate AFE task stack in PSRAM!");
     }
 }
 
@@ -99,6 +98,15 @@ AfeAudioProcessor::~AfeAudioProcessor() {
         afe_iface_->destroy(afe_data_);
     }
     vEventGroupDelete(event_group_);
+    
+    if (task_stack_) {
+        heap_caps_free(task_stack_);
+        task_stack_ = nullptr;
+    }
+    if (task_buffer_) {
+        heap_caps_free(task_buffer_);
+        task_buffer_ = nullptr;
+    }
 }
 
 size_t AfeAudioProcessor::GetFeedSize() {
