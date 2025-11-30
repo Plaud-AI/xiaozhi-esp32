@@ -716,6 +716,8 @@ void Application::OnWakeWordDetected() {
         // Encode and send the wake word data to the server
         ESP_LOGI(TAG, "📤 Sending wake word packets...");
         int packet_count = 0;
+        // Throttle the sending speed to avoid starving WiFi driver buffers
+        const int THROTTLE_DELAY_MS = 20; 
         while (auto packet = audio_service_.PopWakeWordPacket()) {
             packet_count++;
             ESP_LOGD(TAG, "  Sending packet #%d, size=%zu", packet_count, packet->payload.size());
@@ -723,6 +725,8 @@ void Application::OnWakeWordDetected() {
                 ESP_LOGE(TAG, "❌ Failed to send wake word packet #%d", packet_count);
                 break;
             }
+            // Wait a bit to let WiFi driver process the packet
+            vTaskDelay(pdMS_TO_TICKS(THROTTLE_DELAY_MS));
         }
         ESP_LOGI(TAG, "✅ Sent %d wake word packets", packet_count);
         

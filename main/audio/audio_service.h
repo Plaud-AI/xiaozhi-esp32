@@ -151,6 +151,14 @@ private:
     std::chrono::steady_clock::time_point last_input_time_;
     std::chrono::steady_clock::time_point last_output_time_;
 
+    // PSRAM Stack buffers for tasks
+    StackType_t* audio_input_task_stack_ = nullptr;
+    StaticTask_t* audio_input_task_buffer_ = nullptr;
+    StackType_t* audio_output_task_stack_ = nullptr;
+    StaticTask_t* audio_output_task_buffer_ = nullptr;
+    StackType_t* opus_codec_task_stack_ = nullptr;
+    StaticTask_t* opus_codec_task_buffer_ = nullptr;
+
     void AudioInputTask();
     void AudioOutputTask();
     void OpusCodecTask();

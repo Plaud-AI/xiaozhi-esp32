@@ -258,10 +258,15 @@ void WifiBoard::StartNetwork() {
     auto& provisioner = BLEWiFiProvisioner::GetInstance();
     provisioner.Stop();
     
+    // 禁用 WiFi Power Save 模式，确保 Lottie 播放时 WiFi 吞吐量和延迟稳定
+    wifi_station.SetPowerSaveMode(false);
+    ESP_LOGI(TAG, "✅ WiFi Power Save 模式已禁用 (Lottie 稳定性优化)");
+
     // 仅初始化用于 MAC 地址查询等功能，但不启动广播
-    if (provisioner.Initialize("ESP32-PLAUD")) {
-        ESP_LOGI(TAG, "✓ BLE服务已初始化（被动模式）");
-    }
+    // ⚠️ 优化：如果 WiFi 已连接，不要重新初始化 BLE Stack，避免内存开销和潜在崩溃
+    // if (provisioner.Initialize("ESP32-PLAUD")) {
+    //     ESP_LOGI(TAG, "✓ BLE服务已初始化（被动模式）");
+    // }
     
     ESP_LOGI(TAG, "========================================");
 }

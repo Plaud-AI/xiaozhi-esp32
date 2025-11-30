@@ -4,6 +4,7 @@
 #include "thorvg_capi.h"  // 🔑 ThorVG C API
 #include <string>
 #include <functional>
+#include <vector>
 
 namespace lottie {
 
@@ -11,6 +12,10 @@ namespace lottie {
  * @brief Lottie 动画播放器类
  * 
  * 封装 ThorVG Lottie 动画播放功能，提供简洁的 API
+ * 核心优化：
+ * 1. 使用 PSRAM 存储动画 JSON 数据，避免占用 SRAM
+ * 2. 使用 ThorVG 的非拷贝加载模式 (copy=false)，减少 50% 内存开销
+ * 3. 使用 PSRAM 作为渲染缓冲区 (Canvas Buffer)
  */
 class LottieAnimation {
 public:
@@ -151,19 +156,22 @@ private:
     Tvg_Animation* tvg_animation_;  // ThorVG 动画对象
     Tvg_Paint* tvg_picture_;        // ThorVG 图片对象（从动画获取）
     
-    // 渲染 buffer（ARGB8888）
-    uint32_t* canvas_buf_;          // ThorVG 渲染目标 buffer
+    // 内存资源 (全部放在 PSRAM)
+    uint32_t* canvas_buf_;          // 渲染画布 buffer (ARGB8888)
+    char* json_data_;               // 原始 JSON 数据 buffer (用于 LoadFromData copy=false)
+    size_t json_size_;              // 数据大小
+
+    // 动画状态
     int32_t width_;                 // 动画宽度
     int32_t height_;                // 动画高度
-    
-    // 动画控制
-    std::function<void()> complete_callback_;  // 完成回调
     bool is_playing_;               // 播放状态
     bool loop_;                     // 是否循环
     float total_frames_;            // 总帧数
     float current_frame_;           // 当前帧
     float speed_;                   // 播放速度（1.0 = 正常速度）
+    
     lv_timer_t* render_timer_;      // 渲染定时器（逐帧更新）
+    std::function<void()> complete_callback_;  // 完成回调
     
     // 私有方法
     bool AllocateCanvas(int32_t width, int32_t height);  // 分配 canvas buffer
@@ -173,4 +181,3 @@ private:
 };
 
 } // namespace lottie
-

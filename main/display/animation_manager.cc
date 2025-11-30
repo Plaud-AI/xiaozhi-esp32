@@ -1,7 +1,6 @@
 #include "animation_manager.h"
 #include "esp_log.h"
-
-//xxx
+#include "assets.h" // 🔑 Added for Assets fallback
 
 static const char* TAG = "AnimMgr";
 
@@ -184,9 +183,37 @@ void AnimationManager::LoadAndPlayAnimation(AnimState state)
     // 居中显示
     current_animation_->Center();
 
-    // 加载动画文件
-    if (!current_animation_->LoadFromFile(config.file_path.c_str())) {
-        ESP_LOGE(TAG, "Failed to load animation: %s", config.file_path.c_str());
+    // 尝试加载动画（优先文件，失败则尝试 Assets）
+    bool loaded = false;
+    
+    // 1. 尝试从文件系统加载
+    if (current_animation_->LoadFromFile(config.file_path.c_str())) {
+        loaded = true;
+    } else {
+        // 2. 尝试从 Assets (MMAP) 加载
+        // 从路径中提取文件名 (e.g. "/spiffs/emotions/neutral.json" -> "neutral.json")
+        std::string filename = config.file_path;
+        size_t last_slash = filename.find_last_of('/');
+        if (last_slash != std::string::npos) {
+            filename = filename.substr(last_slash + 1);
+        }
+        
+        void* data = nullptr;
+        size_t size = 0;
+        // 🔑 使用 Assets::GetInstance() 获取资源
+        if (::Assets::GetInstance().GetAssetData(filename, data, size)) {
+            ESP_LOGI(TAG, "Fallback: Loaded animation from Assets: %s (%zu bytes)", filename.c_str(), size);
+            if (current_animation_->LoadFromData(data, size)) {
+                loaded = true;
+            }
+        } else {
+            ESP_LOGW(TAG, "Fallback: Asset not found in MMAP: %s", filename.c_str());
+        }
+    }
+
+    if (!loaded) {
+        ESP_LOGE(TAG, "❌ Failed to load animation: %s (tried file and assets)", config.file_path.c_str());
+        // 可以考虑显示一个错误图标或默认动画
         return;
     }
 
@@ -227,4 +254,3 @@ void AnimationManager::OnAnimationComplete()
 }
 
 } // namespace lottie
-
