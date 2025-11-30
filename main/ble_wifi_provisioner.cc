@@ -196,12 +196,10 @@ void BLEWiFiProvisioner::Stop() {
     auto& ble_service = BluetoothService::GetInstance();
     ble_service.StopAdvertising();
     
-    // 恢复 WiFi 省电模式
-    wifi_mode_t mode;
-    if (esp_wifi_get_mode(&mode) == ESP_OK) {
-        ESP_LOGI(TAG, "恢复 WiFi 省电模式 (MIN_MODEM)...");
-        esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
-    }
+    // ⚠️ 不再在这里恢复 WiFi 省电模式
+    // WiFi Power Save 的控制权交给调用者 (WifiBoard::StartNetwork)
+    // 之前这里启用 WIFI_PS_MIN_MODEM 会与后续的 SetPowerSaveMode(false) 冲突，
+    // 并且可能导致 WiFi/BLE 共存定时器问题 (StoreProhibited in timer_insert)
     
     is_provisioning_ = false;
     ESP_LOGI(TAG, "✓ BLE WiFi Provisioner 已停止");

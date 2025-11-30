@@ -61,4 +61,32 @@ extern "C" void app_main(void)
     // Launch the application
     auto& app = Application::GetInstance();
     app.Start();
+    
+    // ⚠️ CRITICAL: Double-check and force disable BLE controller if WiFi is connected
+    // This is a failsafe to prevent coexistence crashes (StoreProhibited in timer_insert)
+    // if WifiBoard::StartNetwork failed to disable it for some reason.
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "🔒 Failsafe: Ensuring BLE Controller is Disabled");
+    ESP_LOGI(TAG, "========================================");
+    
+    // Wait a bit to ensure WiFi connection logic has settled
+    vTaskDelay(pdMS_TO_TICKS(2000));
+    
+    #ifdef CONFIG_BT_ENABLED
+    if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_ENABLED) {
+        ESP_LOGW(TAG, "⚠️ BLE Controller found ENABLED! Disabling now to prevent crash...");
+        // First stop the provisioner/NimBLE stack if running
+        BLEWiFiProvisioner::GetInstance().Stop();
+        // Then disable the controller hardware
+        ret = esp_bt_controller_disable();
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "✅ BLE Controller FORCIBLY disabled");
+        } else {
+            ESP_LOGE(TAG, "❌ Failed to disable BLE Controller: %s", esp_err_to_name(ret));
+        }
+    } else {
+        ESP_LOGI(TAG, "✅ BLE Controller is already disabled (Safe)");
+    }
+    #endif
+    ESP_LOGI(TAG, "========================================");
 }
