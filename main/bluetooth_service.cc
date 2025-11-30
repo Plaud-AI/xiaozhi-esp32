@@ -434,6 +434,59 @@ void BluetoothService::StopAdvertising() {
     ESP_LOGI(TAG, "BLE广播已停止");
 }
 
+void BluetoothService::Deinitialize() {
+    if (!initialized_) {
+        ESP_LOGD(TAG, "BLE服务未初始化，跳过反初始化");
+        return;
+    }
+
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "🔧 正在停止 BLE 协议栈...");
+    ESP_LOGI(TAG, "========================================");
+
+    // 步骤1: 停止 BLE 广播
+    if (ble_gap_adv_active()) {
+        ble_gap_adv_stop();
+        ESP_LOGI(TAG, "✅ 步骤 1/3: BLE 广播已停止");
+    } else {
+        ESP_LOGI(TAG, "✅ 步骤 1/3: BLE 广播未在运行");
+    }
+
+    // 步骤2: 断开所有连接
+    if (connected_) {
+        ble_gap_terminate(conn_handle_, BLE_ERR_REM_USER_CONN_TERM);
+        vTaskDelay(pdMS_TO_TICKS(100));  // 等待断开完成
+        connected_ = false;
+        ESP_LOGI(TAG, "✅ 步骤 2/3: BLE 连接已断开");
+    } else {
+        ESP_LOGI(TAG, "✅ 步骤 2/3: 无活动连接");
+    }
+
+    // 步骤3: 停止 NimBLE Host 任务
+    // 注意: nimble_port_stop() 会通知 NimBLE Host 任务停止
+    // 之后 nimble_port_deinit() 会清理资源
+    int rc = nimble_port_stop();
+    if (rc == 0) {
+        ESP_LOGI(TAG, "✅ 步骤 3/3: NimBLE 任务停止请求已发送");
+        
+        // 等待 NimBLE 任务完全停止
+        vTaskDelay(pdMS_TO_TICKS(100));
+        
+        // 取消初始化 NimBLE port
+        nimble_port_deinit();
+        ESP_LOGI(TAG, "✅ NimBLE port 已取消初始化");
+    } else {
+        ESP_LOGW(TAG, "⚠️ 步骤 3/3: NimBLE 任务停止失败 (rc=%d)", rc);
+    }
+
+    initialized_ = false;
+    
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "✅ BLE 协议栈已完全停止");
+    ESP_LOGI(TAG, "   可以安全禁用 BLE 控制器");
+    ESP_LOGI(TAG, "========================================");
+}
+
 bool BluetoothService::SendData(const std::string& data) {
     if (!connected_) {
         ESP_LOGW(TAG, "未连接，无法发送数据");

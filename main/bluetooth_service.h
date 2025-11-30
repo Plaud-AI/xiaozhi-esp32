@@ -46,6 +46,18 @@ public:
     void StopAdvertising();
 
     /**
+     * @brief 完全停止 BLE 协议栈（用于 WiFi 连接成功后释放资源）
+     * 
+     * 按正确顺序停止:
+     * 1. 停止 BLE 广播
+     * 2. 停止 NimBLE Host 任务
+     * 3. 取消初始化 NimBLE port
+     * 
+     * 注意: 调用此方法后，需要重启设备才能再次使用 BLE
+     */
+    void Deinitialize();
+
+    /**
      * @brief 发送数据到已连接的客户端（自动分包）
      * @param data 要发送的数据
      * @return true 发送成功，false 发送失败

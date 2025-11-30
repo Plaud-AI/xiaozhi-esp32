@@ -631,6 +631,12 @@ void Application::Schedule(std::function<void()> callback) {
 // If other tasks need to access the websocket or chat state,
 // they should use Schedule to call this function
 void Application::MainEventLoop() {
+    // 缓存 Board 引用，避免在循环中重复调用 GetInstance()
+    // 这可以避免 C++ 静态变量 guard 的潜在竞态问题
+    auto& board = Board::GetInstance();
+    auto led = board.GetLed();
+    auto display = board.GetDisplay();
+    
     while (true) {
         auto bits = xEventGroupWaitBits(event_group_, MAIN_EVENT_SCHEDULE |
             MAIN_EVENT_SEND_AUDIO |
@@ -658,7 +664,6 @@ void Application::MainEventLoop() {
 
         if (bits & MAIN_EVENT_VAD_CHANGE) {
             if (device_state_ == kDeviceStateListening) {
-                auto led = Board::GetInstance().GetLed();
                 led->OnStateChanged();
             }
         }
@@ -674,7 +679,6 @@ void Application::MainEventLoop() {
 
         if (bits & MAIN_EVENT_CLOCK_TICK) {
             clock_ticks_++;
-            auto display = Board::GetInstance().GetDisplay();
             display->UpdateStatusBar();
         
             // Print the debug info every 10 seconds

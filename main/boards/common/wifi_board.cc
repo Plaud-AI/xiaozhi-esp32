@@ -6,6 +6,7 @@
 #include "settings.h"
 #include "assets/lang_config.h"
 #include "ble_wifi_provisioner.h"
+#include "bluetooth_service.h"  // 用于 BluetoothService::Deinitialize()
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -248,22 +249,29 @@ void WifiBoard::StartNetwork() {
         return;
     }
     
-    // ====== WiFi连接成功后，STOP BLE 服务以确保稳定性 (Coexistence) ======
-    // ⚠️ CRITICAL: 在 ESP32-S3 上，如果同时运行 BLE 广播、WiFi 音频传输和 Lottie 动画渲染，
-    // 会导致 BLE 控制器崩溃 (rwble.c 508 assert)。
-    // 因此，当 WiFi 连接成功且设备进入正常工作模式时，我们必须禁用 BLE 广播。
+    // ====== WiFi连接成功后，完全停止 BLE 协议栈以确保稳定性 (Coexistence) ======
+    // ⚠️ CRITICAL: 在 ESP32-S3 上，WiFi 和 BLE 共存可能导致定时器冲突崩溃。
+    // 必须按正确顺序停止:
+    // 1. 停止 BLE WiFi Provisioner (停止广播)
+    // 2. 完全停止 NimBLE 协议栈 (nimble_port_stop + nimble_port_deinit)
+    // 3. 禁用 BLE 控制器 (esp_bt_controller_disable)
+    // 4. 禁用 WiFi Power Save
     ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "✅ WiFi 连接成功，停止 BLE 服务以确保系统稳定");
+    ESP_LOGI(TAG, "✅ WiFi 连接成功，正在完全停止 BLE 协议栈...");
     ESP_LOGI(TAG, "========================================");
     
+    // 步骤1: 停止 BLE WiFi Provisioner
     auto& provisioner = BLEWiFiProvisioner::GetInstance();
     provisioner.Stop();
     
-    // ⚠️ CRITICAL: 彻底禁用 BLE 控制器以防止 Coexistence 定时器崩溃
-    // 当 WiFi Power Save 禁用时，Coexistence 逻辑 (pm_on_data_tx_done) 可能会在处理 WiFi TX 完成中断时
-    // 错误地尝试操作与 BLE 相关的定时器，导致 StoreProhibited in timer_insert。
-    // 通过 esp_bt_controller_disable() 彻底关闭 BLE 控制器，可以消除这种风险。
+    // 步骤2: 完全停止 NimBLE 协议栈 (关键！防止 WiFi/BLE 共存定时器崩溃)
+    // 直接调用 esp_bt_controller_disable() 而不停止 NimBLE Host 会导致内部定时器状态不一致
+    auto& ble_service = BluetoothService::GetInstance();
+    ble_service.Deinitialize();
+    
+    // 步骤3: 禁用 BLE 控制器
     #ifdef CONFIG_BT_ENABLED
+    vTaskDelay(pdMS_TO_TICKS(50));  // 等待 NimBLE 完全清理
     esp_err_t err = esp_bt_controller_disable();
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "✅ BLE 控制器已禁用 (System Stability Fix)");
@@ -272,7 +280,7 @@ void WifiBoard::StartNetwork() {
     }
     #endif
     
-    // 禁用 WiFi Power Save 模式，确保 Lottie 播放时 WiFi 吞吐量和延迟稳定
+    // 步骤4: 禁用 WiFi Power Save 模式
     wifi_station.SetPowerSaveMode(false);
     ESP_LOGI(TAG, "✅ WiFi Power Save 模式已禁用 (Lottie 稳定性优化)");
 

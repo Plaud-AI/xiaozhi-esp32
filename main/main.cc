@@ -12,6 +12,7 @@
 #include "application.h"
 #include "system_info.h"
 #include "ble_wifi_provisioner.h"
+#include "bluetooth_service.h"  // 用于 BluetoothService::Deinitialize()
 
 #define TAG "main"
 
@@ -77,6 +78,9 @@ extern "C" void app_main(void)
         ESP_LOGW(TAG, "⚠️ BLE Controller found ENABLED! Disabling now to prevent crash...");
         // First stop the provisioner/NimBLE stack if running
         BLEWiFiProvisioner::GetInstance().Stop();
+        // Properly deinitialize NimBLE stack to clean up internal timers
+        BluetoothService::GetInstance().Deinitialize();
+        vTaskDelay(pdMS_TO_TICKS(50));  // Wait for NimBLE cleanup
         // Then disable the controller hardware
         ret = esp_bt_controller_disable();
         if (ret == ESP_OK) {
