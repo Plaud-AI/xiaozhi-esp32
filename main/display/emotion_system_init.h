@@ -92,3 +92,4 @@ inline bool QuickInitEmotionSystem(Display* display)
 
 } // namespace emotion
 
+

@@ -63,3 +63,4 @@ echo "   3. 烧录动画: python3 \$IDF_PATH/components/spiffs/spiffsgen.py 1048
 echo "   4. 查看日志: idf.py monitor"
 echo ""
 
+

@@ -150,3 +150,4 @@ echo ""
 echo "3. 设备应该自动显示 Lottie 动画"
 echo ""
 
+
