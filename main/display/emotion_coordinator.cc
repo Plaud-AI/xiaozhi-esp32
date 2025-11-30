@@ -387,17 +387,32 @@ static void async_anim_load_timer_cb(lv_timer_t* timer) {
     void* data = nullptr;
     size_t size = 0;
     bool loop = false;
+    EmotionState actual_emotion = load_data->emotion;
 
-    if (!EmotionAssetsLoader::GetAnimationData(load_data->emotion, data, size, loop)) {
-        ESP_LOGW(TAG, "No animation data found for: %s", 
-                 EmotionStateToString(load_data->emotion));
-        delete load_data;
-        lv_timer_del(timer);
-        return;
+    if (!EmotionAssetsLoader::GetAnimationData(actual_emotion, data, size, loop)) {
+        // 尝试使用备用动画
+        // speaking/thinking -> happy, connecting -> calm, 其他 -> calm
+        EmotionState fallback = EmotionState::CALM;
+        if (actual_emotion == EmotionState::SPEAKING || 
+            actual_emotion == EmotionState::THINKING) {
+            fallback = EmotionState::HAPPY;
+        }
+        
+        ESP_LOGW(TAG, "No animation for: %s, trying fallback: %s", 
+                 EmotionStateToString(actual_emotion),
+                 EmotionStateToString(fallback));
+        
+        if (!EmotionAssetsLoader::GetAnimationData(fallback, data, size, loop)) {
+            ESP_LOGE(TAG, "Fallback animation also not found!");
+            delete load_data;
+            lv_timer_del(timer);
+            return;
+        }
+        actual_emotion = fallback;
     }
 
     ESP_LOGI(TAG, "Loading animation from assets: %s (%u bytes)", 
-             EmotionStateToString(load_data->emotion), size);
+             EmotionStateToString(actual_emotion), size);
 
     // ⚠️ DEBUG: Canvas Buffer 缩放因子
     // 缩小渲染尺寸以减少内存占用和 PSRAM/DMA 负载
@@ -411,9 +426,9 @@ static void async_anim_load_timer_cb(lv_timer_t* timer) {
              render_width, render_height, CANVAS_SCALE_FACTOR * 100,
              (render_width * render_height * 4) / 1024);
 
-    // 创建新动画（使用缩小的 Canvas）
+    // 创建新动画（使用缩小的 Canvas，使用实际加载的动画类型）
     auto* anim = EmotionAssetsLoader::CreateAnimationFromAssets(
-        load_data->parent, load_data->emotion, 
+        load_data->parent, actual_emotion, 
         render_width, render_height);
     
     if (!anim) {
