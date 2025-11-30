@@ -20,10 +20,8 @@ EmotionDisplay* CreateSpiLcdEmotionDisplay(
 
     ESP_LOGI(TAG, "Initialize LVGL port");
     lvgl_port_cfg_t port_cfg = ESP_LVGL_PORT_INIT_CONFIG();
-    port_cfg.task_priority = 1;
-#if CONFIG_SOC_CPU_CORES_NUM > 1
-    port_cfg.task_affinity = 1;
-#endif
+    // 优化任务调度：优先级 3，不固定 CPU
+    port_cfg.task_priority = 3;
     lvgl_port_init(&port_cfg);
 
     ESP_LOGI(TAG, "Adding LCD display");
@@ -80,7 +78,8 @@ EmotionDisplay* CreateRgbLcdEmotionDisplay(
 
     ESP_LOGI(TAG, "Initialize LVGL port");
     lvgl_port_cfg_t port_cfg = ESP_LVGL_PORT_INIT_CONFIG();
-    port_cfg.task_priority = 1;
+    // 优化任务调度：优先级 3，不固定 CPU
+    port_cfg.task_priority = 3;
     port_cfg.timer_period_ms = 50;
     lvgl_port_init(&port_cfg);
 

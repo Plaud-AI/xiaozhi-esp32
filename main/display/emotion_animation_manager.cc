@@ -46,6 +46,7 @@ bool EmotionAnimationManager::Init(AnimationManager* anim_mgr) {
     auto_return_timer_ = nullptr;
     sequence_timer_ = nullptr;           // 初始化序列定时器
     pending_delete_timer_ = nullptr;     // 初始化待删除定时器
+    in_timer_callback_ = false;          // 初始化回调标志
     initialized_ = true;
 
     ESP_LOGI(TAG, "EmotionAnimationManager initialized");
@@ -209,8 +210,8 @@ void EmotionAnimationManager::Stop() {
     current_sequence_.clear();
     CancelAutoReturn();
     
-    // 取消序列定时器（修复内存泄漏）
-    if (sequence_timer_) {
+    // 取消序列定时器（只在非回调期间删除）
+    if (!in_timer_callback_ && sequence_timer_) {
         esp_timer_handle_t timer = static_cast<esp_timer_handle_t>(sequence_timer_);
         esp_timer_stop(timer);
         esp_timer_delete(timer);
@@ -218,8 +219,8 @@ void EmotionAnimationManager::Stop() {
         ESP_LOGD(TAG, "Sequence timer cancelled");
     }
     
-    // 清理待删除的定时器
-    if (pending_delete_timer_) {
+    // 清理待删除的定时器（只在非回调期间删除）
+    if (!in_timer_callback_ && pending_delete_timer_) {
         esp_timer_delete(static_cast<esp_timer_handle_t>(pending_delete_timer_));
         pending_delete_timer_ = nullptr;
     }
@@ -324,9 +325,9 @@ void EmotionAnimationManager::PlayNextInSequence() {
         return;
     }
     
-    // ⚠️ CRITICAL: 删除待删除的旧定时器（延迟删除机制）
-    // 这个定时器是在它的回调中被标记为待删除的，现在可以安全删除
-    if (pending_delete_timer_) {
+    // ⚠️ CRITICAL: 只在非回调期间删除待删除的定时器
+    // 在回调期间删除定时器会导致 ESP-IDF 定时器链表损坏 (StoreProhibited)
+    if (!in_timer_callback_ && pending_delete_timer_) {
         esp_timer_delete(static_cast<esp_timer_handle_t>(pending_delete_timer_));
         pending_delete_timer_ = nullptr;
     }
@@ -377,13 +378,20 @@ void EmotionAnimationManager::PlayNextInSequence() {
         esp_timer_create_args_t timer_args = {
             .callback = [](void* arg) {
                 EmotionAnimationManager* mgr = static_cast<EmotionAnimationManager*>(arg);
-                // ⚠️ CRITICAL: 不能在回调中删除定时器！
-                // 将当前定时器移动到待删除队列，稍后安全删除
+                
+                // ⚠️ CRITICAL: 标记进入回调期间
+                mgr->in_timer_callback_ = true;
+                
+                // 将当前定时器移动到待删除队列
+                // 注意：不能在回调期间删除！会在回调结束后、下次调用时删除
                 mgr->pending_delete_timer_ = mgr->sequence_timer_;
                 mgr->sequence_timer_ = nullptr;
                 
                 mgr->sequence_index_++;
-                mgr->PlayNextInSequence();  // 这里会安全删除 pending_delete_timer_
+                mgr->PlayNextInSequence();
+                
+                // 标记退出回调期间
+                mgr->in_timer_callback_ = false;
             },
             .arg = this,
             .dispatch_method = ESP_TIMER_TASK,

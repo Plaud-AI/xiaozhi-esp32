@@ -65,10 +65,11 @@ void LcdEmotionDisplay::InitializeLvgl(int offset_x, int offset_y,
 
     ESP_LOGI(TAG, "Initialize LVGL port");
     lvgl_port_cfg_t port_cfg = ESP_LVGL_PORT_INIT_CONFIG();
-    port_cfg.task_priority = 1;
-#if CONFIG_SOC_CPU_CORES_NUM > 1
-    port_cfg.task_affinity = 1;
-#endif
+    // 优化任务调度：
+    // - 优先级 3：高于 IDLE(0) 和 opus_codec(2)，低于 audio 任务(4-8)
+    // - 不固定 CPU：让调度器灵活分配，避免阻塞 Core 1 的 IDLE 任务
+    port_cfg.task_priority = 3;
+    // task_affinity 默认为 -1 (不固定)，无需设置
     lvgl_port_init(&port_cfg);
 
     ESP_LOGI(TAG, "Adding LCD display");

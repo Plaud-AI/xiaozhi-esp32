@@ -281,6 +281,7 @@ private:
     // 序列播放定时器（修复内存泄漏）
     void* sequence_timer_;                                          // 序列播放定时器
     void* pending_delete_timer_;                                    // 待删除的定时器（延迟删除机制）
+    bool in_timer_callback_;                                        // 是否在定时器回调中
 };
 
 } // namespace lottie
