@@ -51,11 +51,12 @@ public:
         
         // 从 assets 获取数据
         if (!assets.GetAssetData(asset_name, data_ptr, data_size)) {
-            ESP_LOGW(TAG, "Asset not found: %s", asset_name.c_str());
+            ESP_LOGD(TAG, "  ❌ Asset not found: %s", asset_name.c_str());
             return false;
         }
 
-        ESP_LOGI(TAG, "Loaded asset: %s (%u bytes)", asset_name.c_str(), data_size);
+        ESP_LOGI(TAG, "  ✅ Loaded: %s (%u bytes) -> %s", 
+                 asset_name.c_str(), data_size, EmotionStateToString(emotion));
 
         // 缓存数据信息
         AnimationDataCache cache;
@@ -88,16 +89,20 @@ public:
             bool loop;
         };
 
+        // 🔧 资源名称必须与 assets 分区中的文件名完全匹配
+        // assets_source/anim/ 目录下的 .json 文件会被打包到 assets 分区
+        // 可用动画: calm, champion, disdain, disgust, excited, happy, 
+        //          listening, sad, singing, sleepy, surprised
         EmotionMapping mappings[] = {
-            {EmotionState::HAPPY,      "happy",      true},   // 循环播放，持续展示
-            {EmotionState::SAD,        "sad",        true},   // 循环播放，持续展示
-            {EmotionState::EXCITED,    "excited",    true},   // 循环播放，持续展示
-            {EmotionState::CALM,       "calm",       true},   // 循环播放，持续展示
-            {EmotionState::SLEEPY,     "sleepy",     true},   // 循环播放，持续展示
-            {EmotionState::SURPRISED,  "surprised",  true},   // 循环播放，持续展示
-            {EmotionState::LISTENING,  "listening",  true},   // 循环播放
-            {EmotionState::THINKING,   "thinking",   true},   // 循环播放
-            {EmotionState::SPEAKING,   "speaking",   true},   // 循环播放
+            {EmotionState::HAPPY,      "happy.json",      true},   // 循环播放，持续展示
+            {EmotionState::SAD,        "sad.json",        true},   // 循环播放，持续展示
+            {EmotionState::EXCITED,    "excited.json",    true},   // 循环播放，持续展示
+            {EmotionState::CALM,       "calm.json",       true},   // 循环播放，持续展示
+            {EmotionState::SLEEPY,     "sleepy.json",     true},   // 循环播放，持续展示
+            {EmotionState::SURPRISED,  "surprised.json",  true},   // 循环播放，持续展示
+            {EmotionState::LISTENING,  "listening.json",  true},   // 循环播放
+            {EmotionState::THINKING,   "calm.json",       true},   // 🔄 使用 calm 作为 thinking 备用
+            {EmotionState::SPEAKING,   "singing.json",    true},   // 🎵 使用 singing 作为 speaking 动画
         };
 
         int count = 0;
@@ -223,34 +228,44 @@ inline bool InitEmotionSystemFromAssets(Display* display,
                                         int width = 240,
                                         int height = 240)
 {
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "🎭 Initializing Emotion System from Assets");
+    ESP_LOGI(TAG, "========================================");
+    
     if (!display) {
-        ESP_LOGW(TAG, "Display is null");
+        ESP_LOGW(TAG, "❌ Display is null");
         return false;
     }
-
-    ESP_LOGI(TAG, "Initializing emotion system from Assets partition");
 
     // 检查 Assets 是否可用
     auto& assets = Assets::GetInstance();
+    ESP_LOGI(TAG, "Checking Assets partition...");
+    
     if (!assets.partition_valid()) {
-        ESP_LOGW(TAG, "Assets partition not valid, skipping emotion system");
+        ESP_LOGW(TAG, "❌ Assets partition not valid, skipping emotion system");
+        ESP_LOGW(TAG, "   Hint: 请确保 assets 分区已正确烧录");
         return false;
     }
+    ESP_LOGI(TAG, "✅ Assets partition is valid");
 
     // 获取 LVGL 屏幕对象
     lv_obj_t* screen = lv_scr_act();
     if (!screen) {
-        ESP_LOGE(TAG, "LVGL screen not available");
+        ESP_LOGE(TAG, "❌ LVGL screen not available");
         return false;
     }
+    ESP_LOGI(TAG, "✅ LVGL screen available");
 
     // 🔧 关键修复：先注册动画，再初始化协调器
     // 1. 从 assets 分区注册动画
+    ESP_LOGI(TAG, "Loading Lottie animations from assets...");
     int count = EmotionAssetsLoader::RegisterStandardAnimationsFromAssets();
     ESP_LOGI(TAG, "Registered %d animations from assets partition", count);
 
     if (count == 0) {
-        ESP_LOGW(TAG, "No animations found in assets, emotion system may not work");
+        ESP_LOGW(TAG, "⚠️  No animations found in assets!");
+        ESP_LOGW(TAG, "   检查 assets_source/anim/ 目录是否包含 .json 动画文件");
+        ESP_LOGW(TAG, "   运行 'idf.py build flash' 重新构建并烧录");
         return false;
     }
 
@@ -268,11 +283,15 @@ inline bool InitEmotionSystemFromAssets(Display* display,
     config.auto_restore_delay_ms = 5000;
 
     if (!coordinator.Init(config, screen)) {
-        ESP_LOGE(TAG, "Failed to initialize emotion coordinator");
+        ESP_LOGE(TAG, "❌ Failed to initialize emotion coordinator");
         return false;
     }
 
-    ESP_LOGI(TAG, "Emotion system initialized from Assets successfully!");
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "✅ Emotion System Ready!");
+    ESP_LOGI(TAG, "   Loaded %d animations", count);
+    ESP_LOGI(TAG, "   Screen: %dx%d", width, height);
+    ESP_LOGI(TAG, "========================================");
     
     return true;
 }

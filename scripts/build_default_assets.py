@@ -254,7 +254,11 @@ def process_emoji_collection(emoji_collection_dir, assets_dir):
 
 
 def process_extra_files(extra_files_dir, assets_dir):
-    """Process default_assets_extra_files parameter"""
+    """Process default_assets_extra_files parameter
+    
+    处理额外资源文件，包括 Lottie 动画文件(.json)
+    anim/ 子目录中的动画会被平铺到 assets 目录的根目录
+    """
     if not extra_files_dir:
         return []
     
@@ -263,15 +267,29 @@ def process_extra_files(extra_files_dir, assets_dir):
         return []
     
     extra_files_list = []
+    lottie_count = 0
     
     # Copy each file from input directory to build/assets directory
     for root, dirs, files in os.walk(extra_files_dir):
+        # 获取相对于 extra_files_dir 的子目录名
+        rel_dir = os.path.relpath(root, extra_files_dir)
+        is_anim_dir = rel_dir.startswith('anim') or rel_dir == 'anim'
+        
         for file in files:
-            # Skip hidden files and directories
+            # Skip hidden files, README, and non-extension files in anim dir
             if file.startswith('.'):
                 continue
+            if file.lower() == 'readme.md':
+                continue
+            
+            # 在 anim 目录中，只处理 .json 文件
+            if is_anim_dir:
+                if not file.endswith('.json'):
+                    print(f"  Skipping non-JSON file in anim/: {file}")
+                    continue
+                lottie_count += 1
                 
-            # Copy file
+            # Copy file (平铺到 assets 根目录)
             src_file = os.path.join(root, file)
             dst_file = os.path.join(assets_dir, file)
             if copy_file(src_file, dst_file):
@@ -279,6 +297,8 @@ def process_extra_files(extra_files_dir, assets_dir):
     
     if extra_files_list:
         print(f"Processed {len(extra_files_list)} extra files from: {extra_files_dir}")
+        if lottie_count > 0:
+            print(f"  🎭 Including {lottie_count} Lottie animation(s)")
     
     return extra_files_list
 
