@@ -136,11 +136,12 @@ void AudioService::Start() {
 #if CONFIG_USE_AUDIO_PROCESSOR
     /* Start the audio input task */
     if (audio_input_task_stack_ && audio_input_task_buffer_) {
+        // Move AudioInputTask to Core 1 to offload Core 0 (WiFi/BLE/System Timers)
         audio_input_task_handle_ = xTaskCreateStaticPinnedToCore([](void* arg) {
             AudioService* audio_service = (AudioService*)arg;
             audio_service->AudioInputTask();
             vTaskDelete(NULL);
-        }, "audio_input", 16384, this, 8, audio_input_task_stack_, audio_input_task_buffer_, 0);
+        }, "audio_input", 16384, this, 8, audio_input_task_stack_, audio_input_task_buffer_, 1);
     }
 
     /* Start the audio output task */

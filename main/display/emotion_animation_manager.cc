@@ -44,7 +44,8 @@ bool EmotionAnimationManager::Init(AnimationManager* anim_mgr) {
     auto_return_neutral_ = false;
     auto_return_delay_ms_ = 5000;
     auto_return_timer_ = nullptr;
-    sequence_timer_ = nullptr;  // 初始化序列定时器
+    sequence_timer_ = nullptr;           // 初始化序列定时器
+    pending_delete_timer_ = nullptr;     // 初始化待删除定时器
     initialized_ = true;
 
     ESP_LOGI(TAG, "EmotionAnimationManager initialized");
@@ -217,6 +218,12 @@ void EmotionAnimationManager::Stop() {
         ESP_LOGD(TAG, "Sequence timer cancelled");
     }
     
+    // 清理待删除的定时器
+    if (pending_delete_timer_) {
+        esp_timer_delete(static_cast<esp_timer_handle_t>(pending_delete_timer_));
+        pending_delete_timer_ = nullptr;
+    }
+    
     if (anim_mgr_) {
         anim_mgr_->Stop();
     }
@@ -316,6 +323,13 @@ void EmotionAnimationManager::PlayNextInSequence() {
     if (!playing_sequence_ || current_sequence_.empty()) {
         return;
     }
+    
+    // ⚠️ CRITICAL: 删除待删除的旧定时器（延迟删除机制）
+    // 这个定时器是在它的回调中被标记为待删除的，现在可以安全删除
+    if (pending_delete_timer_) {
+        esp_timer_delete(static_cast<esp_timer_handle_t>(pending_delete_timer_));
+        pending_delete_timer_ = nullptr;
+    }
 
     // 检查是否完成
     if (sequence_index_ >= current_sequence_.size()) {
@@ -350,7 +364,7 @@ void EmotionAnimationManager::PlayNextInSequence() {
 
     // 设置完成回调
     if (item.duration_ms > 0) {
-        // 先删除旧的序列定时器（修复内存泄漏）
+        // 如果存在旧的定时器（非回调调用的情况），先删除它
         if (sequence_timer_) {
             esp_timer_handle_t old_timer = static_cast<esp_timer_handle_t>(sequence_timer_);
             esp_timer_stop(old_timer);
@@ -363,18 +377,13 @@ void EmotionAnimationManager::PlayNextInSequence() {
         esp_timer_create_args_t timer_args = {
             .callback = [](void* arg) {
                 EmotionAnimationManager* mgr = static_cast<EmotionAnimationManager*>(arg);
-                // 保存当前定时器句柄，以便在回调结束后删除
-                esp_timer_handle_t current_timer = static_cast<esp_timer_handle_t>(mgr->sequence_timer_);
-                mgr->sequence_timer_ = nullptr;  // 先清空，防止 PlayNextInSequence 中重复删除
+                // ⚠️ CRITICAL: 不能在回调中删除定时器！
+                // 将当前定时器移动到待删除队列，稍后安全删除
+                mgr->pending_delete_timer_ = mgr->sequence_timer_;
+                mgr->sequence_timer_ = nullptr;
                 
                 mgr->sequence_index_++;
-                mgr->PlayNextInSequence();
-                
-                // 回调结束后删除当前定时器（one-shot 定时器需要手动删除）
-                // 注意：此时 sequence_timer_ 可能已经指向新创建的定时器
-                if (current_timer) {
-                    esp_timer_delete(current_timer);
-                }
+                mgr->PlayNextInSequence();  // 这里会安全删除 pending_delete_timer_
             },
             .arg = this,
             .dispatch_method = ESP_TIMER_TASK,

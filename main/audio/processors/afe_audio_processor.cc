@@ -80,14 +80,15 @@ void AfeAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms, srm
     if (!task_buffer_) task_buffer_ = (StaticTask_t*)heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 
     if (task_stack_ && task_buffer_) {
+        // Move AFE task to Core 1 to offload Core 0
         task_handle_ = xTaskCreateStaticPinnedToCore([](void* arg) {
             auto this_ = (AfeAudioProcessor*)arg;
             ESP_LOGI("AfeAudioProcessor", "🚀 AFE task started on core %d!", xPortGetCoreID());
             this_->AudioProcessorTask();
             vTaskDelete(NULL);
-        }, "afe_proc", 8192, this, 4, task_stack_, task_buffer_, 0);
+        }, "afe_proc", 8192, this, 4, task_stack_, task_buffer_, 1);
         
-        ESP_LOGI(TAG, "✅ AFE task created (stack: 8192, core: 0, prio: 4, PSRAM)");
+        ESP_LOGI(TAG, "✅ AFE task created (stack: 8192, core: 1, prio: 4, PSRAM)");
     } else {
         ESP_LOGE(TAG, "❌ Failed to allocate AFE task stack in PSRAM!");
     }
