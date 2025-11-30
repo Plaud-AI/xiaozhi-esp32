@@ -89,15 +89,16 @@ public:
         };
 
         EmotionMapping mappings[] = {
-            {EmotionState::HAPPY,      "happy",      true},   // 循环播放，持续展示
-            {EmotionState::SAD,        "sad",        true},   // 循环播放，持续展示
-            {EmotionState::EXCITED,    "excited",    true},   // 循环播放，持续展示
-            {EmotionState::CALM,       "calm",       true},   // 循环播放，持续展示
-            {EmotionState::SLEEPY,     "sleepy",     true},   // 循环播放，持续展示
-            {EmotionState::SURPRISED,  "surprised",  true},   // 循环播放，持续展示
-            {EmotionState::LISTENING,  "listening",  true},   // 循环播放
-            {EmotionState::THINKING,   "thinking",   true},   // 循环播放
-            {EmotionState::SPEAKING,   "speaking",   true},   // 循环播放
+            // 使用新的动画文件（带 .json 扩展名）
+            {EmotionState::HAPPY,      "success.json",  true},   // 成功/开心 -> success
+            {EmotionState::SAD,        "error.json",    true},   // 悲伤/错误 -> error
+            {EmotionState::EXCITED,    "loading.json",  true},   // 兴奋/加载 -> loading
+            {EmotionState::CALM,       "idle.json",     true},   // 平静/待机 -> idle
+            {EmotionState::SLEEPY,     "idle.json",     true},   // 困倦 -> idle
+            {EmotionState::SURPRISED,  "listening.json", true},  // 惊讶 -> listening
+            {EmotionState::LISTENING,  "listening.json", true},  // 倾听 -> listening.json
+            {EmotionState::THINKING,   "loading.json",  true},   // 思考 -> loading
+            {EmotionState::SPEAKING,   "speaking.json", true},   // 说话 -> speaking.json
         };
 
         int count = 0;

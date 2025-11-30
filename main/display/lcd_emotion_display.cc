@@ -377,29 +377,10 @@ bool LcdEmotionDisplay::InitEmotionSystem() {
     emotion_system_initialized_ = true;
     ESP_LOGI(TAG, "✅ Emotion system initialized successfully");
 
-    // 🔑 测试修复：使用 HAPPY 动画替代 CALM，验证动画是否能显示
-    // TODO: 确认动画显示正常后改回 CALM
-    ESP_LOGI(TAG, "Scheduling initial emotion animation (HAPPY) in 500ms");
-    
-    if (!Lock(1000)) {
-        ESP_LOGW(TAG, "Failed to lock for timer creation");
-        return true;  // 初始化成功，但不创建定时器
-    }
-    
-    lv_timer_t* init_timer = lv_timer_create([](lv_timer_t* timer) {
-        auto* self = static_cast<LcdEmotionDisplay*>(lv_timer_get_user_data(timer));
-        if (self) {
-            ESP_LOGI("LcdEmotionDisplay", "🎬 Playing initial HAPPY animation (timer callback)");
-            self->ShowEmotion(emotion::EmotionState::HAPPY);  // 🔑 使用 HAPPY 测试
-        }
-        lv_timer_del(timer);  // 一次性定时器
-    }, 500, this);
-    
-    Unlock();
-    
-    if (!init_timer) {
-        ESP_LOGW(TAG, "Failed to create init timer");
-    }
+    // ⚠️ 禁用初始动画：避免与 starting state animation 冲突
+    // Application::SetDeviceState(kDeviceStateStarting) 会立即播放 loading.json
+    // 如果这里再播放 HAPPY animation，会导致定时器冲突和崩溃
+    ESP_LOGI(TAG, "Initial animation disabled (will be set by Application state)");
 
     return true;
 }
