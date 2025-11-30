@@ -41,22 +41,13 @@ Ota::~Ota() {
 }
 
 std::string Ota::GetCheckVersionUrl() {
-    // 优先使用 NVS 中的自定义 OTA URL，如果没有则使用默认配置
-    std::string url;
-    try {
-        Settings settings("system", false);
-        url = settings.GetString("ota_url", "");
-        if (!url.empty()) {
-            ESP_LOGI(TAG, "Using custom OTA URL from NVS: %s", url.c_str());
-            return url;
-        }
-    } catch (const std::exception& e) {
-        ESP_LOGW(TAG, "Failed to read custom OTA URL from NVS: %s", e.what());
-    }
-    
-    // 使用默认配置
-    url = CONFIG_OTA_URL;
+    // 优先使用默认配置的 OTA URL
+    std::string url = CONFIG_OTA_URL;
     ESP_LOGI(TAG, "Using default OTA URL: %s", url.c_str());
+    
+    // 注意：如果需要使用 NVS 中的自定义地址，请通过 BLE set_ota_url 命令设置
+    // 当前配置为优先使用代码中的默认地址
+    
     return url;
 }
 
