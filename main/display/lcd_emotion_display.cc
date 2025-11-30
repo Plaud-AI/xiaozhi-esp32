@@ -359,15 +359,30 @@ bool LcdEmotionDisplay::InitEmotionSystem() {
 
     ESP_LOGI(TAG, "Initializing emotion system from Assets...");
 
-    // 🚧 第一阶段：屏蔽情感系统，只支持设备状态驱动的动画
-    // 情感系统接口保留，但不初始化，为将来扩展预留
-    ESP_LOGI(TAG, "⚠️ Emotion system disabled in Phase 1 (Device state animations only)");
+    // 🚧 第一阶段：屏蔽情感映射系统，只支持设备状态驱动的动画
+    // 只初始化 AnimationManager（用于播放动画），不初始化情感状态管理
+    ESP_LOGI(TAG, "⚠️ Phase 1: Device state animations only (Emotion mapping disabled)");
     ESP_LOGI(TAG, "📝 Emotion interfaces preserved for future implementation");
-    ESP_LOGI(TAG, "✅ Use ShowAnimationByPath() for device state animations");
     
-    // 设置标志为 false，表示情感系统未初始化
-    // ShowAnimationByPath() 仍然可用（用于设备状态动画）
-    emotion_system_initialized_ = false;
+    // 持有 LVGL 锁进行初始化
+    if (!Lock(1000)) {
+        ESP_LOGE(TAG, "Failed to lock display for animation system init");
+        return false;
+    }
+
+    // 只初始化 AnimationManager（通过 EmotionCoordinator 的简化接口）
+    // 这允许 ShowAnimationByPath() 直接播放动画文件
+    bool init_success = emotion::InitAnimationManagerOnly(this, width_, height_);
+    
+    Unlock();
+
+    if (!init_success) {
+        ESP_LOGE(TAG, "Failed to initialize animation system");
+        return false;
+    }
+
+    emotion_system_initialized_ = true;
+    ESP_LOGI(TAG, "✅ Animation system ready (Device state mode, no emotion mapping)");
 
     return true;
 }

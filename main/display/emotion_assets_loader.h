@@ -278,5 +278,65 @@ inline bool InitEmotionSystemFromAssets(Display* display,
     return true;
 }
 
+/**
+ * @brief 🚧 第一阶段：只初始化动画管理器（不初始化情感映射系统）
+ * 
+ * 简化版初始化，只支持 ShowAnimationByPath() 直接播放动画
+ * 不初始化 EmotionStateManager, DeviceStateMapper 等情感映射组件
+ * 
+ * @param display Display 对象
+ * @param width 屏幕宽度
+ * @param height 屏幕高度
+ * @return true 成功
+ */
+inline bool InitAnimationManagerOnly(Display* display, 
+                                     int width = 240,
+                                     int height = 240)
+{
+    if (!display) {
+        ESP_LOGW(TAG, "Display is null");
+        return false;
+    }
+
+    ESP_LOGI(TAG, "🚧 Phase 1: Initializing animation manager only (no emotion mapping)");
+
+    // 检查 Assets 是否可用
+    auto& assets = Assets::GetInstance();
+    if (!assets.partition_valid()) {
+        ESP_LOGW(TAG, "Assets partition not valid");
+        return false;
+    }
+
+    // 获取 LVGL 屏幕对象
+    lv_obj_t* screen = lv_scr_act();
+    if (!screen) {
+        ESP_LOGE(TAG, "LVGL screen not available");
+        return false;
+    }
+
+    // 只初始化 AnimationManager（通过 EmotionCoordinator）
+    auto& coordinator = EmotionCoordinator::Instance();
+    
+    // 使用最小配置：只初始化动画播放功能
+    EmotionSystemConfig config;
+    config.animation_base_path = "assets:";  // 从 assets 加载
+    config.screen_width = width;
+    config.screen_height = height;
+    config.default_emotion = EmotionState::NEUTRAL;
+    config.auto_register_mappings = false;  // ❌ 不注册情感映射
+    config.enable_auto_restore = false;     // ❌ 不启用自动恢复
+
+    // 初始化（只初始化 AnimationManager，不初始化状态管理器）
+    if (!coordinator.Init(config, screen)) {
+        ESP_LOGE(TAG, "Failed to initialize animation manager");
+        return false;
+    }
+
+    ESP_LOGI(TAG, "✅ Animation manager initialized (Device state mode)");
+    ESP_LOGI(TAG, "📝 Use ShowAnimationByPath() to play animations");
+    
+    return true;
+}
+
 } // namespace emotion
 
