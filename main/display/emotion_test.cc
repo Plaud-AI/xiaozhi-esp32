@@ -65,7 +65,7 @@ public:
         
         // 验证注册
         auto registered = mgr.GetRegisteredEmotions();
-        ESP_LOGI(TAG, "Total registered emotions: %zu", registered.size());
+        ESP_LOGI(TAG, "Total registered emotions: %d", (int)registered.size());
         
         ESP_LOGI(TAG, "✓ Register test passed");
         return true;

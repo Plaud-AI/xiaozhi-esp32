@@ -4,7 +4,6 @@
 #include <vector>
 #include <unordered_map>
 #include <esp_err.h>
-#include "esp_mmap_assets.h"
 
 namespace xiaozhi {
 namespace display {
@@ -12,26 +11,22 @@ namespace display {
 /**
  * @brief Animation Resource Manager
  * 
- * 管理动画资源的加载，支持三种加载模式：
- * 1. MemoryMap: 使用 mmap 从 Flash 直接映射（零 SRAM 占用，推荐）
- * 2. DirectAddress: 直接指定内存地址
- * 3. FileSystem: 从文件系统加载（占用 SRAM）
+ * 管理动画资源的加载，支持从项目 Assets 分区获取 AAF 动画
  */
 class AnimationResourceManager {
 public:
     // 加载模式
     enum class LoadMode {
-        MemoryMap,      // 内存映射（推荐）：零 SRAM 占用
-        DirectAddress,  // 直接地址：指定内存地址
-        FileSystem      // 文件系统：从 SPIFFS/SD 加载（占用 SRAM）
+        AssetsPartition,  // 从 Assets 分区加载（使用项目 Assets 类）
+        DirectAddress,    // 直接指定内存地址
+        FileSystem        // 从文件系统加载（占用 SRAM）
     };
     
-    // mmap 分区配置
-    struct PartitionConfig {
-        const char* partition_label;  // 分区标签，如 "assets"
-        int max_files;                // 最大文件数
-        const int* fps_array;         // 每个文件的 FPS 配置
-        uint32_t checksum;            // 校验和
+    // Assets 分区配置
+    struct AssetsConfig {
+        const char** animation_names;  // 动画文件名列表
+        int animation_count;           // 动画数量
+        const int* fps_array;          // 每个文件的 FPS 配置（可选）
     };
     
     // 直接地址配置
@@ -56,8 +51,11 @@ public:
     AnimationResourceManager(const AnimationResourceManager&) = delete;
     AnimationResourceManager& operator=(const AnimationResourceManager&) = delete;
     
-    // 初始化（使用 mmap 分区）
-    esp_err_t InitFromPartition(const PartitionConfig& config);
+    // 初始化（从 Assets 分区，使用项目 Assets 类）
+    esp_err_t InitFromAssets(const AssetsConfig& config);
+    
+    // 初始化（从 Assets 分区，使用默认动画列表）
+    esp_err_t InitFromAssetsDefault();
     
     // 初始化（使用直接地址）
     esp_err_t InitFromAddresses(const AnimationAddress* addresses, int count);
@@ -92,7 +90,6 @@ private:
     
     bool is_initialized_;
     LoadMode load_mode_;
-    mmap_assets_handle_t mmap_handle_;
     
     std::vector<AnimationEntry> animations_;
     std::unordered_map<std::string, int> name_to_index_;
@@ -107,4 +104,3 @@ private:
 
 } // namespace display
 } // namespace xiaozhi
-

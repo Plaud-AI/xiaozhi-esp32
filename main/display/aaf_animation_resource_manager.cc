@@ -1,4 +1,5 @@
 #include "aaf_animation_resource_manager.h"
+#include "assets.h"
 #include <esp_log.h>
 #include <string.h>
 #include <stdio.h>
@@ -6,74 +7,98 @@
 
 static const char* TAG = "AnimResourceMgr";
 
+// 默认的 AAF 动画文件列表（与设备状态对应）
+static const char* DEFAULT_ANIMATION_NAMES[] = {
+    "idle.aaf",
+    "listening.aaf", 
+    "speaking.aaf",
+    "loading.aaf",
+    "settings.aaf",
+    "updating.aaf",
+    "success.aaf",
+    "error.aaf"
+};
+static const int DEFAULT_ANIMATION_COUNT = sizeof(DEFAULT_ANIMATION_NAMES) / sizeof(DEFAULT_ANIMATION_NAMES[0]);
+
+// 默认 FPS 配置
+static const int DEFAULT_FPS[] = {15, 20, 20, 15, 15, 15, 15, 15};
+
 namespace xiaozhi {
 namespace display {
 
 AnimationResourceManager::AnimationResourceManager()
     : is_initialized_(false)
-    , load_mode_(LoadMode::MemoryMap)
-    , mmap_handle_(nullptr) {
+    , load_mode_(LoadMode::AssetsPartition) {
 }
 
 AnimationResourceManager::~AnimationResourceManager() {
     Deinit();
 }
 
-esp_err_t AnimationResourceManager::InitFromPartition(const PartitionConfig& config) {
-    ESP_LOGI(TAG, "Initializing from partition: %s", config.partition_label);
+esp_err_t AnimationResourceManager::InitFromAssetsDefault() {
+    AssetsConfig config = {
+        .animation_names = DEFAULT_ANIMATION_NAMES,
+        .animation_count = DEFAULT_ANIMATION_COUNT,
+        .fps_array = DEFAULT_FPS
+    };
+    return InitFromAssets(config);
+}
+
+esp_err_t AnimationResourceManager::InitFromAssets(const AssetsConfig& config) {
+    ESP_LOGI(TAG, "Initializing from Assets partition");
     
     if (is_initialized_) {
         ESP_LOGW(TAG, "Already initialized, deinitializing first");
         Deinit();
     }
     
-    // 配置 mmap_assets
-    mmap_assets_config_t asset_config = {
-        .partition_label = config.partition_label,
-        .max_files = config.max_files,
-        .checksum = config.checksum,
-        .flags = {
-            .mmap_enable = true,
-            .full_check = true,
-        },
-    };
-    
-    esp_err_t ret = mmap_assets_new(&asset_config, &mmap_handle_);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to create mmap assets: %s", esp_err_to_name(ret));
-        return ret;
+    // 获取 Assets 实例
+    auto& assets = Assets::GetInstance();
+    if (!assets.partition_valid()) {
+        ESP_LOGE(TAG, "Assets partition not valid");
+        return ESP_ERR_INVALID_STATE;
     }
     
-    // 获取文件数量
-    int file_num = mmap_assets_get_stored_files(mmap_handle_);
-    if (file_num <= 0) {
-        ESP_LOGE(TAG, "No animation files found in partition");
-        mmap_assets_del(mmap_handle_);
-        mmap_handle_ = nullptr;
-        return ESP_ERR_NOT_FOUND;
+    if (!assets.checksum_valid()) {
+        ESP_LOGW(TAG, "Assets checksum invalid, animations may not be available");
     }
     
-    ESP_LOGI(TAG, "Found %d animation files", file_num);
+    // 加载动画
+    animations_.reserve(config.animation_count);
+    int loaded_count = 0;
     
-    // 加载所有动画信息
-    animations_.reserve(file_num);
-    for (int i = 0; i < file_num; i++) {
-        AnimationEntry entry;
-        entry.name = mmap_assets_get_name(mmap_handle_, i);
-        entry.data_address = mmap_assets_get_mem(mmap_handle_, i);
-        entry.data_length = mmap_assets_get_size(mmap_handle_, i);
-        entry.fps = config.fps_array ? config.fps_array[i] : 15;  // 默认 15 FPS
+    for (int i = 0; i < config.animation_count; i++) {
+        const char* name = config.animation_names[i];
+        void* ptr = nullptr;
+        size_t size = 0;
         
-        ESP_LOGD(TAG, "Animation[%d]: %s, size=%zu, fps=%d, addr=%p",
-                 i, entry.name.c_str(), entry.data_length, entry.fps, entry.data_address);
-        
-        RegisterAnimation(entry);
+        if (assets.GetAssetData(name, ptr, size)) {
+            AnimationEntry entry;
+            entry.name = name;
+            entry.data_address = ptr;
+            entry.data_length = size;
+            entry.fps = config.fps_array ? config.fps_array[i] : 15;
+            
+            ESP_LOGI(TAG, "Loaded AAF[%d]: '%s', size=%lu, addr=0x%08lx, fps=%d",
+                     loaded_count, name, (unsigned long)size, (unsigned long)ptr, entry.fps);
+            
+            RegisterAnimation(entry);
+            loaded_count++;
+        } else {
+            ESP_LOGW(TAG, "Animation not found in Assets: %s", name);
+        }
     }
     
-    load_mode_ = LoadMode::MemoryMap;
+    if (loaded_count == 0) {
+        ESP_LOGW(TAG, "No animations loaded from Assets partition");
+        ESP_LOGW(TAG, "Make sure AAF animations are included in assets.bin");
+        // 不返回错误，让系统继续运行
+    }
+    
+    load_mode_ = LoadMode::AssetsPartition;
     is_initialized_ = true;
     
-    ESP_LOGI(TAG, "Successfully initialized %d animations from mmap partition", file_num);
+    ESP_LOGI(TAG, "Initialized %d animations from Assets partition", loaded_count);
     return ESP_OK;
 }
 
@@ -103,8 +128,8 @@ esp_err_t AnimationResourceManager::InitFromAddresses(const AnimationAddress* ad
         entry.data_length = addresses[i].data_length;
         entry.fps = addresses[i].fps;
         
-        ESP_LOGD(TAG, "Animation[%d]: %s, size=%zu, fps=%d",
-                 i, entry.name.c_str(), entry.data_length, entry.fps);
+        ESP_LOGD(TAG, "Animation[%d]: %s, size=%lu, fps=%d",
+                 i, entry.name.c_str(), (unsigned long)entry.data_length, entry.fps);
         
         RegisterAnimation(entry);
     }
@@ -177,8 +202,8 @@ esp_err_t AnimationResourceManager::InitFromFileSystem(const AnimationPath* path
         entry.data_length = file_data_cache_.back().size();
         entry.fps = paths[i].fps;
         
-        ESP_LOGD(TAG, "Animation[%d]: %s, size=%zu, fps=%d",
-                 i, entry.name.c_str(), entry.data_length, entry.fps);
+        ESP_LOGD(TAG, "Animation[%d]: %s, size=%lu, fps=%d",
+                 i, entry.name.c_str(), (unsigned long)entry.data_length, entry.fps);
         
         RegisterAnimation(entry);
     }
@@ -192,7 +217,7 @@ esp_err_t AnimationResourceManager::InitFromFileSystem(const AnimationPath* path
 
 const void* AnimationResourceManager::GetAnimationData(int index, size_t* out_size, int* out_fps) const {
     if (index < 0 || index >= static_cast<int>(animations_.size())) {
-        ESP_LOGE(TAG, "Invalid animation index: %d", index);
+        ESP_LOGE(TAG, "Invalid animation index: %d (count=%d)", index, (int)animations_.size());
         return nullptr;
     }
     
@@ -253,12 +278,6 @@ void AnimationResourceManager::Deinit() {
     
     ESP_LOGI(TAG, "Deinitializing animation resource manager");
     
-    // 释放 mmap 资源
-    if (mmap_handle_) {
-        mmap_assets_del(mmap_handle_);
-        mmap_handle_ = nullptr;
-    }
-    
     // 清理动画列表
     ClearAnimations();
     
@@ -281,4 +300,3 @@ void AnimationResourceManager::ClearAnimations() {
 
 } // namespace display
 } // namespace xiaozhi
-

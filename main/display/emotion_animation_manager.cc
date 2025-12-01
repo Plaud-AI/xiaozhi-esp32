@@ -194,8 +194,8 @@ bool EmotionAnimationManager::PlayEmotionSequence(
     sequence_loop_ = loop;
     playing_sequence_ = true;
 
-    ESP_LOGI(TAG, "Starting emotion sequence playback (%zu items, loop: %d)", 
-             sequence.size(), loop);
+    ESP_LOGI(TAG, "Starting emotion sequence playback (%d items, loop: %d)", 
+             (int)sequence.size(), loop);
 
     // 播放第一个情感
     PlayNextInSequence();

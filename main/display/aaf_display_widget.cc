@@ -5,6 +5,7 @@
 #include <esp_psram.h>
 #include <lvgl.h>
 #include <string.h>
+#include <string>
 #include "assets/lang_config.h"
 
 static const char* TAG = "AafDisplayWidget";
@@ -230,14 +231,15 @@ void AafDisplayWidget::InitializeLvgl() {
     lv_init();
 
 #if CONFIG_SPIRAM
-    // lv image cache
+    // lv image cache - AAF 动画使用直接帧渲染，不需要大缓存
+    // 减少缓存以为 WiFi/BLE 和音频系统留出足够内存
     size_t psram_size_mb = esp_psram_get_size() / 1024 / 1024;
     if (psram_size_mb >= 8) {
-        lv_image_cache_resize(2 * 1024 * 1024, true);
-        ESP_LOGI(TAG, "Use 2MB of PSRAM for image cache");
+        lv_image_cache_resize(256 * 1024, true);  // 从 2MB 减少到 256KB
+        ESP_LOGI(TAG, "Use 256KB of PSRAM for image cache (AAF mode)");
     } else if (psram_size_mb >= 2) {
-        lv_image_cache_resize(512 * 1024, true);
-        ESP_LOGI(TAG, "Use 512KB of PSRAM for image cache");
+        lv_image_cache_resize(128 * 1024, true);
+        ESP_LOGI(TAG, "Use 128KB of PSRAM for image cache");
     }
 #endif
 
@@ -291,45 +293,38 @@ bool AafDisplayWidget::InitializeResources() {
     
     resource_manager_ = std::make_unique<AnimationResourceManager>();
     
-    // 使用 mmap_assets（零拷贝，不占用 SRAM）
-    // 动画文件通过构建系统自动打包到 assets 分区
-    AnimationResourceManager::PartitionConfig mmap_config = {
-        .partition_label = "assets",
-        .max_files = 8,       // 8 个设备状态动画
-        .fps_array = nullptr, // 使用默认 FPS
-        .checksum = 0,        // 跳过校验
-    };
-    
-    esp_err_t ret = resource_manager_->InitFromPartition(mmap_config);
-    if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "✅ Loaded %d animations from mmap partition (zero-copy, ~2KB SRAM)", 
+    // 使用项目 Assets 类加载 AAF 动画（零拷贝，从 Flash mmap）
+    // AAF 动画文件需要通过 assets 构建系统打包
+    esp_err_t ret = resource_manager_->InitFromAssetsDefault();
+    if (ret == ESP_OK && resource_manager_->GetAnimationCount() > 0) {
+        ESP_LOGI(TAG, "✅ Loaded %d AAF animations from Assets partition", 
                  resource_manager_->GetAnimationCount());
         return true;
     }
     
-    // 如果加载失败，继续运行但无动画
-    ESP_LOGE(TAG, "❌ Failed to load animations from partition: %s", esp_err_to_name(ret));
-    ESP_LOGW(TAG, "⚠️  Continuing without animations (check if assets.bin is flashed)");
-    ESP_LOGW(TAG, "    Run 'idf.py build flash' to rebuild and flash assets");
+    // 如果 Assets 加载失败，尝试从文件系统加载
+    ESP_LOGW(TAG, "No AAF animations in Assets, trying file system...");
+    AnimationResourceManager::AnimationPath animation_paths[] = {
+        {"/spiffs/animations/idle.aaf",       15, "idle.aaf"},
+        {"/spiffs/animations/listening.aaf",  20, "listening.aaf"},
+        {"/spiffs/animations/speaking.aaf",   20, "speaking.aaf"},
+        {"/spiffs/animations/loading.aaf",    15, "loading.aaf"},
+        {"/spiffs/animations/settings.aaf",   15, "settings.aaf"},
+        {"/spiffs/animations/updating.aaf",   15, "updating.aaf"},
+        {"/spiffs/animations/success.aaf",    15, "success.aaf"},
+        {"/spiffs/animations/error.aaf",      15, "error.aaf"},
+    };
     
-    // 可选：如果需要 SPIFFS 回退方案（占用 ~1.6MB SRAM），取消下面的注释
-    // 
-    // ESP_LOGW(TAG, "Trying file system fallback...");
-    // AnimationResourceManager::AnimationPath animation_paths[] = {
-    //     {"/assets/animations/idle.aaf",       AnimationConfig::GetRecommendedFps("idle"),       "idle"},
-    //     {"/assets/animations/listening.aaf",  AnimationConfig::GetRecommendedFps("listening"),  "listening"},
-    //     {"/assets/animations/speaking.aaf",   AnimationConfig::GetRecommendedFps("speaking"),   "speaking"},
-    //     {"/assets/animations/loading.aaf",    AnimationConfig::GetRecommendedFps("loading"),    "loading"},
-    //     {"/assets/animations/settings.aaf",   AnimationConfig::GetRecommendedFps("settings"),   "settings"},
-    //     {"/assets/animations/updating.aaf",   AnimationConfig::GetRecommendedFps("updating"),   "updating"},
-    //     {"/assets/animations/success.aaf",    AnimationConfig::GetRecommendedFps("success"),    "success"},
-    //     {"/assets/animations/error.aaf",      AnimationConfig::GetRecommendedFps("error"),      "error"},
-    // };
-    // ret = resource_manager_->InitFromFileSystem(animation_paths, 8);
-    // if (ret == ESP_OK) {
-    //     ESP_LOGW(TAG, "✅ Loaded %d animations from file system (using ~1.6MB SRAM!)", 
-    //              resource_manager_->GetAnimationCount());
-    // }
+    ret = resource_manager_->InitFromFileSystem(animation_paths, 8);
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "✅ Loaded %d animations from file system", 
+                 resource_manager_->GetAnimationCount());
+        return true;
+    }
+    
+    // 如果都失败，继续运行但无动画
+    ESP_LOGW(TAG, "⚠️  No AAF animations available, display will show blank");
+    ESP_LOGW(TAG, "    Add AAF files to assets or /spiffs/animations/");
     
     return true;  // 即使动画加载失败，UI 仍然可以工作
 }
@@ -462,10 +457,18 @@ void AafDisplayWidget::InitializeUI() {
 }
 
 void AafDisplayWidget::OnStateChanged(const AnimationStateManager::StateChangeEvent& event) {
-    ESP_LOGI(TAG, "State changed: %s (type=%d, priority=%d)",
+    ESP_LOGI(TAG, "State changed: %s (type=%d, priority=%d, file=%s, index=%d)",
              event.state_name.c_str(),
              static_cast<int>(event.type),
-             static_cast<int>(event.priority));
+             static_cast<int>(event.priority),
+             event.animation_file.c_str(),
+             event.animation_index);
+    
+    // 检查资源管理器是否初始化
+    if (!resource_manager_ || resource_manager_->GetAnimationCount() == 0) {
+        ESP_LOGW(TAG, "Resource manager not ready, skipping animation");
+        return;
+    }
     
     // 停止之前的超时定时器
     StopTimeoutTimer();
@@ -475,16 +478,59 @@ void AafDisplayWidget::OnStateChanged(const AnimationStateManager::StateChangeEv
     int fps = event.fps;
     const void* data = nullptr;
     
-    if (event.animation_index >= 0) {
-        // 使用索引获取
-        data = resource_manager_->GetAnimationData(event.animation_index, &data_size, &fps);
-    } else if (!event.animation_file.empty()) {
-        // 使用文件名获取
+    // 优先使用文件名查找（更可靠）
+    if (!event.animation_file.empty()) {
+        // 先尝试完整文件名
         data = resource_manager_->GetAnimationData(event.animation_file.c_str(), &data_size, &fps);
+        
+        // 如果失败，尝试去掉扩展名
+        if (!data) {
+            std::string name_without_ext = event.animation_file;
+            size_t dot_pos = name_without_ext.rfind('.');
+            if (dot_pos != std::string::npos) {
+                name_without_ext = name_without_ext.substr(0, dot_pos);
+                data = resource_manager_->GetAnimationData(name_without_ext.c_str(), &data_size, &fps);
+            }
+        }
+    }
+    
+    // 如果文件名查找失败，尝试用索引
+    if (!data && event.animation_index >= 0 && 
+        event.animation_index < resource_manager_->GetAnimationCount()) {
+        data = resource_manager_->GetAnimationData(event.animation_index, &data_size, &fps);
     }
     
     if (!data || data_size == 0) {
-        ESP_LOGE(TAG, "Failed to get animation data for: %s", event.state_name.c_str());
+        ESP_LOGE(TAG, "Failed to get animation data for: %s (file=%s, index=%d, total=%d)",
+                 event.state_name.c_str(), 
+                 event.animation_file.c_str(),
+                 event.animation_index,
+                 resource_manager_->GetAnimationCount());
+        // 打印可用的动画列表帮助调试
+        ESP_LOGI(TAG, "Available animations:");
+        for (int i = 0; i < resource_manager_->GetAnimationCount() && i < 10; i++) {
+            const char* name = resource_manager_->GetAnimationName(i);
+            ESP_LOGI(TAG, "  [%d]: %s", i, name ? name : "(null)");
+        }
+        return;
+    }
+    
+    // 验证数据指针的有效性（必须在合理的内存范围内）
+    // ESP32-S3 的 PSRAM 映射通常在 0x3C000000 - 0x3DFFFFFF
+    // Flash mmap 通常在 0x3C000000+ 范围
+    uintptr_t addr_val = reinterpret_cast<uintptr_t>(data);
+    if (addr_val < 0x3C000000 || data_size < 100 || data_size > 10000000) {
+        ESP_LOGE(TAG, "Invalid animation data: addr=0x%08lx, size=%lu - skipping",
+                 (unsigned long)addr_val, (unsigned long)data_size);
+        return;
+    }
+    
+    ESP_LOGI(TAG, "Animation data: addr=0x%08lx, size=%lu, fps=%d", 
+             (unsigned long)data, (unsigned long)data_size, fps);
+    
+    // 检查动画播放器是否有效
+    if (!animation_player_) {
+        ESP_LOGE(TAG, "Animation player not initialized");
         return;
     }
     
@@ -494,7 +540,7 @@ void AafDisplayWidget::OnStateChanged(const AnimationStateManager::StateChangeEv
     play_config.data_length = data_size;
     play_config.mode = event.loop ? AafAnimationPlayer::PlayMode::Loop 
                                    : AafAnimationPlayer::PlayMode::Once;
-    play_config.fps = fps;
+    play_config.fps = fps > 0 && fps < 120 ? fps : 15;  // 合理的 fps 范围
     play_config.interrupt_current = true;
     
     // 播放动画

@@ -75,8 +75,8 @@ bool AafAnimationPlayer::Play(const PlaybackConfig& config) {
         return false;
     }
     
-    ESP_LOGI(TAG, "Playing animation: addr=%p, size=%zu, fps=%d, mode=%s",
-             config.data_address, config.data_length, config.fps,
+    ESP_LOGI(TAG, "Playing animation: addr=0x%08lx, size=%lu, fps=%d, mode=%s",
+             (unsigned long)config.data_address, (unsigned long)config.data_length, config.fps,
              config.mode == PlayMode::Loop ? "Loop" : "Once");
     
     // 如果需要打断当前动画，先停止

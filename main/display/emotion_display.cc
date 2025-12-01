@@ -188,7 +188,7 @@ bool EmotionDisplay::PlayEmotionSequence(
         return false;
     }
 
-    ESP_LOGI(TAG, "Playing emotion sequence (%zu items, loop: %d)", sequence.size(), loop);
+    ESP_LOGI(TAG, "Playing emotion sequence (%d items, loop: %d)", (int)sequence.size(), loop);
 
     return lottie::EmotionAnimationManager::Instance().PlayEmotionSequence(sequence, loop);
 }

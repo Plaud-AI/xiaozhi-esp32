@@ -7,12 +7,9 @@
 #include <esp_bt.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
-#include <nimble/nimble_port.h>
 
 #include "application.h"
 #include "system_info.h"
-#include "ble_wifi_provisioner.h"
-#include "bluetooth_service.h"  // 用于 BluetoothService::Deinitialize()
 
 #define TAG "main"
 
@@ -30,15 +27,14 @@ extern "C" void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    // ====== 提前初始化蓝牙控制器（WiFi/BLE 共存要求）======
-    // ESP32-S3 要求蓝牙控制器必须在 WiFi 之前初始化
-    // 关键：必须在控制器初始化前释放 Classic BT 内存
+    // ====== 内存优化：提前释放 Classic BT 内存 ======
+    // BLE 控制器将在需要时（WiFi 配网）延迟初始化
+    // 这样可以为 WiFi 留出足够的内部 RAM
     ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "🔧 初始化蓝牙控制器（WiFi/BLE共存）");
+    ESP_LOGI(TAG, "🔧 内存优化：释放 Classic BT 内存");
     ESP_LOGI(TAG, "========================================");
     
-    // 步骤1：在控制器初始化前释放 Classic BT 内存
-    // 这样控制器只会为 BLE 分配内存，节省 30-40KB
+    // 释放 Classic BT 内存（节省 30-40KB 内部 RAM）
     ret = esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
     if (ret == ESP_OK) {
         ESP_LOGI(TAG, "✅ 已释放 Classic BT 内存（约 30-40KB）");
@@ -46,51 +42,17 @@ extern "C" void app_main(void)
         ESP_LOGW(TAG, "⚠️  释放 Classic BT 内存失败: %d (可能已释放)", ret);
     }
     
-    // 步骤2：初始化 BLE 控制器（只为 BLE 分配内存）
-    ret = nimble_port_init();
-    if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "✅ 蓝牙控制器初始化成功（BLE-only 模式）");
-        ESP_LOGI(TAG, "   - WiFi 和 BLE 现在可以共存");
-        ESP_LOGI(TAG, "   - 内存优化：仅分配 BLE 所需内存");
-        ESP_LOGI(TAG, "   - BLE 服务将在需要时启动");
-    } else {
-        ESP_LOGE(TAG, "❌ 蓝牙控制器初始化失败: %d", ret);
-        ESP_LOGW(TAG, "   - 将继续启动，但 BLE 功能将不可用");
-    }
+    // 注意：BLE 控制器延迟初始化
+    // - WiFi 初始化需要大量内部 RAM
+    // - BLE 控制器只在 WiFi 配网时需要
+    // - 由 BLEWiFiProvisioner 或 BluetoothService 按需初始化
+    ESP_LOGI(TAG, "   - BLE 控制器将延迟初始化（按需）");
+    ESP_LOGI(TAG, "   - WiFi 将优先获得内部 RAM");
     ESP_LOGI(TAG, "========================================");
 
     // Launch the application
+    // WiFi 将在 Application::Start() 中初始化
+    // BLE 将在需要配网时由 BLEWiFiProvisioner 初始化
     auto& app = Application::GetInstance();
     app.Start();
-    
-    // ⚠️ CRITICAL: Double-check and force disable BLE controller if WiFi is connected
-    // This is a failsafe to prevent coexistence crashes (StoreProhibited in timer_insert)
-    // if WifiBoard::StartNetwork failed to disable it for some reason.
-    ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "🔒 Failsafe: Ensuring BLE Controller is Disabled");
-    ESP_LOGI(TAG, "========================================");
-    
-    // Wait a bit to ensure WiFi connection logic has settled
-    vTaskDelay(pdMS_TO_TICKS(2000));
-    
-    #ifdef CONFIG_BT_ENABLED
-    if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_ENABLED) {
-        ESP_LOGW(TAG, "⚠️ BLE Controller found ENABLED! Disabling now to prevent crash...");
-        // First stop the provisioner/NimBLE stack if running
-        BLEWiFiProvisioner::GetInstance().Stop();
-        // Properly deinitialize NimBLE stack to clean up internal timers
-        BluetoothService::GetInstance().Deinitialize();
-        vTaskDelay(pdMS_TO_TICKS(50));  // Wait for NimBLE cleanup
-        // Then disable the controller hardware
-        ret = esp_bt_controller_disable();
-        if (ret == ESP_OK) {
-            ESP_LOGI(TAG, "✅ BLE Controller FORCIBLY disabled");
-        } else {
-            ESP_LOGE(TAG, "❌ Failed to disable BLE Controller: %s", esp_err_to_name(ret));
-        }
-    } else {
-        ESP_LOGI(TAG, "✅ BLE Controller is already disabled (Safe)");
-    }
-    #endif
-    ESP_LOGI(TAG, "========================================");
 }

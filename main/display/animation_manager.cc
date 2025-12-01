@@ -210,7 +210,7 @@ void AnimationManager::LoadAndPlayAnimation(AnimState state)
         size_t size = 0;
         // 🔑 使用 Assets::GetInstance() 获取资源
         if (::Assets::GetInstance().GetAssetData(filename, data, size)) {
-            ESP_LOGI(TAG, "Fallback: Loaded animation from Assets: %s (%zu bytes)", filename.c_str(), size);
+            ESP_LOGI(TAG, "Fallback: Loaded animation from Assets: %s (%lu bytes)", filename.c_str(), (unsigned long)size);
             if (current_animation_->LoadFromData(data, size)) {
                 loaded = true;
             }
