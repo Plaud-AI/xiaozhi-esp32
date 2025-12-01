@@ -771,15 +771,29 @@ function(build_default_assets_bin)
         list(APPEND BUILD_ARGS "--extra_files" "${DEFAULT_ASSETS_EXTRA_FILES}")
     endif()
     
+    # Add AAF animations directory
+    set(AAF_ANIMATIONS_DIR "${PROJECT_DIR}/main/assets/animations")
+    if(EXISTS "${AAF_ANIMATIONS_DIR}")
+        list(APPEND BUILD_ARGS "--aaf_animations" "${AAF_ANIMATIONS_DIR}")
+        message(STATUS "AAF animations directory: ${AAF_ANIMATIONS_DIR}")
+    endif()
+    
     list(APPEND BUILD_ARGS "--esp_sr_model_path" "${ESP_SR_MODEL_PATH}")
     list(APPEND BUILD_ARGS "--xiaozhi_fonts_path" "${XIAOZHI_FONTS_PATH}")
     
-    # Collect animation files as dependencies
+    # Collect Lottie animation files as dependencies (JSON)
     file(GLOB ANIMATION_FILES "${PROJECT_DIR}/assets_source/anim/*.json")
+    
+    # Collect AAF animation files as dependencies
+    file(GLOB AAF_ANIMATION_FILES "${PROJECT_DIR}/main/assets/animations/*.aaf")
+    list(APPEND ANIMATION_FILES ${AAF_ANIMATION_FILES})
     
     # Ensure CMake re-runs if animation files are added/removed
     # This forces reconfiguration when the directory content changes
-    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${PROJECT_DIR}/assets_source/anim")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS 
+        "${PROJECT_DIR}/assets_source/anim"
+        "${PROJECT_DIR}/main/assets/animations"
+    )
 
     # Create custom command to build assets
     add_custom_command(

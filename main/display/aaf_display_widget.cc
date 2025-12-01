@@ -1,4 +1,5 @@
 #include "aaf_display_widget.h"
+#include "aaf_animation_config.h"
 #include <esp_log.h>
 #include <esp_lvgl_port.h>
 #include <esp_psram.h>
@@ -237,24 +238,48 @@ bool AafDisplayWidget::InitializeResources() {
     
     resource_manager_ = std::make_unique<AnimationResourceManager>();
     
-    // 这里需要根据实际的动画配置来初始化
-    // 示例：从 assets 分区加载
-    // AnimationResourceManager::PartitionConfig config = {
-    //     .partition_label = "assets",
-    //     .max_files = MMAP_ANIMATIONS_FILES,
-    //     .fps_array = MMAP_ANIMATIONS_FPS,
-    //     .checksum = MMAP_ANIMATIONS_CHECKSUM
-    // };
-    // 
-    // esp_err_t ret = resource_manager_->InitFromPartition(config);
-    // if (ret != ESP_OK) {
-    //     ESP_LOGE(TAG, "Failed to initialize resources from partition");
-    //     return false;
-    // }
+    // 方式一：使用 mmap_assets（推荐，零拷贝，不占用 SRAM）
+    // 需要先用 mmap_assets 工具打包动画到 assets 分区
+    AnimationResourceManager::PartitionConfig mmap_config = {
+        .partition_label = "assets",
+        .max_files = 8,       // 8 个设备状态动画
+        .fps_array = nullptr, // 使用默认 FPS
+        .checksum = 0,        // 跳过校验
+    };
     
-    // 暂时返回 true，等待实际配置文件
-    ESP_LOGW(TAG, "Resource initialization skipped (waiting for animation config)");
-    return true;
+    esp_err_t ret = resource_manager_->InitFromPartition(mmap_config);
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "✅ Loaded %d animations from mmap partition (zero-copy)", 
+                 resource_manager_->GetAnimationCount());
+        return true;
+    }
+    
+    // 方式二：回退到文件系统（占用 SRAM，仅用于测试）
+    ESP_LOGW(TAG, "Failed to load from partition (%s), trying file system...", 
+             esp_err_to_name(ret));
+    
+    AnimationResourceManager::AnimationPath animation_paths[] = {
+        {"/assets/animations/idle.aaf",       AnimationConfig::GetRecommendedFps("idle"),       "idle"},
+        {"/assets/animations/listening.aaf",  AnimationConfig::GetRecommendedFps("listening"),  "listening"},
+        {"/assets/animations/speaking.aaf",   AnimationConfig::GetRecommendedFps("speaking"),   "speaking"},
+        {"/assets/animations/loading.aaf",    AnimationConfig::GetRecommendedFps("loading"),    "loading"},
+        {"/assets/animations/settings.aaf",   AnimationConfig::GetRecommendedFps("settings"),   "settings"},
+        {"/assets/animations/updating.aaf",   AnimationConfig::GetRecommendedFps("updating"),   "updating"},
+        {"/assets/animations/success.aaf",    AnimationConfig::GetRecommendedFps("success"),    "success"},
+        {"/assets/animations/error.aaf",      AnimationConfig::GetRecommendedFps("error"),      "error"},
+    };
+    
+    ret = resource_manager_->InitFromFileSystem(animation_paths, 8);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to load animations from file system: %s", esp_err_to_name(ret));
+        ESP_LOGW(TAG, "⚠️  Continuing without animations");
+        // 即使失败也继续，只是没有动画
+    } else {
+        ESP_LOGW(TAG, "✅ Loaded %d animations from file system (using ~1.6MB SRAM!)", 
+                 resource_manager_->GetAnimationCount());
+    }
+    
+    return true;  // 即使动画加载失败，UI 仍然可以工作
 }
 
 bool AafDisplayWidget::InitializeStateManager() {

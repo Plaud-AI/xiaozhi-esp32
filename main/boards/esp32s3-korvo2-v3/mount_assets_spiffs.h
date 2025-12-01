@@ -9,9 +9,9 @@
  */
 
 #include <esp_log.h>
-#include <esp_vfs_fat.h>
 #include <esp_spiffs.h>
 #include <esp_partition.h>
+#include <stdio.h>
 
 namespace assets_mount {
 

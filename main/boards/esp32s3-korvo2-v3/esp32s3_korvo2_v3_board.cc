@@ -1,6 +1,7 @@
 #include "wifi_board.h"
 #include "codecs/box_audio_codec.h"
 #include "display/aaf_display_widget.h"
+#include "mount_assets_spiffs.h"
 #include "application.h"
 #include "button.h"
 #include "config.h"
@@ -422,6 +423,13 @@ public:
         InitializeCamera();
         InitializeSpi();
         InitializeButtons();
+        
+        // 挂载 assets SPIFFS 分区（用于动画资源）
+        ESP_LOGI(TAG, "Mounting assets SPIFFS partition...");
+        if (!assets_mount::MountAssetsAsSPIFFS()) {
+            ESP_LOGW(TAG, "Failed to mount assets SPIFFS (continuing without animations)");
+        }
+        
         #ifdef LCD_TYPE_ILI9341_SERIAL
         InitializeIli9341Display(); 
         #else
