@@ -1,6 +1,6 @@
 #include "wifi_board.h"
 #include "codecs/box_audio_codec.h"
-#include "display/lcd_emotion_display.h"
+#include "display/aaf_display_widget.h"
 #include "application.h"
 #include "button.h"
 #include "config.h"
@@ -57,7 +57,7 @@ private:
     adc_oneshot_unit_handle_t bsp_adc_handle = NULL;
 #endif
     i2c_master_bus_handle_t i2c_bus_;
-    LcdEmotionDisplay* display_;
+    Display* display_;  // 使用基类指针，可指向任何 Display 实现
     esp_io_expander_handle_t io_expander_ = NULL;
     Esp32Camera* camera_;
 
@@ -325,17 +325,16 @@ private:
         ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y));
         ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel, false));
         ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel, true));
-        display_ = new LcdEmotionDisplay(panel_io, panel,
-                                        DISPLAY_WIDTH, DISPLAY_HEIGHT,
-                                        DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y,
-                                        DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
         
-        // 初始化情感系统
-        ESP_LOGI(TAG, "Initializing emotion system...");
-        if (display_->InitEmotionSystem()) {
-            ESP_LOGI(TAG, "✅ Emotion system ready!");
+        // 使用新的 AAF Display Widget
+        ESP_LOGI(TAG, "Initializing AAF Display Framework...");
+        display_ = new xiaozhi::display::AafDisplayWidget(panel_io, panel,
+                                                           DISPLAY_WIDTH, DISPLAY_HEIGHT);
+        
+        if (display_) {
+            ESP_LOGI(TAG, "✅ AAF Display Framework ready!");
         } else {
-            ESP_LOGW(TAG, "⚠️  Emotion system init failed (will continue without emotions)");
+            ESP_LOGW(TAG, "⚠️  AAF Display Framework init failed");
         }
     }
 
@@ -368,17 +367,15 @@ private:
         ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y));
         ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel, true));
 
-        display_ = new LcdEmotionDisplay(panel_io, panel,
-                                        DISPLAY_WIDTH, DISPLAY_HEIGHT,
-                                        DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y,
-                                        DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
+        // 使用新的 AAF Display Widget
+        ESP_LOGI(TAG, "Initializing AAF Display Framework...");
+        display_ = new xiaozhi::display::AafDisplayWidget(panel_io, panel,
+                                                           DISPLAY_WIDTH, DISPLAY_HEIGHT);
         
-        // 初始化情感系统
-        ESP_LOGI(TAG, "Initializing emotion system...");
-        if (display_->InitEmotionSystem()) {
-            ESP_LOGI(TAG, "✅ Emotion system ready!");
+        if (display_) {
+            ESP_LOGI(TAG, "✅ AAF Display Framework ready!");
         } else {
-            ESP_LOGW(TAG, "⚠️  Emotion system init failed (will continue without emotions)");
+            ESP_LOGW(TAG, "⚠️  AAF Display Framework init failed");
         }
     }
 
