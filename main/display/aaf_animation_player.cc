@@ -47,11 +47,9 @@ AafAnimationPlayer::AafAnimationPlayer(esp_lcd_panel_io_handle_t panel_io,
         return;
     }
     
-    // 注册 panel_io 回调
-    const esp_lcd_panel_io_callbacks_t cbs = {
-        .on_color_trans_done = OnFlushIoReady,
-    };
-    esp_lcd_panel_io_register_event_callbacks(panel_io_, &cbs, player_handle_);
+    // 注意：不注册 panel_io 回调，因为 LVGL 已经注册了
+    // anim_player 将通过 flush_cb 通知需要刷新的区域
+    // 刷新操作由 LVGL 处理
     
     ESP_LOGI(TAG, "AAF Animation Player created successfully");
 }
@@ -201,9 +199,13 @@ void AafAnimationPlayer::OnFlush(anim_player_handle_t handle,
     int adj_x_end = x_end + self->canvas_x_;
     int adj_y_end = y_end + self->canvas_y_;
     
-    // 绘制到 LCD
+    // 绘制到 LCD（同步操作）
     esp_lcd_panel_draw_bitmap(self->panel_, adj_x_start, adj_y_start, 
                               adj_x_end, adj_y_end, color_data);
+    
+    // 立即通知 anim_player 刷新完成
+    // 因为 esp_lcd_panel_draw_bitmap 是同步的，刷新已完成
+    anim_player_flush_ready(handle);
 }
 
 void AafAnimationPlayer::OnUpdate(anim_player_handle_t handle, player_event_t event) {
