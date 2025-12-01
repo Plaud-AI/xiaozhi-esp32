@@ -35,7 +35,7 @@ dependencies:
   lvgl/lvgl: ~9.3.0
   esp_lvgl_port: ~2.6.0
   espressif/esp_io_expander_tca95xx_16bit: ^2.0.0
-  # espressif2022/image_player: ==1.1.0~1  # 组件不可用，已注释
+  espressif2022/image_player: "1.1.*"  # AAF Display Framework 需要
   espressif2022/esp_emote_gfx: ^1.1.0
   espressif/thorvg: ^0.13.8  # ThorVG for Lottie animation support
   espressif/adc_mic: ^0.2.1
