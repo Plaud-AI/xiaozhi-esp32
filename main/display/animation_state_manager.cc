@@ -260,10 +260,9 @@ bool AnimationStateManager::CheckPriorityAndInterrupt(Priority new_priority, boo
     
     // 优先级相同时的特殊规则
     if (new_priority == current_state_.priority) {
-        // 可以添加更细致的规则，例如：
-        // - 同优先级的感情状态可以互相打断
-        // - 同优先级的设备状态不能互相打断
-        return false;
+        // 修复：同优先级的设备状态可以互相切换（如 idle -> listening -> speaking）
+        // 这对于正常的状态机流转是必要的
+        return true;
     }
     
     return false;
