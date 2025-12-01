@@ -61,6 +61,7 @@ public:
     void SetStatus(const char* status) override;
     void SetEmotion(const char* emotion) override;
     void SetChatMessage(const char* role, const char* content) override;
+    void ShowAnimationByPath(const char* animation_path, bool loop = true) override;
     
     // 配置接口
     void SetTransitionEnabled(bool enabled);

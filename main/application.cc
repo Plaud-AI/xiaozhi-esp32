@@ -376,12 +376,11 @@ void Application::StopListening() {
 void Application::Start() {
     auto& board = Board::GetInstance();
     
-    // 初始化设备状态到动画的直接映射（简化方案）
-    ESP_LOGI(TAG, "Initializing DeviceAnimationMapper...");
-    // 路径格式：系统会先尝试文件系统，失败后从 Assets 分区加载（提取文件名）
-    display::DeviceAnimationMapper::GetInstance().Init("/spiffs/anim/");
-    display::DeviceAnimationMapper::GetInstance().RegisterDefaultMappings();
-    display::DeviceAnimationMapper::GetInstance().PrintMappings();
+    // AAF 动画框架：不再使用 DeviceAnimationMapper（Lottie 系统已废弃）
+    // 动画由 AafDisplayWidget::SetStatus -> AnimationStateManager 驱动
+    // display::DeviceAnimationMapper::GetInstance().Init("/spiffs/anim/");
+    // display::DeviceAnimationMapper::GetInstance().RegisterDefaultMappings();
+    // display::DeviceAnimationMapper::GetInstance().PrintMappings();
     
     SetDeviceState(kDeviceStateStarting);
 
@@ -809,16 +808,13 @@ void Application::SetDeviceState(DeviceState state) {
     auto display = board.GetDisplay();
     auto led = board.GetLed();
     led->OnStateChanged();
+    // AAF 动画框架：SetStatus 会自动通过 AnimationStateManager 驱动 AAF 动画
+    // 不再需要单独调用 ShowAnimationByPath（已废弃 Lottie 动画系统）
     switch (state) {
         case kDeviceStateUnknown:
         case kDeviceStateIdle:
             ESP_LOGI(TAG, "Entering IDLE state, enabling wake word detection...");
             display->SetStatus(Lang::Strings::STANDBY);
-            // 使用设备状态直接映射动画（简化方案）
-            display->ShowAnimationByPath(
-                display::DeviceAnimationMapper::GetInstance().GetAnimationPath(state).c_str(),
-                true  // loop
-            );
             audio_service_.EnableVoiceProcessing(false);
             audio_service_.EnableWakeWordDetection(true);
             
@@ -826,8 +822,6 @@ void Application::SetDeviceState(DeviceState state) {
             // Restore Doll system after AFE is stopped
             if (!DollInteractionManager::GetInstance().IsRunning()) {
                 ESP_LOGI(TAG, "🎭 Restoring Doll system (AFE stopped, SRAM available)...");
-                // ⚠️ IMPORTANT: Must call Start() only, Initialize() was already called at startup
-                // The DollInteractionManager is designed to be initialized once and can be started/stopped multiple times
                 DollInteractionManager::GetInstance().Start();
                 ESP_LOGI(TAG, "✅ Doll system restored");
             }
@@ -837,25 +831,13 @@ void Application::SetDeviceState(DeviceState state) {
             break;
         case kDeviceStateStarting:
             display->SetStatus(Lang::Strings::INITIALIZING);
-            display->ShowAnimationByPath(
-                display::DeviceAnimationMapper::GetInstance().GetAnimationPath(state).c_str(),
-                true
-            );
             break;
         case kDeviceStateConnecting:
             display->SetStatus(Lang::Strings::CONNECTING);
-            display->ShowAnimationByPath(
-                display::DeviceAnimationMapper::GetInstance().GetAnimationPath(state).c_str(),
-                true
-            );
             display->SetChatMessage("system", "");
             break;
         case kDeviceStateListening:
             display->SetStatus(Lang::Strings::LISTENING);
-            display->ShowAnimationByPath(
-                display::DeviceAnimationMapper::GetInstance().GetAnimationPath(state).c_str(),
-                true
-            );
 
             // Make sure the audio processor is running
             if (!audio_service_.IsAudioProcessorRunning()) {
@@ -883,10 +865,6 @@ void Application::SetDeviceState(DeviceState state) {
             break;
         case kDeviceStateSpeaking:
             display->SetStatus(Lang::Strings::SPEAKING);
-            display->ShowAnimationByPath(
-                display::DeviceAnimationMapper::GetInstance().GetAnimationPath(state).c_str(),
-                true
-            );
 
             if (listening_mode_ != kListeningModeRealtime) {
                 audio_service_.EnableVoiceProcessing(false);
@@ -897,38 +875,18 @@ void Application::SetDeviceState(DeviceState state) {
             break;
         case kDeviceStateWifiConfiguring:
             display->SetStatus(Lang::Strings::CONFIGURING);
-            display->ShowAnimationByPath(
-                display::DeviceAnimationMapper::GetInstance().GetAnimationPath(state).c_str(),
-                true
-            );
             break;
         case kDeviceStateAudioTesting:
-            display->SetStatus("音频测试");
-            display->ShowAnimationByPath(
-                display::DeviceAnimationMapper::GetInstance().GetAnimationPath(state).c_str(),
-                true
-            );
+            display->SetStatus(Lang::Strings::INITIALIZING);  // 使用初始化状态动画
             break;
         case kDeviceStateUpgrading:
-            display->SetStatus(Lang::Strings::OTA_UPGRADE);
-            display->ShowAnimationByPath(
-                display::DeviceAnimationMapper::GetInstance().GetAnimationPath(state).c_str(),
-                true
-            );
+            display->SetStatus(Lang::Strings::UPGRADING);
             break;
         case kDeviceStateActivating:
             display->SetStatus(Lang::Strings::ACTIVATION);
-            display->ShowAnimationByPath(
-                display::DeviceAnimationMapper::GetInstance().GetAnimationPath(state).c_str(),
-                true
-            );
             break;
         case kDeviceStateFatalError:
             display->SetStatus(Lang::Strings::ERROR);
-            display->ShowAnimationByPath(
-                display::DeviceAnimationMapper::GetInstance().GetAnimationPath(state).c_str(),
-                true
-            );
             break;
         default:
             // Do nothing

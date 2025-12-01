@@ -117,17 +117,57 @@ void AafDisplayWidget::SetStatus(const char* status) {
     // 这里需要根据实际的 Lang::Strings 定义来映射
     AnimationStateManager::DeviceState device_state = AnimationStateManager::DeviceState::Unknown;
     
+    // 待机/空闲状态
     if (strcmp(status, Lang::Strings::STANDBY) == 0) {
         device_state = AnimationStateManager::DeviceState::Idle;
-    } else if (strcmp(status, Lang::Strings::LISTENING) == 0) {
+    }
+    // 聆听状态
+    else if (strcmp(status, Lang::Strings::LISTENING) == 0) {
         device_state = AnimationStateManager::DeviceState::Listening;
-    } else if (strcmp(status, Lang::Strings::SPEAKING) == 0) {
+    }
+    // 说话状态
+    else if (strcmp(status, Lang::Strings::SPEAKING) == 0) {
         device_state = AnimationStateManager::DeviceState::Speaking;
-    } else if (strcmp(status, Lang::Strings::INITIALIZING) == 0) {
+    }
+    // 加载/初始化状态
+    else if (strcmp(status, Lang::Strings::INITIALIZING) == 0 ||
+             strcmp(status, Lang::Strings::LOADING_PROTOCOL) == 0 ||
+             strcmp(status, Lang::Strings::LOADING_ASSETS) == 0 ||
+             strcmp(status, Lang::Strings::PLEASE_WAIT) == 0 ||
+             strcmp(status, Lang::Strings::CHECKING_NEW_VERSION) == 0) {
         device_state = AnimationStateManager::DeviceState::Loading;
-    } else {
-        ESP_LOGW(TAG, "Unknown status string: %s", status);
-        return;
+    }
+    // 连接状态
+    else if (strcmp(status, Lang::Strings::CONNECTING) == 0 ||
+             strcmp(status, Lang::Strings::SCANNING_WIFI) == 0 ||
+             strcmp(status, Lang::Strings::REGISTERING_NETWORK) == 0) {
+        device_state = AnimationStateManager::DeviceState::Loading;
+    }
+    // 升级状态
+    else if (strcmp(status, Lang::Strings::UPGRADING) == 0) {
+        device_state = AnimationStateManager::DeviceState::Updating;
+    }
+    // 配置状态
+    else if (strcmp(status, Lang::Strings::CONFIGURING) == 0 ||
+             strcmp(status, Lang::Strings::WIFI_CONFIG_MODE) == 0 ||
+             strcmp(status, Lang::Strings::ENTERING_WIFI_CONFIG_MODE) == 0) {
+        device_state = AnimationStateManager::DeviceState::Settings;
+    }
+    // 错误状态
+    else if (strcmp(status, Lang::Strings::ERROR) == 0 ||
+             strcmp(status, Lang::Strings::SERVER_ERROR) == 0 ||
+             strcmp(status, Lang::Strings::SERVER_NOT_CONNECTED) == 0 ||
+             strcmp(status, Lang::Strings::UPGRADE_FAILED) == 0) {
+        device_state = AnimationStateManager::DeviceState::Error;
+    }
+    // 激活状态 - 视为加载
+    else if (strcmp(status, Lang::Strings::ACTIVATION) == 0) {
+        device_state = AnimationStateManager::DeviceState::Loading;
+    }
+    else {
+        // 未知状态，使用加载动画作为默认
+        ESP_LOGW(TAG, "Unknown status string: %s, using Loading as fallback", status);
+        device_state = AnimationStateManager::DeviceState::Loading;
     }
     
     // 切换状态
@@ -140,10 +180,23 @@ void AafDisplayWidget::SetEmotion(const char* emotion) {
         return;
     }
     
-    ESP_LOGI(TAG, "SetEmotion: %s", emotion);
+    // 第一阶段：只支持设备状态驱动的动画，情感动画待第二阶段实现
+    // 目前忽略情感设置请求，避免影响设备状态动画
+    ESP_LOGD(TAG, "SetEmotion: %s (ignored in phase 1, device-state-only mode)", emotion);
     
-    // 切换感情状态（使用默认优先级和超时）
-    state_manager_->SetEmotionState(emotion);
+    // TODO: 第二阶段实现情感动画
+    // state_manager_->SetEmotionState(emotion);
+}
+
+void AafDisplayWidget::ShowAnimationByPath(const char* animation_path, bool loop) {
+    // 第一阶段：动画由状态管理器统一驱动，忽略直接的动画路径调用
+    // 这样可以避免 Application 中 SetStatus + ShowAnimationByPath 的双重调用冲突
+    // SetStatus 已经通过 AnimationStateManager 触发了正确的 AAF 动画
+    ESP_LOGD(TAG, "ShowAnimationByPath: %s (ignored, using state-driven AAF animations)", 
+             animation_path ? animation_path : "null");
+    
+    // TODO: 如果需要支持自定义动画路径，可以在这里实现
+    // 例如：解析路径，找到对应的 AAF 动画索引，然后播放
 }
 
 void AafDisplayWidget::SetChatMessage(const char* role, const char* content) {
@@ -316,20 +369,35 @@ bool AafDisplayWidget::InitializeStateManager() {
     );
     
     state_manager_->RegisterDeviceStateMapping(
+        AnimationStateManager::DeviceState::Settings,
+        "settings.aaf", 4, true, 15, AnimationStateManager::Priority::Normal
+    );
+    
+    state_manager_->RegisterDeviceStateMapping(
+        AnimationStateManager::DeviceState::Updating,
+        "updating.aaf", 5, true, 15, AnimationStateManager::Priority::Normal
+    );
+    
+    state_manager_->RegisterDeviceStateMapping(
+        AnimationStateManager::DeviceState::Success,
+        "success.aaf", 6, false, 15, AnimationStateManager::Priority::Normal
+    );
+    
+    state_manager_->RegisterDeviceStateMapping(
         AnimationStateManager::DeviceState::Error,
         "error.aaf", 7, true, 15, AnimationStateManager::Priority::Critical
     );
     
-    // 注册感情状态映射（示例）
-    state_manager_->RegisterEmotionMapping(
-        "happy", "happy.aaf", 8, true, 20, AnimationStateManager::Priority::High
-    );
+    // 第一阶段：只支持设备状态驱动，情感动画待第二阶段实现
+    // 注释掉情感状态映射
+    // state_manager_->RegisterEmotionMapping(
+    //     "happy", "happy.aaf", 8, true, 20, AnimationStateManager::Priority::High
+    // );
+    // state_manager_->RegisterEmotionMapping(
+    //     "sad", "sad.aaf", 9, true, 15, AnimationStateManager::Priority::High
+    // );
     
-    state_manager_->RegisterEmotionMapping(
-        "sad", "sad.aaf", 9, true, 15, AnimationStateManager::Priority::High
-    );
-    
-    ESP_LOGI(TAG, "State manager initialized successfully");
+    ESP_LOGI(TAG, "State manager initialized (phase 1: device-state-only mode)");
     return true;
 }
 
