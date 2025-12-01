@@ -238,8 +238,8 @@ bool AafDisplayWidget::InitializeResources() {
     
     resource_manager_ = std::make_unique<AnimationResourceManager>();
     
-    // 方式一：使用 mmap_assets（推荐，零拷贝，不占用 SRAM）
-    // 需要先用 mmap_assets 工具打包动画到 assets 分区
+    // 使用 mmap_assets（零拷贝，不占用 SRAM）
+    // 动画文件通过构建系统自动打包到 assets 分区
     AnimationResourceManager::PartitionConfig mmap_config = {
         .partition_label = "assets",
         .max_files = 8,       // 8 个设备状态动画
@@ -249,35 +249,34 @@ bool AafDisplayWidget::InitializeResources() {
     
     esp_err_t ret = resource_manager_->InitFromPartition(mmap_config);
     if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "✅ Loaded %d animations from mmap partition (zero-copy)", 
+        ESP_LOGI(TAG, "✅ Loaded %d animations from mmap partition (zero-copy, ~2KB SRAM)", 
                  resource_manager_->GetAnimationCount());
         return true;
     }
     
-    // 方式二：回退到文件系统（占用 SRAM，仅用于测试）
-    ESP_LOGW(TAG, "Failed to load from partition (%s), trying file system...", 
-             esp_err_to_name(ret));
+    // 如果加载失败，继续运行但无动画
+    ESP_LOGE(TAG, "❌ Failed to load animations from partition: %s", esp_err_to_name(ret));
+    ESP_LOGW(TAG, "⚠️  Continuing without animations (check if assets.bin is flashed)");
+    ESP_LOGW(TAG, "    Run 'idf.py build flash' to rebuild and flash assets");
     
-    AnimationResourceManager::AnimationPath animation_paths[] = {
-        {"/assets/animations/idle.aaf",       AnimationConfig::GetRecommendedFps("idle"),       "idle"},
-        {"/assets/animations/listening.aaf",  AnimationConfig::GetRecommendedFps("listening"),  "listening"},
-        {"/assets/animations/speaking.aaf",   AnimationConfig::GetRecommendedFps("speaking"),   "speaking"},
-        {"/assets/animations/loading.aaf",    AnimationConfig::GetRecommendedFps("loading"),    "loading"},
-        {"/assets/animations/settings.aaf",   AnimationConfig::GetRecommendedFps("settings"),   "settings"},
-        {"/assets/animations/updating.aaf",   AnimationConfig::GetRecommendedFps("updating"),   "updating"},
-        {"/assets/animations/success.aaf",    AnimationConfig::GetRecommendedFps("success"),    "success"},
-        {"/assets/animations/error.aaf",      AnimationConfig::GetRecommendedFps("error"),      "error"},
-    };
-    
-    ret = resource_manager_->InitFromFileSystem(animation_paths, 8);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to load animations from file system: %s", esp_err_to_name(ret));
-        ESP_LOGW(TAG, "⚠️  Continuing without animations");
-        // 即使失败也继续，只是没有动画
-    } else {
-        ESP_LOGW(TAG, "✅ Loaded %d animations from file system (using ~1.6MB SRAM!)", 
-                 resource_manager_->GetAnimationCount());
-    }
+    // 可选：如果需要 SPIFFS 回退方案（占用 ~1.6MB SRAM），取消下面的注释
+    // 
+    // ESP_LOGW(TAG, "Trying file system fallback...");
+    // AnimationResourceManager::AnimationPath animation_paths[] = {
+    //     {"/assets/animations/idle.aaf",       AnimationConfig::GetRecommendedFps("idle"),       "idle"},
+    //     {"/assets/animations/listening.aaf",  AnimationConfig::GetRecommendedFps("listening"),  "listening"},
+    //     {"/assets/animations/speaking.aaf",   AnimationConfig::GetRecommendedFps("speaking"),   "speaking"},
+    //     {"/assets/animations/loading.aaf",    AnimationConfig::GetRecommendedFps("loading"),    "loading"},
+    //     {"/assets/animations/settings.aaf",   AnimationConfig::GetRecommendedFps("settings"),   "settings"},
+    //     {"/assets/animations/updating.aaf",   AnimationConfig::GetRecommendedFps("updating"),   "updating"},
+    //     {"/assets/animations/success.aaf",    AnimationConfig::GetRecommendedFps("success"),    "success"},
+    //     {"/assets/animations/error.aaf",      AnimationConfig::GetRecommendedFps("error"),      "error"},
+    // };
+    // ret = resource_manager_->InitFromFileSystem(animation_paths, 8);
+    // if (ret == ESP_OK) {
+    //     ESP_LOGW(TAG, "✅ Loaded %d animations from file system (using ~1.6MB SRAM!)", 
+    //              resource_manager_->GetAnimationCount());
+    // }
     
     return true;  // 即使动画加载失败，UI 仍然可以工作
 }

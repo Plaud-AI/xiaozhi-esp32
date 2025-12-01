@@ -1,7 +1,7 @@
 #include "wifi_board.h"
 #include "codecs/box_audio_codec.h"
 #include "display/aaf_display_widget.h"
-#include "mount_assets_spiffs.h"
+// #include "mount_assets_spiffs.h"  // 使用 mmap_assets 时不需要
 #include "application.h"
 #include "button.h"
 #include "config.h"
@@ -424,11 +424,14 @@ public:
         InitializeSpi();
         InitializeButtons();
         
-        // 挂载 assets SPIFFS 分区（用于动画资源）
-        ESP_LOGI(TAG, "Mounting assets SPIFFS partition...");
-        if (!assets_mount::MountAssetsAsSPIFFS()) {
-            ESP_LOGW(TAG, "Failed to mount assets SPIFFS (continuing without animations)");
-        }
+        // 注意：如果使用 mmap_assets 格式，不需要挂载 SPIFFS
+        // assets 分区将通过 mmap 直接映射，零拷贝访问
+        // 
+        // 如果需要使用 SPIFFS 作为回退方案，取消下面的注释：
+        // ESP_LOGI(TAG, "Mounting assets SPIFFS partition...");
+        // if (!assets_mount::MountAssetsAsSPIFFS()) {
+        //     ESP_LOGW(TAG, "Failed to mount assets SPIFFS (continuing without animations)");
+        // }
         
         #ifdef LCD_TYPE_ILI9341_SERIAL
         InitializeIli9341Display(); 
