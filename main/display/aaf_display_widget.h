@@ -79,6 +79,7 @@ private:
     // 硬件句柄
     esp_lcd_panel_io_handle_t panel_io_;
     esp_lcd_panel_handle_t panel_;
+    lv_display_t* lvgl_display_;  // LVGL display handle
     
     // 核心组件
     std::unique_ptr<AnimationResourceManager> resource_manager_;
@@ -97,6 +98,7 @@ private:
     esp_timer_handle_t timeout_timer_;
     
     // 初始化
+    void InitializeLvgl();  // 初始化 LVGL port
     bool InitializeResources();
     bool InitializeStateManager();
     bool InitializeAnimationPlayer();

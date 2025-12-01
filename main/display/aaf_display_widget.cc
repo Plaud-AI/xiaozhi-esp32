@@ -1,6 +1,8 @@
 #include "aaf_display_widget.h"
 #include <esp_log.h>
 #include <esp_lvgl_port.h>
+#include <esp_psram.h>
+#include <lvgl.h>
 #include <string.h>
 #include "assets/lang_config.h"
 
@@ -37,6 +39,7 @@ AafDisplayWidget::AafDisplayWidget(esp_lcd_panel_io_handle_t panel_io,
                                    int width, int height)
     : panel_io_(panel_io)
     , panel_(panel)
+    , lvgl_display_(nullptr)
     , status_bar_(nullptr)
     , animation_canvas_(nullptr)
     , timeout_timer_(nullptr) {
@@ -52,6 +55,9 @@ AafDisplayWidget::AafDisplayWidget(esp_lcd_panel_io_handle_t panel_io,
              screen_config_.animation_canvas.y,
              screen_config_.animation_canvas.width,
              screen_config_.animation_canvas.height);
+    
+    // 先初始化 LVGL port（必须在创建 UI 之前）
+    InitializeLvgl();
     
     // 初始化各个组件
     if (!InitializeResources()) {
@@ -163,6 +169,67 @@ bool AafDisplayWidget::Lock(int timeout_ms) {
 
 void AafDisplayWidget::Unlock() {
     lvgl_port_unlock();
+}
+
+void AafDisplayWidget::InitializeLvgl() {
+    ESP_LOGI(TAG, "Initialize LVGL library");
+    lv_init();
+
+#if CONFIG_SPIRAM
+    // lv image cache
+    size_t psram_size_mb = esp_psram_get_size() / 1024 / 1024;
+    if (psram_size_mb >= 8) {
+        lv_image_cache_resize(2 * 1024 * 1024, true);
+        ESP_LOGI(TAG, "Use 2MB of PSRAM for image cache");
+    } else if (psram_size_mb >= 2) {
+        lv_image_cache_resize(512 * 1024, true);
+        ESP_LOGI(TAG, "Use 512KB of PSRAM for image cache");
+    }
+#endif
+
+    ESP_LOGI(TAG, "Initialize LVGL port");
+    lvgl_port_cfg_t port_cfg = ESP_LVGL_PORT_INIT_CONFIG();
+    // 优化任务调度：
+    // - 优先级 3：高于 IDLE(0) 和 opus_codec(2)，低于 audio 任务(4-8)
+    // - 不固定 CPU：让调度器灵活分配，避免阻塞 Core 1 的 IDLE 任务
+    port_cfg.task_priority = 3;
+    // task_affinity 默认为 -1 (不固定)，无需设置
+    lvgl_port_init(&port_cfg);
+
+    ESP_LOGI(TAG, "Adding LCD display");
+    const lvgl_port_display_cfg_t display_cfg = {
+        .io_handle = panel_io_,
+        .panel_handle = panel_,
+        .control_handle = nullptr,
+        .buffer_size = static_cast<uint32_t>(screen_config_.width * 20),
+        .double_buffer = false,
+        .trans_size = 0,
+        .hres = static_cast<uint32_t>(screen_config_.width),
+        .vres = static_cast<uint32_t>(screen_config_.height),
+        .monochrome = false,
+        .rotation = {
+            .swap_xy = false,
+            .mirror_x = false,
+            .mirror_y = false,
+        },
+        .color_format = LV_COLOR_FORMAT_RGB565,
+        .flags = {
+            .buff_dma = 1,
+            .buff_spiram = 0,
+            .sw_rotate = 0,
+            .swap_bytes = 1,
+            .full_refresh = 0,
+            .direct_mode = 0,
+        },
+    };
+
+    lvgl_display_ = lvgl_port_add_disp(&display_cfg);
+    if (lvgl_display_ == nullptr) {
+        ESP_LOGE(TAG, "Failed to add display");
+        return;
+    }
+
+    ESP_LOGI(TAG, "LVGL initialized successfully");
 }
 
 bool AafDisplayWidget::InitializeResources() {
