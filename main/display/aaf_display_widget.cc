@@ -268,15 +268,15 @@ void AafDisplayWidget::InitializeLvgl() {
             .mirror_x = false,
             .mirror_y = false,
         },
-        .color_format = LV_COLOR_FORMAT_RGB565,
-        .flags = {
-            .buff_dma = 1,
-            .buff_spiram = 0,
-            .sw_rotate = 0,
-            .swap_bytes = 1,
-            .full_refresh = 0,
-            .direct_mode = 0,
-        },
+    .color_format = LV_COLOR_FORMAT_RGB565,
+    .flags = {
+        .buff_dma = 1,
+        .buff_spiram = 1,  // ✅ 使用 PSRAM 作为显示缓冲区，节省 ~10KB 内部 SRAM
+        .sw_rotate = 0,
+        .swap_bytes = 1,
+        .full_refresh = 0,
+        .direct_mode = 0,
+    },
     };
 
     lvgl_display_ = lvgl_port_add_disp(&display_cfg);

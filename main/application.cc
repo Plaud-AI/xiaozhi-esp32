@@ -798,11 +798,10 @@ void Application::SetDeviceState(DeviceState state) {
     // Send the state change event
     DeviceStateEventManager::GetInstance().PostStateChangeEvent(previous_state, state);
 
-    // ⚠️ CRITICAL: Ensure BLE Provisioner is STOPPED when entering active states
-    // to prevent BLE controller from crashing due to coexistence issues with WiFi/Audio.
-    if (state == kDeviceStateConnecting || state == kDeviceStateListening || state == kDeviceStateSpeaking) {
-        BLEWiFiProvisioner::GetInstance().Stop();
-    }
+    // ✅ BLE 常驻模式：不再在对话时停止 BLE
+    // 已通过 PSRAM 优化释放足够内存，BLE 可以与 WiFi/Audio 共存
+    // 如果内存不足，系统会自动降级或报警
+    // (原代码会在对话时停止 BLE，导致手机无法连接)
 
     auto& board = Board::GetInstance();
     auto display = board.GetDisplay();
