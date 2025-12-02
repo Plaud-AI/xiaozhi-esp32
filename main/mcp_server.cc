@@ -17,6 +17,7 @@
 #include "settings.h"
 #include "lvgl_theme.h"
 #include "lvgl_display.h"
+#include "boards/common/wifi_board.h"  // 添加 WifiBoard 头文件
 
 #define TAG "MCP"
 
@@ -297,6 +298,23 @@ void McpServer::AddUserOnlyTools() {
                 auto url = properties["url"].value<std::string>();
                 Settings settings("assets", true);
                 settings.SetString("download_url", url);
+                return true;
+            });
+    }
+
+    // BLE 配置模式（仅 WifiBoard）
+    auto wifi_board = dynamic_cast<WifiBoard*>(&Board::GetInstance());
+    if (wifi_board) {
+        AddUserOnlyTool("self.enter_ble_config_mode",
+            "Enter BLE configuration mode to configure WiFi and other settings via Bluetooth. "
+            "This will stop WiFi and start BLE service. Use this when user asks to configure device settings via Bluetooth.",
+            PropertyList(),
+            [wifi_board](const PropertyList& properties) -> ReturnValue {
+                auto& app = Application::GetInstance();
+                app.Schedule([wifi_board]() {
+                    ESP_LOGI(TAG, "User requested to enter BLE configuration mode via voice command");
+                    wifi_board->EnterBleConfigMode();
+                });
                 return true;
             });
     }

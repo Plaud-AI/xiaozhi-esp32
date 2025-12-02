@@ -28,8 +28,8 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(ret);
 
     // ====== 内存优化：提前释放 Classic BT 内存 ======
-    // BLE 控制器将在需要时（WiFi 配网）延迟初始化
-    // 这样可以为 WiFi 留出足够的内部 RAM
+    // BLE 控制器将在需要时（WiFi 配网或常驻模式）延迟初始化
+    // ⚠️ 注意：不在此处初始化 BLE 控制器，以为 WiFi 留出足够的内部 RAM
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "🔧 内存优化：释放 Classic BT 内存");
     ESP_LOGI(TAG, "========================================");
@@ -42,17 +42,19 @@ extern "C" void app_main(void)
         ESP_LOGW(TAG, "⚠️  释放 Classic BT 内存失败: %d (可能已释放)", ret);
     }
     
-    // 注意：BLE 控制器延迟初始化
-    // - WiFi 初始化需要大量内部 RAM
-    // - BLE 控制器只在 WiFi 配网时需要
-    // - 由 BLEWiFiProvisioner 或 BluetoothService 按需初始化
-    ESP_LOGI(TAG, "   - BLE 控制器将延迟初始化（按需）");
+    // 注意：BLE 控制器延迟初始化策略
+    // - WiFi 初始化需要大量内部 RAM（静态缓冲区等）
+    // - 提前初始化 BLE 会导致 WiFi 初始化失败（ESP_ERR_NO_MEM）
+    // - BLE 控制器将在以下时机初始化：
+    //   1. WiFi 配网模式：由 BLEWiFiProvisioner 按需初始化
+    //   2. WiFi 成功后：在 WiFi 连接成功后启动 BLE 常驻模式
+    ESP_LOGI(TAG, "   - BLE 控制器将延迟初始化（WiFi 成功后）");
     ESP_LOGI(TAG, "   - WiFi 将优先获得内部 RAM");
     ESP_LOGI(TAG, "========================================");
 
     // Launch the application
     // WiFi 将在 Application::Start() 中初始化
-    // BLE 将在需要配网时由 BLEWiFiProvisioner 初始化
+    // BLE 将在需要时（配网或 WiFi 成功后）按需初始化
     auto& app = Application::GetInstance();
     app.Start();
 }

@@ -166,7 +166,7 @@ void WifiBoard::EnterWifiConfigMode() {
         
         // 初始化并启动 BLE WiFi 配网
         // BLE 配网会自动使用 WifiStation 缓存的扫描结果
-        if (provisioner.Initialize("ESP32-PLAUD")) {
+        if (provisioner.Initialize("ESP32-OKAY-NABU")) {
             if (provisioner.Start()) {
                 ESP_LOGI(TAG, "✓ BLE配网服务已启动");
                 ESP_LOGI(TAG, "✓ BLE将复用Soft AP的WiFi扫描结果");
@@ -249,47 +249,16 @@ void WifiBoard::StartNetwork() {
         return;
     }
     
-    // ====== WiFi连接成功后，完全停止 BLE 协议栈以确保稳定性 (Coexistence) ======
-    // ⚠️ CRITICAL: 在 ESP32-S3 上，WiFi 和 BLE 共存可能导致定时器冲突崩溃。
-    // 必须按正确顺序停止:
-    // 1. 停止 BLE WiFi Provisioner (停止广播)
-    // 2. 完全停止 NimBLE 协议栈 (nimble_port_stop + nimble_port_deinit)
-    // 3. 禁用 BLE 控制器 (esp_bt_controller_disable)
-    // 4. 禁用 WiFi Power Save
+    // ====== WiFi 连接成功，正常工作模式 ======
+    // 注意：BLE 仅在配网模式下使用，正常模式不启动 BLE
+    // 原因：内存限制，WiFi + BLE + AAF Display 同时运行会导致内存不足
     ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "✅ WiFi 连接成功，正在完全停止 BLE 协议栈...");
+    ESP_LOGI(TAG, "✅ WiFi 连接成功，进入正常工作模式");
     ESP_LOGI(TAG, "========================================");
-    
-    // 步骤1: 停止 BLE WiFi Provisioner
-    auto& provisioner = BLEWiFiProvisioner::GetInstance();
-    provisioner.Stop();
-    
-    // 步骤2: 完全停止 NimBLE 协议栈 (关键！防止 WiFi/BLE 共存定时器崩溃)
-    // 直接调用 esp_bt_controller_disable() 而不停止 NimBLE Host 会导致内部定时器状态不一致
-    auto& ble_service = BluetoothService::GetInstance();
-    ble_service.Deinitialize();
-    
-    // 步骤3: 禁用 BLE 控制器
-    #ifdef CONFIG_BT_ENABLED
-    vTaskDelay(pdMS_TO_TICKS(50));  // 等待 NimBLE 完全清理
-    esp_err_t err = esp_bt_controller_disable();
-    if (err == ESP_OK) {
-        ESP_LOGI(TAG, "✅ BLE 控制器已禁用 (System Stability Fix)");
-    } else {
-        ESP_LOGW(TAG, "⚠️ 无法禁用 BLE 控制器: %s", esp_err_to_name(err));
-    }
-    #endif
-    
-    // 步骤4: 禁用 WiFi Power Save 模式
-    wifi_station.SetPowerSaveMode(false);
-    ESP_LOGI(TAG, "✅ WiFi Power Save 模式已禁用 (Lottie 稳定性优化)");
-
-    // 仅初始化用于 MAC 地址查询等功能，但不启动广播
-    // ⚠️ 优化：如果 WiFi 已连接，不要重新初始化 BLE Stack，避免内存开销和潜在崩溃
-    // if (provisioner.Initialize("ESP32-PLAUD")) {
-    //     ESP_LOGI(TAG, "✓ BLE服务已初始化（被动模式）");
-    // }
-    
+    ESP_LOGI(TAG, "ℹ️  BLE 未启动（仅配网模式可用）");
+    ESP_LOGI(TAG, "ℹ️  如需配置设备，请：");
+    ESP_LOGI(TAG, "   1. 通过语音命令进入配置模式");
+    ESP_LOGI(TAG, "   2. 或清除 WiFi 配置后重启");
     ESP_LOGI(TAG, "========================================");
 }
 
@@ -362,6 +331,66 @@ void WifiBoard::ResetWifiConfiguration() {
     vTaskDelay(pdMS_TO_TICKS(1000));
     // Reboot the device
     esp_restart();
+}
+
+void WifiBoard::EnterBleConfigMode() {
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "🔧 进入 BLE 配置模式（通过语音命令触发）");
+    ESP_LOGI(TAG, "========================================");
+    
+    // 步骤1: 停止 WiFi（释放内存）
+    ESP_LOGI(TAG, "停止 WiFi 以释放内存...");
+    auto& wifi_station = WifiStation::GetInstance();
+    wifi_station.Stop();
+    vTaskDelay(pdMS_TO_TICKS(500));  // 等待 WiFi 完全停止
+    
+    // 步骤2: 初始化并启动 BLE 配网服务
+    auto& provisioner = BLEWiFiProvisioner::GetInstance();
+    
+    // 设置配网成功回调（自动重启以应用新配置）
+    provisioner.SetProvisionSuccessCallback([](const std::string& ssid, const std::string& password) {
+        ESP_LOGI(TAG, "╔════════════════════════════════════════╗");
+        ESP_LOGI(TAG, "║   ✅ BLE WiFi配置更新成功              ║");
+        ESP_LOGI(TAG, "╚════════════════════════════════════════╝");
+        ESP_LOGI(TAG, "新SSID: %s", ssid.c_str());
+        ESP_LOGI(TAG, "设备将在 2 秒后重启以应用新配置...");
+        
+        // 延迟重启，给时间发送 BLE 响应
+        vTaskDelay(pdMS_TO_TICKS(2000));
+        esp_restart();
+    });
+    
+    provisioner.SetProvisionFailureCallback([](const std::string& error_message) {
+        ESP_LOGE(TAG, "╔════════════════════════════════════════╗");
+        ESP_LOGE(TAG, "║   ❌ BLE WiFi配置失败                  ║");
+        ESP_LOGE(TAG, "╚════════════════════════════════════════╝");
+        ESP_LOGE(TAG, "错误: %s", error_message.c_str());
+    });
+    
+    // 步骤3: 初始化 BLE 服务
+    GetDisplay()->ShowNotification("启动 BLE 配置...");
+    
+    if (provisioner.Initialize("ESP32-OKAY-NABU")) {
+        ESP_LOGI(TAG, "✓ BLE 服务初始化成功");
+        
+        // 启动 BLE 广播
+        if (provisioner.Start()) {
+            ESP_LOGI(TAG, "✅ BLE 配置服务已启动");
+            ESP_LOGI(TAG, "✓ 设备名称: ESP32-OKAY-NABU");
+            ESP_LOGI(TAG, "✓ 可通过 BLE 进行设备配置");
+            GetDisplay()->ShowNotification("BLE 配置模式就绪");
+        } else {
+            ESP_LOGW(TAG, "⚠️  BLE 服务启动失败");
+            GetDisplay()->ShowNotification("BLE 启动失败");
+        }
+    } else {
+        ESP_LOGW(TAG, "⚠️  BLE 服务初始化失败");
+        GetDisplay()->ShowNotification("BLE 初始化失败");
+    }
+    
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "提示: 配置完成后请重启设备以恢复 WiFi");
+    ESP_LOGI(TAG, "========================================");
 }
 
 std::string WifiBoard::GetDeviceStatusJson() {
