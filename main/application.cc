@@ -827,8 +827,9 @@ void Application::SetDeviceState(DeviceState state) {
             }
 #endif
             
-            // 🔵 IDLE 状态启动 BLE 广播（闲时 BLE 可用策略）
-            // BLE 在进入 Connecting/Listening/Speaking 状态时会自动停止（见上方代码）
+            // 🔵 IDLE 状态启动 BLE 广播
+            // 策略：闲时 BLE 可用，语音对话时 BLE 关闭
+            // BLE 在进入 Connecting/Listening/Speaking 状态时自动停止（见上方代码）
             {
                 auto& ble_provisioner = BLEWiFiProvisioner::GetInstance();
                 if (!ble_provisioner.IsProvisioning()) {

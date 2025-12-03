@@ -254,22 +254,23 @@ void WifiBoard::StartNetwork() {
     ESP_LOGI(TAG, "✅ WiFi 连接成功，进入正常工作模式");
     ESP_LOGI(TAG, "========================================");
     
-    // ====== 初始化 BLE（不启动广播）======
-    // BLE 将在 IDLE 状态时自动启动广播，进入语音对话时自动停止
-    // 这样实现"闲时 BLE 可用，对话时 BLE 关闭"的策略
-    ESP_LOGI(TAG, "🔵 初始化 BLE 服务（闲时模式）...");
+    // ====== 初始化 BLE 服务（不启动广播）======
+    // BLE 控制器已在 main.cc 中提前初始化
+    // 这里只初始化 BLE 服务层，广播将在 IDLE 状态时启动
+    // 策略：闲时（IDLE）BLE 可用，语音对话时 BLE 关闭
+    ESP_LOGI(TAG, "🔵 初始化 BLE 服务...");
     
-    // 禁用 WiFi 省电模式以保证 BLE 稳定性
+    // 禁用 WiFi 省电模式以保证 BLE/WiFi 共存稳定性
     wifi_station.SetPowerSaveMode(false);
     ESP_LOGI(TAG, "✅ WiFi 省电模式已禁用");
     
     auto& provisioner = BLEWiFiProvisioner::GetInstance();
     if (provisioner.Initialize()) {
         ESP_LOGI(TAG, "✅ BLE 服务初始化成功");
-        ESP_LOGI(TAG, "ℹ️  BLE 将在设备空闲时自动开启广播");
-        ESP_LOGI(TAG, "ℹ️  语音对话期间 BLE 将自动关闭");
+        ESP_LOGI(TAG, "ℹ️  BLE 将在 IDLE 状态自动开启广播");
+        ESP_LOGI(TAG, "ℹ️  语音对话期间 BLE 自动关闭");
     } else {
-        ESP_LOGW(TAG, "⚠️  BLE 服务初始化失败，闲时 BLE 功能不可用");
+        ESP_LOGW(TAG, "⚠️  BLE 服务初始化失败");
     }
     ESP_LOGI(TAG, "========================================");
 }

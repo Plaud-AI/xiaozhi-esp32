@@ -93,6 +93,29 @@ public:
      */
     bool IsConnected() const { return connected_; }
 
+    /**
+     * @brief 是否已通过应用层认证
+     */
+    bool IsAuthenticated() const { return authenticated_; }
+
+    /**
+     * @brief 获取厂商标识码（用于广播过滤）
+     * @return 厂商标识码，App 端用于过滤扫描结果
+     */
+    static uint16_t GetManufacturerId();
+
+    /**
+     * @brief 获取应用签名标识（用于广播过滤）
+     * @return 应用签名标识，App 端用于验证设备
+     */
+    static uint32_t GetAppSignature();
+
+    /**
+     * @brief 主动断开当前连接
+     * @param reason 断开原因（可选）
+     */
+    void Disconnect(uint8_t reason = 0x13);
+
     // NimBLE回调函数(需要是public的，因为要在C结构体中使用)
     static int gap_event_handler(struct ble_gap_event *event, void *arg);
     static int gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_handle,
@@ -105,6 +128,7 @@ private:
     std::string device_name_;
     bool initialized_;
     bool connected_;
+    bool authenticated_;  // 应用层认证状态
     uint16_t conn_handle_;
     uint16_t mtu_;  // 当前MTU大小
     std::function<void(const std::string&)> data_received_callback_;
@@ -112,11 +136,26 @@ private:
     // 分包接收缓冲区
     std::string receive_buffer_;  // 累积接收到的数据片段
     
+    // 认证挑战码
+    uint8_t auth_challenge_[32];
+    
     /**
      * @brief 处理接收到的数据片段（支持分包重组）
      * @param data 接收到的数据片段
      */
     void ProcessReceivedData(const std::string& data);
+    
+    /**
+     * @brief 处理认证请求
+     * @param data 认证数据
+     * @return true 认证成功，false 认证失败
+     */
+    bool HandleAuthRequest(const std::string& data);
+    
+    /**
+     * @brief 生成新的认证挑战码
+     */
+    void GenerateAuthChallenge();
 };
 
 #endif // BLUETOOTH_SERVICE_H
