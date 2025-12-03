@@ -7,6 +7,8 @@
 #include <string.h>
 #include <string>
 #include "assets/lang_config.h"
+#include "ble_wifi_provisioner.h"
+#include <font_awesome.h>
 
 static const char* TAG = "AafDisplayWidget";
 
@@ -44,6 +46,7 @@ AafDisplayWidget::AafDisplayWidget(esp_lcd_panel_io_handle_t panel_io,
     , lvgl_display_(nullptr)
     , status_bar_(nullptr)
     , animation_canvas_(nullptr)
+    , ble_icon_label_(nullptr)
     , timeout_timer_(nullptr) {
     
     ESP_LOGI(TAG, "Creating AafDisplayWidget: %dx%d", width, height);
@@ -439,6 +442,13 @@ void AafDisplayWidget::InitializeUI() {
     lv_obj_set_pos(status_bar_, 0, 0);
     lv_obj_set_style_bg_color(status_bar_, lv_color_hex(0x000000), 0);
     lv_obj_set_style_border_width(status_bar_, 0, 0);
+    lv_obj_set_style_pad_all(status_bar_, 2, 0);
+    
+    // 创建蓝牙图标标签（在状态栏右侧）
+    ble_icon_label_ = lv_label_create(status_bar_);
+    lv_obj_set_style_text_color(ble_icon_label_, lv_color_hex(0x3399FF), 0);  // 蓝色
+    lv_label_set_text(ble_icon_label_, "");  // 初始为空，BLE 启动后显示
+    lv_obj_align(ble_icon_label_, LV_ALIGN_RIGHT_MID, -4, 0);
     
     // 创建动画画布区域（可选，用于显示边框或背景）
     animation_canvas_ = lv_obj_create(screen);
@@ -559,8 +569,19 @@ void AafDisplayWidget::OnStateChanged(const AnimationStateManager::StateChangeEv
 }
 
 void AafDisplayWidget::UpdateStatusBar() {
-    // TODO: 更新状态栏显示
-    // 可以显示当前状态名称、电池、网络等信息
+    // 更新蓝牙图标显示
+    if (ble_icon_label_) {
+        Lock();
+        auto& ble_provisioner = BLEWiFiProvisioner::GetInstance();
+        if (ble_provisioner.IsProvisioning()) {
+            // BLE 广播中，显示蓝牙图标
+            lv_label_set_text(ble_icon_label_, FONT_AWESOME_BLUETOOTH);
+        } else {
+            // BLE 未广播，隐藏图标
+            lv_label_set_text(ble_icon_label_, "");
+        }
+        Unlock();
+    }
 }
 
 void AafDisplayWidget::StartTimeoutTimer(uint32_t timeout_ms) {

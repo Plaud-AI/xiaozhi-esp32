@@ -13,6 +13,11 @@
 
 #define TAG "BluetoothService"
 
+// ====== BLE 配对 PIN 配置 ======
+// 固定的 6 位数字 PIN 码，用于 BLE 配对认证
+// 手机连接时需要输入此 PIN 才能建立连接
+#define BLE_PASSKEY 123456
+
 // 自定义服务UUID和特征UUID
 // 服务UUID: 0000ffe0-0000-1000-8000-00805f9b34fb
 static const ble_uuid128_t XIAOZHI_SERVICE_UUID = 
@@ -247,6 +252,78 @@ int BluetoothService::gap_event_handler(struct ble_gap_event *event, void *arg) 
             break;
         }
 
+        // ====== BLE 配对相关事件 ======
+        case BLE_GAP_EVENT_PASSKEY_ACTION: {
+            ESP_LOGI(TAG, "");
+            ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
+            ESP_LOGI(TAG, "║ 🔐 BLE 配对请求");
+            ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════");
+            ESP_LOGI(TAG, "║ 配对动作: %d", event->passkey.params.action);
+            
+            struct ble_sm_io pkey = {0};
+            
+            if (event->passkey.params.action == BLE_SM_IOACT_DISP) {
+                // 显示 Passkey 模式：设备显示 PIN，用户在手机上输入
+                pkey.action = event->passkey.params.action;
+                pkey.passkey = BLE_PASSKEY;
+                ESP_LOGI(TAG, "║");
+                ESP_LOGI(TAG, "║ 📱 请在手机上输入配对码: %06lu", (unsigned long)BLE_PASSKEY);
+                ESP_LOGI(TAG, "║");
+                int rc = ble_sm_inject_io(event->passkey.conn_handle, &pkey);
+                if (rc != 0) {
+                    ESP_LOGE(TAG, "║ ❌ 注入 Passkey 失败: %d", rc);
+                }
+            } else if (event->passkey.params.action == BLE_SM_IOACT_INPUT) {
+                // 输入 Passkey 模式：用户在设备上输入（我们使用固定 PIN）
+                pkey.action = event->passkey.params.action;
+                pkey.passkey = BLE_PASSKEY;
+                ESP_LOGI(TAG, "║ 🔑 自动输入配对码: %06lu", (unsigned long)BLE_PASSKEY);
+                int rc = ble_sm_inject_io(event->passkey.conn_handle, &pkey);
+                if (rc != 0) {
+                    ESP_LOGE(TAG, "║ ❌ 注入 Passkey 失败: %d", rc);
+                }
+            } else if (event->passkey.params.action == BLE_SM_IOACT_NUMCMP) {
+                // 数字比较模式：确认显示的数字是否匹配
+                ESP_LOGI(TAG, "║ 🔢 数字比较: %lu", (unsigned long)event->passkey.params.numcmp);
+                pkey.action = event->passkey.params.action;
+                pkey.numcmp_accept = 1;  // 自动接受
+                int rc = ble_sm_inject_io(event->passkey.conn_handle, &pkey);
+                if (rc != 0) {
+                    ESP_LOGE(TAG, "║ ❌ 确认数字比较失败: %d", rc);
+                }
+            } else if (event->passkey.params.action == BLE_SM_IOACT_NONE) {
+                ESP_LOGI(TAG, "║ ✅ Just Works 配对模式");
+            }
+            
+            ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
+            ESP_LOGI(TAG, "");
+            break;
+        }
+
+        case BLE_GAP_EVENT_ENC_CHANGE: {
+            ESP_LOGI(TAG, "");
+            ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
+            ESP_LOGI(TAG, "║ 🔒 BLE 加密状态变更");
+            ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════");
+            if (event->enc_change.status == 0) {
+                ESP_LOGI(TAG, "║ ✅ 加密已启用，连接安全");
+            } else {
+                ESP_LOGW(TAG, "║ ⚠️ 加密状态变更: %d", event->enc_change.status);
+            }
+            ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
+            ESP_LOGI(TAG, "");
+            break;
+        }
+
+        case BLE_GAP_EVENT_REPEAT_PAIRING: {
+            // 重复配对请求：删除旧的绑定信息，允许新配对
+            ESP_LOGI(TAG, "🔄 重复配对请求，删除旧绑定");
+            struct ble_gap_conn_desc desc;
+            ble_gap_conn_find(event->repeat_pairing.conn_handle, &desc);
+            ble_store_util_delete_peer(&desc.peer_id_addr);
+            return BLE_GAP_REPEAT_PAIRING_RETRY;
+        }
+
         default:
             ESP_LOGD(TAG, "🔔 BLE 事件: type=%d", event->type);
             break;
@@ -351,6 +428,20 @@ bool BluetoothService::Initialize(const std::string& device_name) {
     // 设置同步和重置回调
     ble_hs_cfg.sync_cb = ble_on_sync;
     ble_hs_cfg.reset_cb = ble_on_reset;
+    
+    // ====== 配置 BLE 安全管理器（配对 PIN）======
+    // 启用配对和绑定功能
+    ble_hs_cfg.sm_io_cap = BLE_SM_IO_CAP_DISP_ONLY;  // 设备只能显示 PIN
+    ble_hs_cfg.sm_bonding = 1;                        // 启用绑定
+    ble_hs_cfg.sm_mitm = 1;                           // 启用 MITM 保护（需要 PIN）
+    ble_hs_cfg.sm_sc = 1;                             // 启用安全连接 (LE Secure Connections)
+    ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
+    ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
+    
+    ESP_LOGI(TAG, "🔐 BLE 安全配置:");
+    ESP_LOGI(TAG, "   • 配对 PIN: %06d", BLE_PASSKEY);
+    ESP_LOGI(TAG, "   • MITM 保护: 已启用");
+    ESP_LOGI(TAG, "   • 安全连接: 已启用");
 
     // 在启动BLE任务之前设置初始化标志，因为BLE任务可能很快同步并调用StartAdvertising()
     initialized_ = true;

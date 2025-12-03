@@ -827,6 +827,20 @@ void Application::SetDeviceState(DeviceState state) {
             }
 #endif
             
+            // 🔵 IDLE 状态启动 BLE 广播（闲时 BLE 可用策略）
+            // BLE 在进入 Connecting/Listening/Speaking 状态时会自动停止（见上方代码）
+            {
+                auto& ble_provisioner = BLEWiFiProvisioner::GetInstance();
+                if (!ble_provisioner.IsProvisioning()) {
+                    ESP_LOGI(TAG, "🔵 Starting BLE advertising (idle mode)...");
+                    if (ble_provisioner.Start()) {
+                        ESP_LOGI(TAG, "✅ BLE advertising started");
+                    } else {
+                        ESP_LOGW(TAG, "⚠️ Failed to start BLE advertising");
+                    }
+                }
+            }
+            
             ESP_LOGI(TAG, "IDLE state setup complete");
             break;
         case kDeviceStateStarting:

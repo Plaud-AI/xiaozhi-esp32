@@ -250,15 +250,27 @@ void WifiBoard::StartNetwork() {
     }
     
     // ====== WiFi 连接成功，正常工作模式 ======
-    // 注意：BLE 仅在配网模式下使用，正常模式不启动 BLE
-    // 原因：内存限制，WiFi + BLE + AAF Display 同时运行会导致内存不足
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "✅ WiFi 连接成功，进入正常工作模式");
     ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "ℹ️  BLE 未启动（仅配网模式可用）");
-    ESP_LOGI(TAG, "ℹ️  如需配置设备，请：");
-    ESP_LOGI(TAG, "   1. 通过语音命令进入配置模式");
-    ESP_LOGI(TAG, "   2. 或清除 WiFi 配置后重启");
+    
+    // ====== 初始化 BLE（不启动广播）======
+    // BLE 将在 IDLE 状态时自动启动广播，进入语音对话时自动停止
+    // 这样实现"闲时 BLE 可用，对话时 BLE 关闭"的策略
+    ESP_LOGI(TAG, "🔵 初始化 BLE 服务（闲时模式）...");
+    
+    // 禁用 WiFi 省电模式以保证 BLE 稳定性
+    wifi_station.SetPowerSaveMode(false);
+    ESP_LOGI(TAG, "✅ WiFi 省电模式已禁用");
+    
+    auto& provisioner = BLEWiFiProvisioner::GetInstance();
+    if (provisioner.Initialize()) {
+        ESP_LOGI(TAG, "✅ BLE 服务初始化成功");
+        ESP_LOGI(TAG, "ℹ️  BLE 将在设备空闲时自动开启广播");
+        ESP_LOGI(TAG, "ℹ️  语音对话期间 BLE 将自动关闭");
+    } else {
+        ESP_LOGW(TAG, "⚠️  BLE 服务初始化失败，闲时 BLE 功能不可用");
+    }
     ESP_LOGI(TAG, "========================================");
 }
 

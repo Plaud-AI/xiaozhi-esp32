@@ -90,6 +90,7 @@ private:
     // UI 组件
     lv_obj_t* status_bar_;
     lv_obj_t* animation_canvas_;
+    lv_obj_t* ble_icon_label_;  // 蓝牙状态图标
     
     // 配置
     ScreenConfig screen_config_;
