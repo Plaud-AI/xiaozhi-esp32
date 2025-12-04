@@ -24,10 +24,15 @@ private:
 
 protected:
     Board();
-    std::string GenerateUuid();
+    
+    /**
+     * @brief 生成设备唯一标识（基于 eFuse MAC）
+     * @return 格式: "XZA000-XXXXXXXXXXXX"
+     */
+    std::string GenerateDeviceId();
 
-    // 软件生成的设备唯一标识
-    std::string uuid_;
+    // 基于硬件的设备唯一标识（永不变化）
+    std::string device_id_;
 
 public:
     static Board& GetInstance() {
@@ -37,7 +42,15 @@ public:
 
     virtual ~Board() = default;
     virtual std::string GetBoardType() = 0;
-    virtual std::string GetUuid() { return uuid_; }
+    
+    /**
+     * @brief 获取设备唯一标识
+     * @return 格式: "XZA000-XXXXXXXXXXXX"（基于 eFuse MAC，永不变化）
+     */
+    virtual std::string GetDeviceId() { return device_id_; }
+    
+    // 兼容性：保留 GetUuid() 作为 GetDeviceId() 的别名
+    virtual std::string GetUuid() { return device_id_; }
     virtual Backlight* GetBacklight() { return nullptr; }
     virtual Led* GetLed();
     virtual AudioCodec* GetAudioCodec() = 0;

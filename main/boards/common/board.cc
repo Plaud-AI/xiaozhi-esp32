@@ -8,41 +8,30 @@
 #include <esp_log.h>
 #include <esp_ota_ops.h>
 #include <esp_chip_info.h>
-#include <esp_random.h>
+#include <esp_mac.h>
 
 #define TAG "Board"
 
 Board::Board() {
-    Settings settings("board", true);
-    uuid_ = settings.GetString("uuid");
-    if (uuid_.empty()) {
-        uuid_ = GenerateUuid();
-        settings.SetString("uuid", uuid_);
-    }
-    ESP_LOGI(TAG, "UUID=%s SKU=%s", uuid_.c_str(), BOARD_NAME);
+    // 生成基于硬件的设备唯一标识（永不变化）
+    device_id_ = GenerateDeviceId();
+    ESP_LOGI(TAG, "Device ID=%s SKU=%s", device_id_.c_str(), BOARD_NAME);
 }
 
-std::string Board::GenerateUuid() {
-    // UUID v4 需要 16 字节的随机数据
-    uint8_t uuid[16];
+std::string Board::GenerateDeviceId() {
+    // 获取 eFuse MAC 地址（出厂固化，永不变化）
+    uint8_t efuse_mac[6];
+    esp_efuse_mac_get_default(efuse_mac);
     
-    // 使用 ESP32 的硬件随机数生成器
-    esp_fill_random(uuid, sizeof(uuid));
+    // 生成 Device ID: XZA000-XXXXXXXXXXXX
+    // 格式：前缀 (6字符) + "-" + MAC地址 (12字符大写十六进制)
+    char device_id[20];
+    snprintf(device_id, sizeof(device_id), 
+             "XZA000-%02X%02X%02X%02X%02X%02X",
+             efuse_mac[0], efuse_mac[1], efuse_mac[2],
+             efuse_mac[3], efuse_mac[4], efuse_mac[5]);
     
-    // 设置版本 (版本 4) 和变体位
-    uuid[6] = (uuid[6] & 0x0F) | 0x40;    // 版本 4
-    uuid[8] = (uuid[8] & 0x3F) | 0x80;    // 变体 1
-    
-    // 将字节转换为标准的 UUID 字符串格式
-    char uuid_str[37];
-    snprintf(uuid_str, sizeof(uuid_str),
-        "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
-        uuid[0], uuid[1], uuid[2], uuid[3],
-        uuid[4], uuid[5], uuid[6], uuid[7],
-        uuid[8], uuid[9], uuid[10], uuid[11],
-        uuid[12], uuid[13], uuid[14], uuid[15]);
-    
-    return std::string(uuid_str);
+    return std::string(device_id);
 }
 
 bool Board::GetBatteryLevel(int &level, bool& charging, bool& discharging) {
@@ -75,7 +64,7 @@ std::string Board::GetSystemInfoJson() {
             "psram_size": 0,
             "minimum_free_heap_size": 123456,
             "mac_address": "00:00:00:00:00:00",
-            "uuid": "00000000-0000-0000-0000-000000000000",
+            "device_id": "XZA000-XXXXXXXXXXXX",
             "chip_model_name": "esp32s3",
             "chip_info": {
                 "model": 1,
@@ -111,7 +100,7 @@ std::string Board::GetSystemInfoJson() {
     json += R"("flash_size":)" + std::to_string(SystemInfo::GetFlashSize()) + R"(,)";
     json += R"("minimum_free_heap_size":")" + std::to_string(SystemInfo::GetMinimumFreeHeapSize()) + R"(",)";
     json += R"("mac_address":")" + SystemInfo::GetMacAddress() + R"(",)";
-    json += R"("uuid":")" + uuid_ + R"(",)";
+    json += R"("device_id":")" + device_id_ + R"(",)";
     json += R"("chip_model_name":")" + SystemInfo::GetChipModelName() + R"(",)";
 
     esp_chip_info_t chip_info;

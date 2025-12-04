@@ -1,5 +1,6 @@
 #include "ble_wifi_provisioner.h"
 #include "bluetooth_service.h"
+#include "boards/common/board.h"
 #include "system_info.h"
 #include "settings.h"
 #include "clear_wifi_helper.h"
@@ -1150,6 +1151,7 @@ std::string BLEWiFiProvisioner::BuildScanResultJson() {
 std::string BLEWiFiProvisioner::BuildDeviceInfoJson() {
     ESP_LOGI(TAG, "构建设备信息JSON");
 
+    auto& board = Board::GetInstance();
     auto& ble_service = BluetoothService::GetInstance();
     auto app_desc = esp_app_get_description();
 
@@ -1158,17 +1160,17 @@ std::string BLEWiFiProvisioner::BuildDeviceInfoJson() {
     cJSON_AddStringToObject(root, "status", "success");
 
     cJSON* data = cJSON_CreateObject();
-    cJSON_AddStringToObject(data, "device_name", ble_service.GetDeviceName().c_str());
-    cJSON_AddStringToObject(data, "firmware_version", app_desc->version);
-    cJSON_AddStringToObject(data, "hardware_version", SystemInfo::GetChipModelName().c_str());
-    cJSON_AddStringToObject(data, "mac_address", ble_service.GetMacAddress().c_str());
-    cJSON_AddNumberToObject(data, "free_heap", esp_get_free_heap_size());
     
-    uint32_t chip_id = 0;
-    esp_efuse_mac_get_default((uint8_t*)&chip_id);
-    char chip_id_str[16];
-    snprintf(chip_id_str, sizeof(chip_id_str), "0x%08lX", (unsigned long)chip_id);
-    cJSON_AddStringToObject(data, "chip_id", chip_id_str);
+    // 设备唯一标识（基于 eFuse MAC，永不变化）
+    cJSON_AddStringToObject(data, "device_id", board.GetDeviceId().c_str());
+    
+    cJSON_AddStringToObject(data, "device_name", ble_service.GetDeviceName().c_str());
+    cJSON_AddStringToObject(data, "board_type", BOARD_NAME);
+    cJSON_AddStringToObject(data, "firmware_version", app_desc->version);
+    cJSON_AddStringToObject(data, "chip_model", SystemInfo::GetChipModelName().c_str());
+    cJSON_AddStringToObject(data, "mac_wifi", SystemInfo::GetMacAddress().c_str());
+    cJSON_AddStringToObject(data, "mac_ble", ble_service.GetMacAddress().c_str());
+    cJSON_AddNumberToObject(data, "free_heap", esp_get_free_heap_size());
 
     cJSON_AddItemToObject(root, "data", data);
 
@@ -1179,11 +1181,13 @@ std::string BLEWiFiProvisioner::BuildDeviceInfoJson() {
         free(json_str);
         
         ESP_LOGI(TAG, "设备信息:");
+        ESP_LOGI(TAG, "  Device ID: %s", board.GetDeviceId().c_str());
         ESP_LOGI(TAG, "  名称: %s", ble_service.GetDeviceName().c_str());
+        ESP_LOGI(TAG, "  板型: %s", BOARD_NAME);
         ESP_LOGI(TAG, "  固件版本: %s", app_desc->version);
-        ESP_LOGI(TAG, "  硬件版本: %s", SystemInfo::GetChipModelName().c_str());
-        ESP_LOGI(TAG, "  MAC地址: %s", ble_service.GetMacAddress().c_str());
-        ESP_LOGI(TAG, "  空闲堆: %lu bytes", (unsigned long)esp_get_free_heap_size());
+        ESP_LOGI(TAG, "  芯片型号: %s", SystemInfo::GetChipModelName().c_str());
+        ESP_LOGI(TAG, "  WiFi MAC: %s", SystemInfo::GetMacAddress().c_str());
+        ESP_LOGI(TAG, "  BLE MAC: %s", ble_service.GetMacAddress().c_str());
     }
     cJSON_Delete(root);
 

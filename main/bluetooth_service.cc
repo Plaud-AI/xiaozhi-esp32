@@ -1,4 +1,5 @@
 #include "bluetooth_service.h"
+#include "boards/common/board.h"  // For Device ID
 #include <esp_log.h>
 #include <esp_mac.h>
 #include <esp_bt.h>  // Added for esp_bt_controller_get_status
@@ -508,15 +509,24 @@ bool BluetoothService::StartAdvertising() {
     memset(&adv_params, 0, sizeof(adv_params));
 
     // ====== 广播数据：厂商特定数据 ======
-    // 格式: [厂商ID (2字节, 小端)] [应用签名 (4字节)]
-    // App 端通过检查这个数据来过滤扫描结果
-    static uint8_t mfg_data[6];
-    mfg_data[0] = MANUFACTURER_ID & 0xFF;         // 厂商ID低字节
-    mfg_data[1] = (MANUFACTURER_ID >> 8) & 0xFF;  // 厂商ID高字节
-    mfg_data[2] = APP_SIGNATURE & 0xFF;           // 签名字节0
-    mfg_data[3] = (APP_SIGNATURE >> 8) & 0xFF;    // 签名字节1
-    mfg_data[4] = (APP_SIGNATURE >> 16) & 0xFF;   // 签名字节2
-    mfg_data[5] = (APP_SIGNATURE >> 24) & 0xFF;   // 签名字节3
+    // 格式: [厂商ID (2字节)] [应用签名 (4字节)] [Device ID (19字节)]
+    // App 端通过检查这个数据来过滤扫描结果，并获取 Device ID
+    // 总计 25 字节
+    static uint8_t mfg_data[25];
+    
+    // 厂商ID (2字节, 小端)
+    mfg_data[0] = MANUFACTURER_ID & 0xFF;
+    mfg_data[1] = (MANUFACTURER_ID >> 8) & 0xFF;
+    
+    // 应用签名 (4字节, 小端): "XIZH" = 0x58495A48
+    mfg_data[2] = APP_SIGNATURE & 0xFF;
+    mfg_data[3] = (APP_SIGNATURE >> 8) & 0xFF;
+    mfg_data[4] = (APP_SIGNATURE >> 16) & 0xFF;
+    mfg_data[5] = (APP_SIGNATURE >> 24) & 0xFF;
+    
+    // Device ID (19字节): "XZA000-XXXXXXXXXXXX"
+    std::string device_id = Board::GetInstance().GetDeviceId();
+    memcpy(&mfg_data[6], device_id.c_str(), 19);
 
     // 设置广播标志和厂商数据
     fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
@@ -563,6 +573,7 @@ bool BluetoothService::StartAdvertising() {
     ESP_LOGI(TAG, "BLE广播已启动");
     ESP_LOGI(TAG, "   • 厂商ID: 0x%04X", MANUFACTURER_ID);
     ESP_LOGI(TAG, "   • 应用签名: 0x%08lX", (unsigned long)APP_SIGNATURE);
+    ESP_LOGI(TAG, "   • Device ID: %s", device_id.c_str());
     return true;
 }
 
