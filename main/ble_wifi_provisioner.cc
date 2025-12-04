@@ -194,6 +194,15 @@ void BLEWiFiProvisioner::Stop() {
     ESP_LOGI(TAG, "停止 BLE WiFi Provisioner");
     
     auto& ble_service = BluetoothService::GetInstance();
+    
+    // ====== 关键修复：断开已有的 BLE 连接 ======
+    // 语音交互期间需要完全释放 BLE 资源，避免与 WiFi/UDP 冲突
+    if (ble_service.IsConnected()) {
+        ESP_LOGI(TAG, "🔌 断开当前 BLE 连接（进入语音交互状态）");
+        ble_service.Disconnect();
+        vTaskDelay(pdMS_TO_TICKS(100));  // 等待断开完成
+    }
+    
     ble_service.StopAdvertising();
     
     // ⚠️ 不再在这里恢复 WiFi 省电模式
