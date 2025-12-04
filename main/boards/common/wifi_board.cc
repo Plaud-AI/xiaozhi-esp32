@@ -254,11 +254,15 @@ void WifiBoard::StartNetwork() {
     ESP_LOGI(TAG, "✅ WiFi 连接成功，进入正常工作模式");
     ESP_LOGI(TAG, "========================================");
     
-    // ====== 初始化 BLE 服务（不启动广播）======
-    // BLE 控制器已在 main.cc 中提前初始化
-    // 这里只初始化 BLE 服务层，广播将在 IDLE 状态时启动
-    // 策略：闲时（IDLE）BLE 可用，语音对话时 BLE 关闭
-    ESP_LOGI(TAG, "🔵 初始化 BLE 服务...");
+    // ====== 初始化 BLE 服务（闲时共存模式）======
+    // 策略：WiFi 连接后初始化 BLE，但不立即启动广播
+    // BLE 广播将在 IDLE 状态时自动启动，语音对话时自动停止
+    // 
+    // 内存优化配置（sdkconfig.defaults.esp32s3）：
+    // - CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=98304 (96KB，从 64KB 增加)
+    // - CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=2 (从 3 减少)
+    // - CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=4 (从 6 减少)
+    ESP_LOGI(TAG, "🔵 初始化 BLE 服务（闲时共存模式）...");
     
     // 禁用 WiFi 省电模式以保证 BLE/WiFi 共存稳定性
     wifi_station.SetPowerSaveMode(false);
@@ -270,7 +274,8 @@ void WifiBoard::StartNetwork() {
         ESP_LOGI(TAG, "ℹ️  BLE 将在 IDLE 状态自动开启广播");
         ESP_LOGI(TAG, "ℹ️  语音对话期间 BLE 自动关闭");
     } else {
-        ESP_LOGW(TAG, "⚠️  BLE 服务初始化失败");
+        ESP_LOGW(TAG, "⚠️  BLE 服务初始化失败（内存不足？）");
+        ESP_LOGW(TAG, "ℹ️  设备仍可正常工作，BLE 配网在配网模式可用");
     }
     ESP_LOGI(TAG, "========================================");
 }

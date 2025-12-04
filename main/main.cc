@@ -5,8 +5,6 @@
 #include <driver/gpio.h>
 #include <esp_event.h>
 #include <esp_bt.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
 #include <nimble/nimble_port.h>
 
 #include "application.h"
@@ -30,30 +28,30 @@ extern "C" void app_main(void)
 
     // ====== BLE/WiFi 共存：提前初始化 BLE 控制器 ======
     // ⚠️ 重要：BLE 控制器必须在 WiFi 之前初始化！
-    // 原因：BLE 控制器需要固定的内部 SRAM，WiFi 启动后会占用这部分内存
-    // 策略：这里只初始化控制器，BLE 广播在 IDLE 状态时启动
+    // 原因：BLE 控制器需要固定地址范围的内部 SRAM（EMI 内存区域）
+    //       WiFi 启动后会占用这部分内存，导致 BLE 初始化失败
+    // 策略：先初始化 BLE 控制器占用所需内存，WiFi 使用剩余内存
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "🔧 BLE/WiFi 共存初始化");
     ESP_LOGI(TAG, "========================================");
     
-    // 步骤1: 释放 Classic BT 内存（节省 30-40KB 内部 RAM）
+    // 步骤1: 释放 Classic BT 内存（节省 30-40KB）
     ret = esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
     if (ret == ESP_OK) {
         ESP_LOGI(TAG, "✅ 已释放 Classic BT 内存");
     }
     
-    // 步骤2: 提前初始化 NimBLE port（包括 BLE 控制器）
+    // 步骤2: 提前初始化 NimBLE（包括 BLE 控制器）
     // 这会为 BLE 控制器分配所需的内部 SRAM
-    ESP_LOGI(TAG, "🔵 初始化 NimBLE 控制器...");
+    ESP_LOGI(TAG, "🔵 初始化 BLE 控制器（WiFi 启动前）...");
     ret = nimble_port_init();
     if (ret == ESP_OK) {
         ESP_LOGI(TAG, "✅ BLE 控制器初始化成功");
-        ESP_LOGI(TAG, "   • BLE 广播将在 IDLE 状态时启动");
-        ESP_LOGI(TAG, "   • 语音对话期间 BLE 自动停止");
     } else if (ret == ESP_ERR_INVALID_STATE) {
         ESP_LOGI(TAG, "✓ BLE 控制器已初始化");
     } else {
-        ESP_LOGE(TAG, "❌ BLE 控制器初始化失败: %s", esp_err_to_name(ret));
+        ESP_LOGW(TAG, "⚠️ BLE 控制器初始化失败: %s", esp_err_to_name(ret));
+        ESP_LOGW(TAG, "   BLE 功能将不可用，但设备可正常工作");
     }
     ESP_LOGI(TAG, "========================================");
 
