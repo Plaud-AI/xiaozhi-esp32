@@ -48,7 +48,7 @@ static BluetoothService* g_instance = nullptr;
 
 BluetoothService::BluetoothService() 
     : initialized_(false), connected_(false), authenticated_(false), 
-      conn_handle_(0), mtu_(23), receive_buffer_("") {
+      advertising_enabled_(true), conn_handle_(0), mtu_(23), receive_buffer_("") {
     g_instance = this;
     memset(auth_challenge_, 0, sizeof(auth_challenge_));
     ESP_LOGI(TAG, "BluetoothService构造，默认MTU: %d", mtu_);
@@ -240,7 +240,11 @@ int BluetoothService::gap_event_handler(struct ble_gap_event *event, void *arg) 
             ESP_LOGI(TAG, "║ 🔄 清理操作:");
             ESP_LOGI(TAG, "║   • 清空接收缓冲区");
             ESP_LOGI(TAG, "║   • 重置连接状态");
-            ESP_LOGI(TAG, "║   • 重新启动广播");
+            if (g_instance->advertising_enabled_) {
+                ESP_LOGI(TAG, "║   • 重新启动广播");
+            } else {
+                ESP_LOGI(TAG, "║   • 广播已禁用（语音交互状态）");
+            }
             ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
             ESP_LOGI(TAG, "");
             
@@ -249,14 +253,16 @@ int BluetoothService::gap_event_handler(struct ble_gap_event *event, void *arg) 
             g_instance->authenticated_ = false;  // 重置认证状态
             // 清空接收缓冲区
             g_instance->receive_buffer_.clear();
-            // 重新开始广播，允许新设备连接
-            g_instance->StartAdvertising();
+            // 只有当允许广播时才重新开始广播
+            if (g_instance->advertising_enabled_) {
+                g_instance->StartAdvertising();
+            }
             break;
         }
 
         case BLE_GAP_EVENT_ADV_COMPLETE:
-            // 只有未连接时才重启广播
-            if (!g_instance->connected_) {
+            // 只有未连接且允许广播时才重启广播
+            if (!g_instance->connected_ && g_instance->advertising_enabled_) {
                 ESP_LOGD(TAG, "📡 广播周期完成，自动重启广播");
                 g_instance->StartAdvertising();
             }

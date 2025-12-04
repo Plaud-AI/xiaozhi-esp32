@@ -116,6 +116,19 @@ public:
      */
     void Disconnect(uint8_t reason = 0x13);
 
+    /**
+     * @brief 设置是否允许自动重启广播
+     * @param enabled true 允许断开后自动重启广播，false 禁止
+     * 
+     * 用于语音交互状态下禁止 BLE 广播自动重启
+     */
+    void SetAdvertisingEnabled(bool enabled) { advertising_enabled_ = enabled; }
+    
+    /**
+     * @brief 获取是否允许自动重启广播
+     */
+    bool IsAdvertisingEnabled() const { return advertising_enabled_; }
+
     // NimBLE回调函数(需要是public的，因为要在C结构体中使用)
     static int gap_event_handler(struct ble_gap_event *event, void *arg);
     static int gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_handle,
@@ -129,6 +142,7 @@ private:
     bool initialized_;
     bool connected_;
     bool authenticated_;  // 应用层认证状态
+    bool advertising_enabled_;  // 是否允许自动重启广播（语音交互时禁止）
     uint16_t conn_handle_;
     uint16_t mtu_;  // 当前MTU大小
     std::function<void(const std::string&)> data_received_callback_;

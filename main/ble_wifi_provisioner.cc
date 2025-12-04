@@ -139,6 +139,9 @@ bool BLEWiFiProvisioner::Start() {
 
     auto& ble_service = BluetoothService::GetInstance();
     
+    // 允许自动重启广播（IDLE 状态下 BLE 可用）
+    ble_service.SetAdvertisingEnabled(true);
+    
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "🔄 正在启动 BLE 广播...");
     ESP_LOGI(TAG, "   设备名称: %s", ble_service.GetDeviceName().c_str());
@@ -195,7 +198,11 @@ void BLEWiFiProvisioner::Stop() {
     
     auto& ble_service = BluetoothService::GetInstance();
     
-    // ====== 关键修复：断开已有的 BLE 连接 ======
+    // ====== 关键：禁止自动重启广播 ======
+    // 语音交互期间 BLE 必须完全关闭，不能自动重启
+    ble_service.SetAdvertisingEnabled(false);
+    
+    // ====== 断开已有的 BLE 连接 ======
     // 语音交互期间需要完全释放 BLE 资源，避免与 WiFi/UDP 冲突
     if (ble_service.IsConnected()) {
         ESP_LOGI(TAG, "🔌 断开当前 BLE 连接（进入语音交互状态）");
