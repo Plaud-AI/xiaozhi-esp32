@@ -60,7 +60,7 @@ private:
     i2c_master_bus_handle_t i2c_bus_;
     Display* display_;  // 使用基类指针，可指向任何 Display 实现
     esp_io_expander_handle_t io_expander_ = NULL;
-    Esp32Camera* camera_;
+    // Esp32Camera* camera_;  // 禁用摄像头以节省内存
 
     void InitializeI2c() {
         // Initialize I2C peripheral
@@ -298,8 +298,8 @@ private:
         io_config.cs_gpio_num = GPIO_NUM_NC;
         io_config.dc_gpio_num = GPIO_NUM_2;
         io_config.spi_mode = 0;
-        io_config.pclk_hz = 40 * 1000 * 1000;
-        io_config.trans_queue_depth = 10;  // 恢复默认队列深度，避免 SPI 传输失败
+        io_config.pclk_hz = 20 * 1000 * 1000;  // 降低 SPI 时钟频率以提高稳定性
+        io_config.trans_queue_depth = 20;      // 增加队列深度以容纳更多待发送数据
         io_config.lcd_cmd_bits = 8;
         io_config.lcd_param_bits = 8;
         ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(SPI3_HOST, &io_config, &panel_io));
@@ -381,11 +381,12 @@ private:
     }
 
     void InitializeCamera() {
-        // Open camera power
-
+        // 摄像头已禁用以节省内存（DMA通道、内部RAM）
+        // 如需启用，取消下面的注释
+        /*
         camera_config_t config = {};
-        config.ledc_channel = LEDC_CHANNEL_2;  // LEDC通道选择  用于生成XCLK时钟 但是S3不用
-        config.ledc_timer = LEDC_TIMER_2; // LEDC timer选择  用于生成XCLK时钟 但是S3不用
+        config.ledc_channel = LEDC_CHANNEL_2;
+        config.ledc_timer = LEDC_TIMER_2;
         config.pin_d0 = CAMERA_PIN_D0;
         config.pin_d1 = CAMERA_PIN_D1;
         config.pin_d2 = CAMERA_PIN_D2;
@@ -398,7 +399,7 @@ private:
         config.pin_pclk = CAMERA_PIN_PCLK;
         config.pin_vsync = CAMERA_PIN_VSYNC;
         config.pin_href = CAMERA_PIN_HREF;
-        config.pin_sccb_sda = -1;   // 这里写-1 表示使用已经初始化的I2C接口
+        config.pin_sccb_sda = -1;
         config.pin_sccb_scl = CAMERA_PIN_SIOC;
         config.sccb_i2c_port = 1;
         config.pin_pwdn = CAMERA_PIN_PWDN;
@@ -410,8 +411,8 @@ private:
         config.fb_count = 1;
         config.fb_location = CAMERA_FB_IN_PSRAM;
         config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
-
         camera_ = new Esp32Camera(config);
+        */
     }
 
 public:
@@ -420,7 +421,7 @@ public:
         InitializeI2c();
         I2cDetect();
         InitializeTca9554();
-        InitializeCamera();
+        // InitializeCamera();  // 禁用摄像头以节省内存（DMA通道、内部RAM）
         InitializeSpi();
         InitializeButtons();
         
@@ -461,7 +462,7 @@ public:
         return display_;
     }
     virtual Camera* GetCamera() override {
-        return camera_;
+        return nullptr;  // 摄像头已禁用
     }
 };
 
