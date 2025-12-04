@@ -899,6 +899,18 @@ void Application::SetDeviceState(DeviceState state) {
             break;
         case kDeviceStateActivating:
             display->SetStatus(Lang::Strings::ACTIVATION);
+            // 🔵 激活状态也启动 BLE 广播，允许用户通过 App 配置设备
+            {
+                auto& ble_provisioner = BLEWiFiProvisioner::GetInstance();
+                if (!ble_provisioner.IsProvisioning()) {
+                    ESP_LOGI(TAG, "🔵 Starting BLE advertising (activating mode)...");
+                    if (ble_provisioner.Start()) {
+                        ESP_LOGI(TAG, "✅ BLE advertising started for activation");
+                    } else {
+                        ESP_LOGW(TAG, "⚠️ Failed to start BLE advertising");
+                    }
+                }
+            }
             break;
         case kDeviceStateFatalError:
             display->SetStatus(Lang::Strings::ERROR);
