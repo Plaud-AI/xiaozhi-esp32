@@ -145,6 +145,35 @@ private:
      */
     void HandleGetOtaUrlCommand();
 
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 新增指令（v2.1）
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    /**
+     * @brief 处理设置语音唤醒开关命令
+     */
+    void HandleSetWakeWordEnabledCommand(cJSON* root);
+
+    /**
+     * @brief 处理设置音量命令
+     */
+    void HandleSetVolumeCommand(cJSON* root);
+
+    /**
+     * @brief 处理检查固件更新命令
+     */
+    void HandleCheckFirmwareUpdateCommand();
+
+    /**
+     * @brief 处理重置设备命令
+     */
+    void HandleResetDeviceCommand();
+
+    /**
+     * @brief 处理解绑设备命令
+     */
+    void HandleUnbindDeviceCommand();
+
     /**
      * @brief 发送响应数据到手机
      * @param json_response JSON响应字符串
