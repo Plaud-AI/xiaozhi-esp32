@@ -813,10 +813,28 @@ void Application::SetDeviceState(DeviceState state) {
     switch (state) {
         case kDeviceStateUnknown:
         case kDeviceStateIdle:
-            ESP_LOGI(TAG, "Entering IDLE state, enabling wake word detection...");
+            ESP_LOGI(TAG, "Entering IDLE state...");
             display->SetStatus(Lang::Strings::STANDBY);
             audio_service_.EnableVoiceProcessing(false);
-            audio_service_.EnableWakeWordDetection(true);
+            
+            // 检查语音唤醒开关状态（从 NVS 读取）
+            {
+                bool wake_word_enabled = true;  // 默认开启
+                try {
+                    Settings wake_settings("audio", false);
+                    wake_word_enabled = wake_settings.GetInt("wake_word_enabled", 1) != 0;
+                } catch (...) {
+                    // 读取失败，使用默认值
+                }
+                
+                if (wake_word_enabled) {
+                    ESP_LOGI(TAG, "🎤 Wake word enabled, starting detection...");
+                    audio_service_.EnableWakeWordDetection(true);
+                } else {
+                    ESP_LOGI(TAG, "🔇 Wake word disabled by user setting, skipping detection");
+                    audio_service_.EnableWakeWordDetection(false);
+                }
+            }
             
 #ifdef CONFIG_ENABLE_DOLL_INTERACTION
             // Restore Doll system after AFE is stopped

@@ -1812,25 +1812,29 @@ void BLEWiFiProvisioner::HandleSetWakeWordEnabledCommand(cJSON* root) {
     bool enabled = cJSON_IsTrue(enabled_item);
     ESP_LOGI(TAG, "目标状态: %s", enabled ? "开启" : "关闭");
     
-    // 保存到 NVS
+    // 保存到 NVS（持久化，重启后生效）
     try {
         Settings settings("audio", true);
         settings.SetInt("wake_word_enabled", enabled ? 1 : 0);
-        ESP_LOGI(TAG, "✓ 唤醒开关状态已保存到 NVS");
+        ESP_LOGI(TAG, "✓ 唤醒开关状态已保存到 NVS（重启后生效）");
         
         // 立即应用设置
         auto& app = Application::GetInstance();
+        auto current_state = app.GetDeviceState();
+        
         if (enabled) {
-            // 只有在 IDLE 状态才启用唤醒词检测
-            if (app.GetDeviceState() == kDeviceStateIdle) {
+            // 开启唤醒：只有在 IDLE 状态才立即启用
+            if (current_state == kDeviceStateIdle) {
                 app.GetAudioService().EnableWakeWordDetection(true);
                 ESP_LOGI(TAG, "✓ 唤醒词检测已立即启用");
             } else {
-                ESP_LOGI(TAG, "ℹ️  唤醒词将在设备进入空闲状态后启用");
+                ESP_LOGI(TAG, "ℹ️  当前状态非 IDLE，唤醒词将在设备进入空闲状态后启用");
             }
         } else {
+            // 关闭唤醒：无论什么状态都立即禁用
             app.GetAudioService().EnableWakeWordDetection(false);
             ESP_LOGI(TAG, "✓ 唤醒词检测已立即禁用");
+            ESP_LOGI(TAG, "ℹ️  设备将不再响应唤醒词，需要通过 App 或按钮触发对话");
         }
         
         // 构建成功响应
@@ -1841,6 +1845,7 @@ void BLEWiFiProvisioner::HandleSetWakeWordEnabledCommand(cJSON* root) {
         cJSON* response_data = cJSON_CreateObject();
         cJSON_AddStringToObject(response_data, "message", enabled ? "语音唤醒已开启" : "语音唤醒已关闭");
         cJSON_AddBoolToObject(response_data, "enabled", enabled);
+        cJSON_AddBoolToObject(response_data, "persistent", true);  // 表示设置已持久化
         cJSON_AddItemToObject(response, "data", response_data);
         
         char* json_str = cJSON_PrintUnformatted(response);
