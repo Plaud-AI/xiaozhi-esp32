@@ -55,9 +55,12 @@ set(SOURCES "audio/audio_codec.cc"
             "assets.cc"
             "main.cc"
             "psram_allocator.cc"
+            "hardware/servo_driver.cc"
+            "hardware/nfc_driver.cc"
+            "test/hardware_test_service.cc"
             )
 
-set(INCLUDE_DIRS "." "display" "display/lvgl_display" "display/lvgl_display/jpg" "audio" "audio/wake_words" "protocols")
+set(INCLUDE_DIRS "." "display" "display/lvgl_display" "display/lvgl_display/jpg" "audio" "audio/wake_words" "protocols" "hardware" "test")
 
 # Add board common files
 file(GLOB BOARD_COMMON_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/boards/common/*.cc)

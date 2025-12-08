@@ -10,6 +10,7 @@
 #include "display/display.h"
 #include "assets/lang_config.h"
 #include "audio/audio_codec.h"
+#include "test/hardware_test_service.h"
 
 #include <esp_log.h>
 #include <esp_wifi.h>
@@ -458,6 +459,13 @@ void BLEWiFiProvisioner::HandleReceivedData(const std::string& data) {
     else if (cmd == "unbind_device") {
         ESP_LOGI(TAG, "➜ 执行: 解绑设备命令");
         HandleUnbindDeviceCommand();
+    }
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 测试模块指令（v2.2）
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    else if (cmd.find("test_") == 0) {
+        ESP_LOGI(TAG, "➜ 执行: 测试模块命令 - %s", cmd.c_str());
+        HandleTestCommand(cmd, root);
     }
     else {
         ESP_LOGW(TAG, "⚠️  未知命令: %s", cmd.c_str());
@@ -2139,6 +2147,268 @@ void BLEWiFiProvisioner::HandleUnbindDeviceCommand() {
         SendErrorResponse("unbind_device", status_code, error_msg);
     }
     
+    ESP_LOGI(TAG, "========================================");
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 测试模块指令处理（v2.2）
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+void BLEWiFiProvisioner::HandleTestCommand(const std::string& cmd, cJSON* root) {
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "🧪 处理测试模块命令: %s", cmd.c_str());
+    ESP_LOGI(TAG, "========================================");
+
+    auto& test_service = HardwareTestService::GetInstance();
+    std::string response;
+
+    // 解析 data 字段（大部分命令需要）
+    cJSON* data_item = cJSON_GetObjectItem(root, "data");
+
+    // ═══════════════════════════════════════════════════════════════
+    // 舵机测试指令
+    // ═══════════════════════════════════════════════════════════════
+    if (cmd == "test_servo_init") {
+        int gpio_pin = -1;
+        if (data_item) {
+            cJSON* gpio = cJSON_GetObjectItem(data_item, "gpio_pin");
+            if (gpio && cJSON_IsNumber(gpio)) {
+                gpio_pin = gpio->valueint;
+            }
+        }
+        response = test_service.ServoInit(gpio_pin);
+    }
+    else if (cmd == "test_servo_set_angle") {
+        if (!data_item) {
+            SendErrorResponse(cmd, 1000, "data字段缺失");
+            return;
+        }
+        cJSON* angle = cJSON_GetObjectItem(data_item, "angle");
+        if (!angle || !cJSON_IsNumber(angle)) {
+            SendErrorResponse(cmd, 1000, "angle字段缺失或格式错误");
+            return;
+        }
+        response = test_service.ServoSetAngle((uint32_t)angle->valueint);
+    }
+    else if (cmd == "test_servo_get_angle") {
+        response = test_service.ServoGetAngle();
+    }
+    else if (cmd == "test_servo_move") {
+        if (!data_item) {
+            SendErrorResponse(cmd, 1000, "data字段缺失");
+            return;
+        }
+        cJSON* angle = cJSON_GetObjectItem(data_item, "angle");
+        cJSON* direction = cJSON_GetObjectItem(data_item, "direction");
+        if (!angle || !cJSON_IsNumber(angle)) {
+            SendErrorResponse(cmd, 1000, "angle字段缺失或格式错误");
+            return;
+        }
+        std::string dir = "forward";
+        if (direction && cJSON_IsString(direction)) {
+            dir = direction->valuestring;
+        }
+        response = test_service.ServoMove((uint32_t)angle->valueint, dir);
+    }
+    else if (cmd == "test_servo_sweep") {
+        uint32_t min_angle = 0, max_angle = 180, speed = 5, cycles = 1;
+        if (data_item) {
+            cJSON* item;
+            if ((item = cJSON_GetObjectItem(data_item, "min_angle")) && cJSON_IsNumber(item))
+                min_angle = (uint32_t)item->valueint;
+            if ((item = cJSON_GetObjectItem(data_item, "max_angle")) && cJSON_IsNumber(item))
+                max_angle = (uint32_t)item->valueint;
+            if ((item = cJSON_GetObjectItem(data_item, "speed")) && cJSON_IsNumber(item))
+                speed = (uint32_t)item->valueint;
+            if ((item = cJSON_GetObjectItem(data_item, "cycles")) && cJSON_IsNumber(item))
+                cycles = (uint32_t)item->valueint;
+        }
+        response = test_service.ServoSweep(min_angle, max_angle, speed, cycles);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // NFC 测试指令
+    // ═══════════════════════════════════════════════════════════════
+    else if (cmd == "test_nfc_init") {
+        int uart_port = -1, tx_pin = -1, rx_pin = -1;
+        if (data_item) {
+            cJSON* item;
+            if ((item = cJSON_GetObjectItem(data_item, "uart_port")) && cJSON_IsNumber(item))
+                uart_port = item->valueint;
+            if ((item = cJSON_GetObjectItem(data_item, "tx_pin")) && cJSON_IsNumber(item))
+                tx_pin = item->valueint;
+            if ((item = cJSON_GetObjectItem(data_item, "rx_pin")) && cJSON_IsNumber(item))
+                rx_pin = item->valueint;
+        }
+        response = test_service.NfcInit(uart_port, tx_pin, rx_pin);
+        
+        // 设置 NFC 事件回调，通过 BLE 发送事件通知
+        test_service.SetNfcEventCallback([this](const std::string& event_json) {
+            ESP_LOGI(TAG, "📤 NFC 事件上报: %s", event_json.c_str());
+            SendResponse(event_json);
+        });
+    }
+    else if (cmd == "test_nfc_poll") {
+        response = test_service.NfcPoll();
+    }
+    else if (cmd == "test_nfc_continuous") {
+        if (!data_item) {
+            SendErrorResponse(cmd, 1000, "data字段缺失");
+            return;
+        }
+        cJSON* enable = cJSON_GetObjectItem(data_item, "enable");
+        if (!enable || !cJSON_IsBool(enable)) {
+            SendErrorResponse(cmd, 1000, "enable字段缺失或格式错误");
+            return;
+        }
+        uint32_t interval_ms = 200;
+        cJSON* interval = cJSON_GetObjectItem(data_item, "interval_ms");
+        if (interval && cJSON_IsNumber(interval)) {
+            interval_ms = (uint32_t)interval->valueint;
+        }
+        response = test_service.NfcContinuous(cJSON_IsTrue(enable), interval_ms);
+    }
+    else if (cmd == "test_nfc_deinit") {
+        response = test_service.NfcDeinit();
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // LED 测试指令
+    // ═══════════════════════════════════════════════════════════════
+    else if (cmd == "test_led_set_color") {
+        if (!data_item) {
+            SendErrorResponse(cmd, 1000, "data字段缺失");
+            return;
+        }
+        cJSON* r = cJSON_GetObjectItem(data_item, "r");
+        cJSON* g = cJSON_GetObjectItem(data_item, "g");
+        cJSON* b = cJSON_GetObjectItem(data_item, "b");
+        if (!r || !g || !b || !cJSON_IsNumber(r) || !cJSON_IsNumber(g) || !cJSON_IsNumber(b)) {
+            SendErrorResponse(cmd, 1000, "RGB值缺失或格式错误");
+            return;
+        }
+        response = test_service.LedSetColor((uint8_t)r->valueint, 
+                                             (uint8_t)g->valueint, 
+                                             (uint8_t)b->valueint);
+    }
+    else if (cmd == "test_led_set_brightness") {
+        if (!data_item) {
+            SendErrorResponse(cmd, 1000, "data字段缺失");
+            return;
+        }
+        cJSON* brightness = cJSON_GetObjectItem(data_item, "brightness");
+        if (!brightness || !cJSON_IsNumber(brightness)) {
+            SendErrorResponse(cmd, 1000, "brightness字段缺失或格式错误");
+            return;
+        }
+        response = test_service.LedSetBrightness((uint8_t)brightness->valueint);
+    }
+    else if (cmd == "test_led_effect") {
+        if (!data_item) {
+            SendErrorResponse(cmd, 1000, "data字段缺失");
+            return;
+        }
+        cJSON* effect = cJSON_GetObjectItem(data_item, "effect");
+        if (!effect || !cJSON_IsString(effect)) {
+            SendErrorResponse(cmd, 1000, "effect字段缺失或格式错误");
+            return;
+        }
+        uint32_t duration_ms = 2000;
+        bool loop = false;
+        cJSON* duration = cJSON_GetObjectItem(data_item, "duration_ms");
+        if (duration && cJSON_IsNumber(duration)) {
+            duration_ms = (uint32_t)duration->valueint;
+        }
+        cJSON* loop_item = cJSON_GetObjectItem(data_item, "loop");
+        if (loop_item && cJSON_IsBool(loop_item)) {
+            loop = cJSON_IsTrue(loop_item);
+        }
+        response = test_service.LedEffect(effect->valuestring, duration_ms, loop);
+    }
+    else if (cmd == "test_led_stop") {
+        response = test_service.LedStop();
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // 表情测试指令
+    // ═══════════════════════════════════════════════════════════════
+    else if (cmd == "test_emotion_play") {
+        if (!data_item) {
+            SendErrorResponse(cmd, 1000, "data字段缺失");
+            return;
+        }
+        cJSON* emotion = cJSON_GetObjectItem(data_item, "emotion");
+        if (!emotion || !cJSON_IsString(emotion)) {
+            SendErrorResponse(cmd, 1000, "emotion字段缺失或格式错误");
+            return;
+        }
+        uint32_t duration_ms = 0;
+        bool loop = false;
+        cJSON* duration = cJSON_GetObjectItem(data_item, "duration_ms");
+        if (duration && cJSON_IsNumber(duration)) {
+            duration_ms = (uint32_t)duration->valueint;
+        }
+        cJSON* loop_item = cJSON_GetObjectItem(data_item, "loop");
+        if (loop_item && cJSON_IsBool(loop_item)) {
+            loop = cJSON_IsTrue(loop_item);
+        }
+        response = test_service.EmotionPlay(emotion->valuestring, duration_ms, loop);
+    }
+    else if (cmd == "test_emotion_list") {
+        response = test_service.EmotionList();
+    }
+    else if (cmd == "test_emotion_stop") {
+        response = test_service.EmotionStop();
+    }
+    else if (cmd == "test_emotion_sequence") {
+        if (!data_item) {
+            SendErrorResponse(cmd, 1000, "data字段缺失");
+            return;
+        }
+        cJSON* emotions_array = cJSON_GetObjectItem(data_item, "emotions");
+        if (!emotions_array || !cJSON_IsArray(emotions_array)) {
+            SendErrorResponse(cmd, 1000, "emotions字段缺失或格式错误");
+            return;
+        }
+        std::vector<std::string> emotions;
+        cJSON* item;
+        cJSON_ArrayForEach(item, emotions_array) {
+            if (cJSON_IsString(item)) {
+                emotions.push_back(item->valuestring);
+            }
+        }
+        uint32_t interval_ms = 2000;
+        cJSON* interval = cJSON_GetObjectItem(data_item, "interval_ms");
+        if (interval && cJSON_IsNumber(interval)) {
+            interval_ms = (uint32_t)interval->valueint;
+        }
+        response = test_service.EmotionSequence(emotions, interval_ms);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // 综合测试指令
+    // ═══════════════════════════════════════════════════════════════
+    else if (cmd == "test_status") {
+        response = test_service.GetStatus();
+    }
+    else if (cmd == "test_self_check") {
+        response = test_service.SelfCheck();
+    }
+    else if (cmd == "test_reset") {
+        response = test_service.Reset();
+    }
+    else {
+        ESP_LOGW(TAG, "⚠️  未知测试命令: %s", cmd.c_str());
+        SendErrorResponse(cmd, 1000, "未知测试命令");
+        return;
+    }
+
+    // 发送响应
+    if (!response.empty()) {
+        ESP_LOGI(TAG, "📤 发送响应: %s", response.c_str());
+        SendResponse(response);
+    }
+
     ESP_LOGI(TAG, "========================================");
 }
 

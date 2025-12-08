@@ -174,6 +174,17 @@ private:
      */
     void HandleUnbindDeviceCommand();
 
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 测试模块指令（v2.2）
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    /**
+     * @brief 处理测试指令（统一入口）
+     * @param cmd 命令名称
+     * @param root JSON 根对象
+     */
+    void HandleTestCommand(const std::string& cmd, cJSON* root);
+
     /**
      * @brief 发送响应数据到手机
      * @param json_response JSON响应字符串
