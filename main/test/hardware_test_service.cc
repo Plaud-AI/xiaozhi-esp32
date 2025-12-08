@@ -459,7 +459,7 @@ std::string HardwareTestService::EmotionPlay(const std::string& emotion,
     }
 
     // 设置表情
-    display->SetEmotion(emotion);
+    display->SetEmotion(emotion.c_str());
     current_emotion_ = emotion;
     emotion_running_ = true;
 
@@ -537,7 +537,7 @@ std::string HardwareTestService::EmotionSequence(const std::vector<std::string>&
 
     // 依次播放每个表情
     for (const auto& emotion : emotions) {
-        display->SetEmotion(emotion);
+        display->SetEmotion(emotion.c_str());
         vTaskDelay(pdMS_TO_TICKS(interval_ms));
     }
 
