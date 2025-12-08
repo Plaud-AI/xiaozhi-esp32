@@ -9,24 +9,12 @@
 
 #include <esp_log.h>
 #include <esp_lcd_panel_vendor.h>
-#include <esp_io_expander_tca9554.h>
 #include <esp_lcd_ili9341.h>
 #include <driver/i2c_master.h>
 #include <driver/spi_common.h>
 #include <wifi_station.h>
 
 #define TAG "esp32s3_blehd_v1"
-
-/* ADC Buttons */
-typedef enum {
-    BSP_ADC_BUTTON_REC,
-    BSP_ADC_BUTTON_VOL_MUTE,
-    BSP_ADC_BUTTON_PLAY,
-    BSP_ADC_BUTTON_SET,
-    BSP_ADC_BUTTON_VOL_DOWN,
-    BSP_ADC_BUTTON_VOL_UP,
-    BSP_ADC_BUTTON_NUM
-} bsp_adc_button_t;
 
 // Init ili9341 by custom cmd
 static const ili9341_lcd_init_cmd_t vendor_specific_init[] = {
@@ -37,28 +25,20 @@ static const ili9341_lcd_init_cmd_t vendor_specific_init[] = {
     {0xB4, (uint8_t []){0x02}, 1, 0},
     {0xE0, (uint8_t []){0x00, 0x03, 0x08, 0x06, 0x13, 0x09, 0x39, 0x39, 0x48, 0x02, 0x0a, 0x08, 0x17, 0x17, 0x0F}, 15, 0},
     {0xE1, (uint8_t []){0x00, 0x28, 0x29, 0x01, 0x0d, 0x03, 0x3f, 0x33, 0x52, 0x04, 0x0f, 0x0e, 0x37, 0x38, 0x0F}, 15, 0},
-
     {0xB1, (uint8_t []){00, 0x1B}, 2, 0},
     {0x36, (uint8_t []){0x08}, 1, 0},
     {0x3A, (uint8_t []){0x55}, 1, 0},
     {0xB7, (uint8_t []){0x06}, 1, 0},
-
     {0x11, (uint8_t []){0}, 0x80, 0},
     {0x29, (uint8_t []){0}, 0x80, 0},
-
     {0, (uint8_t []){0}, 0xff, 0},
 };
 
 class Esp32S3BlehdV1Board : public WifiBoard {
 private:
     Button boot_button_;
-    Button* adc_button_[BSP_ADC_BUTTON_NUM];
-#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
-    adc_oneshot_unit_handle_t bsp_adc_handle = NULL;
-#endif
     i2c_master_bus_handle_t i2c_bus_;
     Display* display_;
-    esp_io_expander_handle_t io_expander_ = NULL;
 
     void InitializeI2c() {
         // Initialize I2C peripheral
@@ -98,176 +78,33 @@ private:
         }
     }
 
-    void InitializeTca9554() {
-        esp_err_t ret = esp_io_expander_new_i2c_tca9554(i2c_bus_, ESP_IO_EXPANDER_I2C_TCA9554_ADDRESS_000, &io_expander_);
-        if(ret != ESP_OK) {
-            ret = esp_io_expander_new_i2c_tca9554(i2c_bus_, ESP_IO_EXPANDER_I2C_TCA9554A_ADDRESS_000, &io_expander_);
-            if(ret != ESP_OK) {
-                ESP_LOGE(TAG, "TCA9554 create returned error");  
-                return;
-            }
-        }
-        // 配置IO0-IO3为输出模式
-        ESP_ERROR_CHECK(esp_io_expander_set_dir(io_expander_, 
-            IO_EXPANDER_PIN_NUM_0 | IO_EXPANDER_PIN_NUM_1 | 
-            IO_EXPANDER_PIN_NUM_2 | IO_EXPANDER_PIN_NUM_3, 
-            IO_EXPANDER_OUTPUT));
-
-        // 复位LCD和TouchPad
-        ESP_ERROR_CHECK(esp_io_expander_set_level(io_expander_,
-            IO_EXPANDER_PIN_NUM_0 | IO_EXPANDER_PIN_NUM_1 | IO_EXPANDER_PIN_NUM_2, 1));
-        vTaskDelay(pdMS_TO_TICKS(300));
-        ESP_ERROR_CHECK(esp_io_expander_set_level(io_expander_,
-            IO_EXPANDER_PIN_NUM_0 | IO_EXPANDER_PIN_NUM_1 | IO_EXPANDER_PIN_NUM_2, 0));
-        vTaskDelay(pdMS_TO_TICKS(300));
-        ESP_ERROR_CHECK(esp_io_expander_set_level(io_expander_,
-            IO_EXPANDER_PIN_NUM_0 | IO_EXPANDER_PIN_NUM_1 | IO_EXPANDER_PIN_NUM_2, 1));
-    }
-
-    void EnableLcdCs() {
-        if(io_expander_ != NULL) {
-            esp_io_expander_set_level(io_expander_, IO_EXPANDER_PIN_NUM_3, 0);// 置低 LCD CS
-        }
-    }
-
     void InitializeSpi() {
         spi_bus_config_t buscfg = {};
-        buscfg.mosi_io_num = GPIO_NUM_0;
+        buscfg.mosi_io_num = LCD_SPI_MOSI;   // GPIO47 - L_DIN
         buscfg.miso_io_num = GPIO_NUM_NC;
-        buscfg.sclk_io_num = GPIO_NUM_1;
+        buscfg.sclk_io_num = LCD_SPI_CLK;    // GPIO13 - L_CLK
         buscfg.quadwp_io_num = GPIO_NUM_NC;
         buscfg.quadhd_io_num = GPIO_NUM_NC;
         buscfg.max_transfer_sz = DISPLAY_WIDTH * DISPLAY_HEIGHT * sizeof(uint16_t);
         ESP_ERROR_CHECK(spi_bus_initialize(SPI3_HOST, &buscfg, SPI_DMA_CH_AUTO));
     }
 
-    void ChangeVol(int val) {
-        auto codec = GetAudioCodec();
-        int old_volume = codec->output_volume();
-        auto volume = old_volume + val;
-        
-        ESP_LOGI(TAG, "🔊 音量调节: %d %s %d = %d", 
-                 old_volume, (val > 0 ? "+" : ""), val, volume);
-        
-        if (volume > 100) {
-            volume = 100;
-            ESP_LOGI(TAG, "⚠️  音量超过最大值，限制为 100");
-        }
-        if (volume < 0) {
-            volume = 0;
-            ESP_LOGI(TAG, "⚠️  音量低于最小值，限制为 0");
-        }
-        
-        codec->SetOutputVolume(volume);
-        ESP_LOGI(TAG, "✅ 音量已设置: %d -> %d (变化: %+d)", old_volume, volume, volume - old_volume);
-        GetDisplay()->ShowNotification(Lang::Strings::VOLUME + std::to_string(volume));
-    }
-
-    void MuteVol() {
-        auto codec = GetAudioCodec();
-        int old_volume = codec->output_volume();
-        int volume;
-        
-        if (old_volume > 1) {
-            volume = 0;
-            ESP_LOGI(TAG, "🔇 静音: %d -> 0", old_volume);
-        } else  {
-            volume = 50;
-            ESP_LOGI(TAG, "🔊 取消静音: %d -> 50", old_volume);
-        }
-        
-        codec->SetOutputVolume(volume);
-        ESP_LOGI(TAG, "✅ 静音切换完成: %d -> %d", old_volume, volume);
-        GetDisplay()->ShowNotification(Lang::Strings::VOLUME + std::to_string(volume));
+    void InitializeBacklight() {
+        // 配置背光引脚
+        gpio_config_t bl_gpio_config = {
+            .pin_bit_mask = (1ULL << LCD_BL_PIN),
+            .mode = GPIO_MODE_OUTPUT,
+            .pull_up_en = GPIO_PULLUP_DISABLE,
+            .pull_down_en = GPIO_PULLDOWN_DISABLE,
+            .intr_type = GPIO_INTR_DISABLE,
+        };
+        gpio_config(&bl_gpio_config);
+        gpio_set_level(LCD_BL_PIN, 1);  // 打开背光
+        ESP_LOGI(TAG, "LCD backlight enabled on GPIO%d", LCD_BL_PIN);
     }
 
     void InitializeButtons() {
-         button_adc_config_t adc_cfg = {};
-        adc_cfg.adc_channel = ADC_CHANNEL_4; // ADC1 channel 0 is GPIO5
-#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
-        const adc_oneshot_unit_init_cfg_t init_config1 = {
-            .unit_id = ADC_UNIT_1,
-        };
-        adc_oneshot_new_unit(&init_config1, &bsp_adc_handle);
-        adc_cfg.adc_handle = &bsp_adc_handle;
-#endif
-        adc_cfg.button_index = BSP_ADC_BUTTON_REC;
-        adc_cfg.min = 2310; // middle is 2410mV
-        adc_cfg.max = 2510;
-        adc_button_[0] = new AdcButton(adc_cfg);
-
-        adc_cfg.button_index = BSP_ADC_BUTTON_VOL_MUTE;
-        adc_cfg.min = 1880; // middle is 1980mV
-        adc_cfg.max = 2080;
-        adc_button_[1] = new AdcButton(adc_cfg);
-
-        adc_cfg.button_index = BSP_ADC_BUTTON_PLAY;
-        adc_cfg.min = 1550; // middle is 1650mV
-        adc_cfg.max = 1750;
-        adc_button_[2] = new AdcButton(adc_cfg);
-
-        adc_cfg.button_index = BSP_ADC_BUTTON_SET;
-        adc_cfg.min = 1015; // middle is 1115mV
-        adc_cfg.max = 1215;
-        adc_button_[3] = new AdcButton(adc_cfg);
-
-        adc_cfg.button_index = BSP_ADC_BUTTON_VOL_DOWN;
-        adc_cfg.min = 720; // middle is 820mV
-        adc_cfg.max = 920;
-        adc_button_[4] = new AdcButton(adc_cfg);
-
-        adc_cfg.button_index = BSP_ADC_BUTTON_VOL_UP;
-        adc_cfg.min = 280; // middle is 380mV
-        adc_cfg.max = 480;
-        adc_button_[5] = new AdcButton(adc_cfg);
-
-        auto volume_up_button = adc_button_[BSP_ADC_BUTTON_VOL_UP];
-        volume_up_button->OnClick([this]() {
-            ESP_LOGI(TAG, "🔼 音量加按钮：短按（+10）");
-            ChangeVol(10);
-        });
-        volume_up_button->OnLongPress([this]() {
-            ESP_LOGI(TAG, "🔼 音量加按钮：长按（设为最大音量 100）");
-            int old_volume = GetAudioCodec()->output_volume();
-            GetAudioCodec()->SetOutputVolume(100);
-            ESP_LOGI(TAG, "✅ 音量已设置: %d -> 100", old_volume);
-            GetDisplay()->ShowNotification(Lang::Strings::MAX_VOLUME);
-        });
-
-        auto volume_down_button = adc_button_[BSP_ADC_BUTTON_VOL_DOWN];
-        volume_down_button->OnClick([this]() {
-            ESP_LOGI(TAG, "🔽 音量减按钮：短按（-10）");
-            ChangeVol(-10);
-        });
-        volume_down_button->OnLongPress([this]() {
-            ESP_LOGI(TAG, "🔽 音量减按钮：长按（静音）");
-            int old_volume = GetAudioCodec()->output_volume();
-            GetAudioCodec()->SetOutputVolume(0);
-            ESP_LOGI(TAG, "✅ 音量已设置: %d -> 0 (静音)", old_volume);
-            GetDisplay()->ShowNotification(Lang::Strings::MUTED);
-        });
-
-        auto volume_mute_button = adc_button_[BSP_ADC_BUTTON_VOL_MUTE];
-        volume_mute_button->OnClick([this]() {
-            ESP_LOGI(TAG, "🔇 静音按钮：短按（切换静音/取消静音）");
-            MuteVol();
-        });
-
-        auto play_button = adc_button_[BSP_ADC_BUTTON_PLAY];
-        play_button->OnClick([this]() {
-             ESP_LOGI(TAG, " TODO %s:%d\n", __func__, __LINE__);
-        });
-
-        auto set_button = adc_button_[BSP_ADC_BUTTON_SET];
-        set_button->OnClick([this]() {
-             ESP_LOGI(TAG, "TODO %s:%d\n", __func__, __LINE__);
-        });
-
-        auto rec_button = adc_button_[BSP_ADC_BUTTON_REC];
-        rec_button->OnClick([this]() {
-             ESP_LOGI(TAG, "TODO %s:%d\n", __func__, __LINE__);
-        });
-        boot_button_.OnClick([this]() {});
+        // Boot 按钮
         boot_button_.OnClick([this]() {
             auto& app = Application::GetInstance();
             if (app.GetDeviceState() == kDeviceStateStarting && !WifiStation::GetInstance().IsConnected()) {
@@ -291,10 +128,10 @@ private:
         esp_lcd_panel_handle_t panel = nullptr;
 
         // 液晶屏控制IO初始化
-        ESP_LOGD(TAG, "Install panel IO");
+        ESP_LOGI(TAG, "Install panel IO: CS=%d, DC=%d, RST=%d", LCD_CS_PIN, LCD_DC_PIN, LCD_RST_PIN);
         esp_lcd_panel_io_spi_config_t io_config = {};
-        io_config.cs_gpio_num = GPIO_NUM_NC;
-        io_config.dc_gpio_num = GPIO_NUM_2;
+        io_config.cs_gpio_num = LCD_CS_PIN;    // GPIO14
+        io_config.dc_gpio_num = LCD_DC_PIN;    // GPIO21
         io_config.spi_mode = 0;
         io_config.pclk_hz = 40 * 1000 * 1000;
         io_config.trans_queue_depth = 10;
@@ -303,21 +140,20 @@ private:
         ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(SPI3_HOST, &io_config, &panel_io));
 
         // 初始化液晶屏驱动芯片
-        ESP_LOGD(TAG, "Install LCD driver");
+        ESP_LOGI(TAG, "Install LCD driver");
         const ili9341_vendor_config_t vendor_config = {
             .init_cmds = &vendor_specific_init[0],
             .init_cmds_size = sizeof(vendor_specific_init) / sizeof(ili9341_lcd_init_cmd_t),
         };
 
         esp_lcd_panel_dev_config_t panel_config = {};
-        panel_config.reset_gpio_num = GPIO_NUM_NC;
+        panel_config.reset_gpio_num = LCD_RST_PIN;  // GPIO12
         panel_config.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB;
         panel_config.bits_per_pixel = 16;
         panel_config.vendor_config = (void *)&vendor_config;
         ESP_ERROR_CHECK(esp_lcd_new_panel_ili9341(panel_io, &panel_config, &panel));
         
         ESP_ERROR_CHECK(esp_lcd_panel_reset(panel));
-        EnableLcdCs();
         ESP_ERROR_CHECK(esp_lcd_panel_init(panel));
         ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(panel, DISPLAY_SWAP_XY));
         ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y));
@@ -339,11 +175,12 @@ private:
     void InitializeSt7789Display() {
         esp_lcd_panel_io_handle_t panel_io = nullptr;
         esp_lcd_panel_handle_t panel = nullptr;
+        
         // 液晶屏控制IO初始化
-        ESP_LOGD(TAG, "Install panel IO");
+        ESP_LOGI(TAG, "Install panel IO: CS=%d, DC=%d, RST=%d", LCD_CS_PIN, LCD_DC_PIN, LCD_RST_PIN);
         esp_lcd_panel_io_spi_config_t io_config = {};
-        io_config.cs_gpio_num = GPIO_NUM_46;
-        io_config.dc_gpio_num = GPIO_NUM_2;
+        io_config.cs_gpio_num = LCD_CS_PIN;    // GPIO14
+        io_config.dc_gpio_num = LCD_DC_PIN;    // GPIO21
         io_config.spi_mode = 0;
         io_config.pclk_hz = 60 * 1000 * 1000;
         io_config.trans_queue_depth = 10;
@@ -352,14 +189,13 @@ private:
         ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(SPI3_HOST, &io_config, &panel_io));
 
         // 初始化液晶屏驱动芯片ST7789
-        ESP_LOGD(TAG, "Install LCD driver");
+        ESP_LOGI(TAG, "Install LCD driver");
         esp_lcd_panel_dev_config_t panel_config = {};
-        panel_config.reset_gpio_num = GPIO_NUM_NC;
+        panel_config.reset_gpio_num = LCD_RST_PIN;  // GPIO12
         panel_config.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB;
         panel_config.bits_per_pixel = 16;
         ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(panel_io, &panel_config, &panel));
         ESP_ERROR_CHECK(esp_lcd_panel_reset(panel));
-        EnableLcdCs();
         ESP_ERROR_CHECK(esp_lcd_panel_init(panel));
         ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(panel, DISPLAY_SWAP_XY));
         ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y));
@@ -380,12 +216,21 @@ private:
 public:
     Esp32S3BlehdV1Board() : boot_button_(BOOT_BUTTON_GPIO) {
         ESP_LOGI(TAG, "Initializing ESP32S3 BLEHD V1 Board");
+        
+        // 初始化 I2C (音频芯片 + 触摸屏)
         InitializeI2c();
         I2cDetect();
-        InitializeTca9554();
+        
+        // 初始化 SPI（显示屏）
         InitializeSpi();
+        
+        // 初始化背光
+        InitializeBacklight();
+        
+        // 初始化按钮
         InitializeButtons();
         
+        // 初始化显示屏
         #ifdef LCD_TYPE_ILI9341_SERIAL
         InitializeIli9341Display(); 
         #else
@@ -420,4 +265,3 @@ public:
 };
 
 DECLARE_BOARD(Esp32S3BlehdV1Board);
-
