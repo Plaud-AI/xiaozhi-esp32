@@ -61,6 +61,7 @@ struct ServoLimits {
  * - 角度设置（绝对和相对）
  * - 软件限位保护
  * - 平滑运动
+ * - 模拟模式（屏蔽实际硬件动作）
  */
 class Motor {
 public:
@@ -70,9 +71,11 @@ public:
      * @param gpio_pin GPIO 引脚
      * @param channel LEDC 通道
      * @param limits 限位配置
+     * @param simulation_mode 是否启用模拟模式（不实际驱动舵机）
      */
     Motor(const std::string& name, gpio_num_t gpio_pin, 
-          ledc_channel_t channel, const ServoLimits& limits);
+          ledc_channel_t channel, const ServoLimits& limits,
+          bool simulation_mode = false);
     
     ~Motor();
 
@@ -134,6 +137,13 @@ public:
     
     void SetLimits(const ServoLimits& limits) { limits_ = limits; }
     const std::string& GetName() const { return name_; }
+    
+    /**
+     * @brief 设置模拟模式
+     * @param enable true=模拟模式（不驱动硬件），false=正常模式
+     */
+    void SetSimulationMode(bool enable) { simulation_mode_ = enable; }
+    bool IsSimulationMode() const { return simulation_mode_; }
 
 private:
     /**
@@ -150,6 +160,7 @@ private:
     float target_angle_;
     bool is_moving_;
     bool initialized_;
+    bool simulation_mode_;   // 模拟模式：true=不实际驱动硬件
     
     std::unique_ptr<ServoDriver> servo_driver_;
 };

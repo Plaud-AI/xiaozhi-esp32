@@ -103,6 +103,17 @@ public:
     void SetYawLimits(float min_angle, float max_angle);
     void SetPitchLimits(float min_angle, float max_angle);
     void EnableSafety(bool enable) { safety_enabled_ = enable; }
+    
+    /**
+     * @brief 设置模拟模式（全局开关）
+     * @param enable true=模拟模式（不实际驱动舵机），false=正常模式
+     * 
+     * 模拟模式下：
+     * - 所有动作只更新内部状态，不驱动实际硬件
+     * - 适用于无硬件调试、单元测试、动作序列验证
+     */
+    void SetSimulationMode(bool enable);
+    bool IsSimulationMode() const { return simulation_mode_; }
 
     // ==================== 回调 ====================
     void SetOnMotionCompleteCallback(std::function<void()> callback);
@@ -134,6 +145,7 @@ private:
     bool running_;
     bool emergency_stopped_;
     bool safety_enabled_;
+    bool simulation_mode_;   // 模拟模式：true=不实际驱动硬件
     
     std::unique_ptr<Motor> yaw_motor_;     // 水平旋转
     std::unique_ptr<Motor> pitch_motor_;   // 垂直俯仰

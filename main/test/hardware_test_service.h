@@ -322,6 +322,15 @@ public:
      */
     std::string MotionTestAllP0(uint32_t interval_ms = 2000);
 
+    /**
+     * @brief 设置模拟模式（全局开关）
+     * @param enable true=启用模拟模式（不驱动实际舵机），false=正常模式
+     * @return JSON 响应字符串
+     * 
+     * 模拟模式下所有动作只更新内部状态，适用于无硬件调试
+     */
+    std::string MotionSetSimulation(bool enable);
+
     // ═══════════════════════════════════════════════════════════════
     // 综合测试接口
     // ═══════════════════════════════════════════════════════════════

@@ -1056,6 +1056,7 @@ std::string HardwareTestService::MotionGetStatus() {
         // 电机控制器状态
         cJSON* motor_status = cJSON_CreateObject();
         cJSON_AddBoolToObject(motor_status, "running", motor_ctrl.IsRunning());
+        cJSON_AddBoolToObject(motor_status, "simulation_mode", motor_ctrl.IsSimulationMode());
         cJSON_AddBoolToObject(motor_status, "busy", motor_ctrl.IsBusy());
         cJSON_AddBoolToObject(motor_status, "emergency_stopped", motor_ctrl.IsEmergencyStopped());
         
@@ -1183,6 +1184,27 @@ std::string HardwareTestService::MotionTestAllP0(uint32_t interval_ms) {
     return BuildSuccessResponse("test_motion_test_all_p0", "P0动作测试完成", data);
 #else
     return BuildErrorResponse("test_motion_test_all_p0", TEST_ERROR_NOT_SUPPORTED,
+                              "动作系统未启用");
+#endif
+}
+
+std::string HardwareTestService::MotionSetSimulation(bool enable) {
+    ESP_LOGI(TAG, "MotionSetSimulation: enable=%d", enable);
+
+#ifdef CONFIG_ENABLE_DOLL_INTERACTION
+    auto& motor_ctrl = MotorController::GetInstance();
+    motor_ctrl.SetSimulationMode(enable);
+
+    cJSON* data = cJSON_CreateObject();
+    cJSON_AddBoolToObject(data, "simulation_mode", enable);
+    cJSON_AddStringToObject(data, "description", 
+        enable ? "模拟模式已启用，舵机动作将不实际执行" 
+               : "正常模式，舵机将实际执行动作");
+
+    return BuildSuccessResponse("test_motion_set_simulation", 
+        enable ? "模拟模式已启用" : "已切换到正常模式", data);
+#else
+    return BuildErrorResponse("test_motion_set_simulation", TEST_ERROR_NOT_SUPPORTED,
                               "动作系统未启用");
 #endif
 }

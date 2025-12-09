@@ -27,7 +27,8 @@ MotorController::MotorController()
     : initialized_(false),
       running_(false),
       emergency_stopped_(false),
-      safety_enabled_(true) {
+      safety_enabled_(true),
+      simulation_mode_(false) {
 }
 
 MotorController::~MotorController() {
@@ -51,12 +52,15 @@ void MotorController::Initialize() {
 }
 
 void MotorController::InitializeMotors() {
+    ESP_LOGI(TAG, "Creating motors (simulation_mode=%s)", simulation_mode_ ? "ON" : "OFF");
+    
     // 创建 Yaw 舵机（水平）
     yaw_motor_ = std::make_unique<Motor>(
         "yaw",
         (gpio_num_t)CONFIG_SERVO_YAW_GPIO,
         LEDC_CHANNEL_0,
-        ServoLimits::YawDefault()
+        ServoLimits::YawDefault(),
+        simulation_mode_
     );
 
     // 创建 Pitch 舵机（垂直）
@@ -64,7 +68,8 @@ void MotorController::InitializeMotors() {
         "pitch",
         (gpio_num_t)CONFIG_SERVO_PITCH_GPIO,
         LEDC_CHANNEL_1,
-        ServoLimits::PitchDefault()
+        ServoLimits::PitchDefault(),
+        simulation_mode_
     );
 
     // 初始化舵机
@@ -193,7 +198,6 @@ void MotorController::Rotate(int angle, int speed) {
     
     // 转换为相对角度
     if (yaw_motor_) {
-        float current = yaw_motor_->GetPosition();
         float target = yaw_motor_->GetCenterAngle() + (float)angle;
         
         // 使用平滑移动，速度映射到时间
@@ -212,7 +216,6 @@ void MotorController::Nod(int angle, int speed) {
     ESP_LOGI(TAG, "Nod: angle=%d, speed=%d", angle, speed);
     
     if (pitch_motor_) {
-        float current = pitch_motor_->GetPosition();
         float target = pitch_motor_->GetCenterAngle() + (float)angle;
         
         uint32_t duration_ms = (uint32_t)(std::abs(angle) * (150 - speed) / 50);
@@ -347,6 +350,19 @@ void MotorController::SetPitchLimits(float min_angle, float max_angle) {
     }
 }
 
+void MotorController::SetSimulationMode(bool enable) {
+    ESP_LOGI(TAG, "Set simulation mode: %s", enable ? "ON" : "OFF");
+    simulation_mode_ = enable;
+    
+    // 更新已创建的电机
+    if (yaw_motor_) {
+        yaw_motor_->SetSimulationMode(enable);
+    }
+    if (pitch_motor_) {
+        pitch_motor_->SetSimulationMode(enable);
+    }
+}
+
 // ==================== 回调 ====================
 
 void MotorController::SetOnMotionCompleteCallback(std::function<void()> callback) {
@@ -360,7 +376,7 @@ void MotorController::SetOnErrorCallback(std::function<void(const std::string&)>
 // ==================== 测试辅助 ====================
 
 std::string MotorController::GetStatusString() const {
-    char buffer[256];
+    char buffer[300];
     
     float yaw_min, yaw_max, pitch_min, pitch_max;
     GetYawLimits(yaw_min, yaw_max);
@@ -369,11 +385,13 @@ std::string MotorController::GetStatusString() const {
     snprintf(buffer, sizeof(buffer),
         "MotorController Status:\n"
         "  Running: %s\n"
+        "  Simulation: %s\n"
         "  Emergency: %s\n"
         "  Yaw: %.1f° (limits: %.1f~%.1f)\n"
         "  Pitch: %.1f° (limits: %.1f~%.1f)\n"
         "  Busy: %s",
         running_ ? "yes" : "no",
+        simulation_mode_ ? "ON" : "OFF",
         emergency_stopped_ ? "YES" : "no",
         GetYawAngle(), yaw_min, yaw_max,
         GetPitchAngle(), pitch_min, pitch_max,
