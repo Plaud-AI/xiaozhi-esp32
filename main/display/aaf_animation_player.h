@@ -91,6 +91,10 @@ private:
     AnimationEndCallback on_animation_end_;
     AnimationFrameCallback on_frame_update_;
     
+    // 静态实例指针（用于在回调中访问成员变量）
+    // 注意：这假设只有一个 AafAnimationPlayer 实例
+    static AafAnimationPlayer* instance_;
+    
     // 底层回调
     static bool OnFlushIoReady(esp_lcd_panel_io_handle_t panel_io,
                                esp_lcd_panel_io_event_data_t* edata,

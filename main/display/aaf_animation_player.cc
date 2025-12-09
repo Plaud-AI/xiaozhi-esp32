@@ -1,6 +1,9 @@
 #include "aaf_animation_player.h"
 #include <esp_log.h>
 #include <esp_heap_caps.h>
+#include <esp_lvgl_port.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <cstring>
 
 static const char* TAG = "AafAnimPlayer";
@@ -26,10 +29,11 @@ AafAnimationPlayer::AafAnimationPlayer(esp_lcd_panel_io_handle_t panel_io,
              canvas_x, canvas_y, canvas_width, canvas_height);
     
     // 配置 anim_player
+    // user_data 设置为 this，方便在回调中访问成员变量
     anim_player_config_t config = {
         .flush_cb = OnFlush,
         .update_cb = OnUpdate,
-        .user_data = this,
+        .user_data = this,  // 传递 this 指针
         .flags = {
             .swap = true,  // 字节交换（适配 RGB565）
         },
@@ -47,15 +51,23 @@ AafAnimationPlayer::AafAnimationPlayer(esp_lcd_panel_io_handle_t panel_io,
         return;
     }
     
-    // 注意：不注册 panel_io 回调，因为 LVGL 已经注册了
-    // anim_player 将通过 flush_cb 通知需要刷新的区域
-    // 刷新操作由 LVGL 处理
+    // 保存 this 指针到静态变量，供回调使用
+    instance_ = this;
     
-    ESP_LOGI(TAG, "AAF Animation Player created successfully");
+    // 注意：不能注册 on_color_trans_done 回调！
+    // 因为 LVGL 已经注册了该回调，覆盖它会导致 LVGL 在 wait_for_flushing 中卡死
+    // 我们使用 LVGL port 锁 + 延时来同步 SPI 传输
+    
+    ESP_LOGI(TAG, "AAF Animation Player created successfully (using LVGL port sync)");
 }
 
 AafAnimationPlayer::~AafAnimationPlayer() {
     ESP_LOGI(TAG, "Destroying AAF Animation Player");
+    
+    // 清理静态实例指针
+    if (instance_ == this) {
+        instance_ = nullptr;
+    }
     
     if (player_handle_) {
         Stop();
@@ -176,11 +188,14 @@ bool AafAnimationPlayer::Resume() {
     return true;
 }
 
+// 静态实例指针，用于在回调中访问成员变量
+AafAnimationPlayer* AafAnimationPlayer::instance_ = nullptr;
+
 bool AafAnimationPlayer::OnFlushIoReady(esp_lcd_panel_io_handle_t panel_io,
                                         esp_lcd_panel_io_event_data_t* edata,
                                         void* user_ctx) {
-    auto* player_handle = static_cast<anim_player_handle_t>(user_ctx);
-    anim_player_flush_ready(player_handle);
+    // 此回调不再使用（我们不注册它，以避免覆盖 LVGL 的回调）
+    // 保留函数定义以满足头文件声明
     return true;
 }
 
@@ -188,8 +203,12 @@ void AafAnimationPlayer::OnFlush(anim_player_handle_t handle,
                                  int x_start, int y_start,
                                  int x_end, int y_end,
                                  const void* color_data) {
+    // 获取 this 指针（存储在 user_data 中）
     auto* self = static_cast<AafAnimationPlayer*>(anim_player_get_user_data(handle));
     if (!self || !self->panel_) {
+        ESP_LOGE(TAG, "OnFlush: self or panel is null");
+        // 必须通知 flush_ready，否则播放器会挂起
+        anim_player_flush_ready(handle);
         return;
     }
     
@@ -199,16 +218,36 @@ void AafAnimationPlayer::OnFlush(anim_player_handle_t handle,
     int adj_x_end = x_end + self->canvas_x_;
     int adj_y_end = y_end + self->canvas_y_;
     
-    // 绘制到 LCD（同步操作）
+    // 获取 LVGL port 锁，避免与 LVGL 刷新冲突
+    // 这确保我们不会在 LVGL 正在刷新时尝试写入 SPI
+    if (!lvgl_port_lock(50)) {  // 50ms 超时
+        ESP_LOGW(TAG, "OnFlush: Failed to acquire LVGL lock, skipping frame");
+        anim_player_flush_ready(handle);
+        return;
+    }
+    
+    // 绘制到 LCD
+    // esp_lcd_panel_draw_bitmap 将数据放入 SPI 队列
     esp_lcd_panel_draw_bitmap(self->panel_, adj_x_start, adj_y_start, 
                               adj_x_end, adj_y_end, color_data);
     
-    // 立即通知 anim_player 刷新完成
-    // 因为 esp_lcd_panel_draw_bitmap 是同步的，刷新已完成
+    // 释放 LVGL 锁
+    lvgl_port_unlock();
+    
+    // 等待 SPI 传输完成
+    // 计算大致的传输时间：
+    // 数据大小 = (x_end - x_start) * (y_end - y_start) * 2 bytes (RGB565)
+    // SPI 速度 = 40MHz, 有效速率约 20Mbps（考虑开销）
+    // 对于 320x50 区域：320*50*2*8 / 20000000 ≈ 1.3ms
+    // 使用固定的小延时来确保传输完成
+    vTaskDelay(pdMS_TO_TICKS(2));  // 2ms 延时
+    
+    // 通知 anim_player 刷新完成，可以发送下一帧
     anim_player_flush_ready(handle);
 }
 
 void AafAnimationPlayer::OnUpdate(anim_player_handle_t handle, player_event_t event) {
+    // 获取 this 指针（存储在 user_data 中）
     auto* self = static_cast<AafAnimationPlayer*>(anim_player_get_user_data(handle));
     if (!self) {
         return;
