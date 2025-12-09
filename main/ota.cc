@@ -208,6 +208,25 @@ bool Ota::CheckVersion() {
             }
         }
         has_websocket_config_ = true;
+        
+        // 打印从 OTA 服务器获取到的 WebSocket 配置
+        ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════════╗");
+        ESP_LOGI(TAG, "║   📡 OTA 返回的 WebSocket 配置                                 ║");
+        ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════════╣");
+        cJSON *ws_url = cJSON_GetObjectItem(websocket, "url");
+        cJSON *ws_token = cJSON_GetObjectItem(websocket, "token");
+        cJSON *ws_version = cJSON_GetObjectItem(websocket, "version");
+        if (cJSON_IsString(ws_url)) {
+            ESP_LOGI(TAG, "║   URL: %s", ws_url->valuestring);
+        }
+        if (cJSON_IsString(ws_token)) {
+            ESP_LOGI(TAG, "║   Token: %s...", strlen(ws_token->valuestring) > 20 ? 
+                     std::string(ws_token->valuestring, 20).c_str() : ws_token->valuestring);
+        }
+        if (cJSON_IsNumber(ws_version)) {
+            ESP_LOGI(TAG, "║   Version: %d", ws_version->valueint);
+        }
+        ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════════╝");
     } else {
         ESP_LOGI(TAG, "No websocket section found!");
     }

@@ -182,12 +182,21 @@ bool WebsocketProtocol::OpenAudioChannel() {
         }
     });
 
-    ESP_LOGI(TAG, "Connecting to websocket server: %s with version: %d", url.c_str(), version_);
+    ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════════╗");
+    ESP_LOGI(TAG, "║   🔗 正在连接 WebSocket 服务器                                 ║");
+    ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════════╣");
+    ESP_LOGI(TAG, "║   URL: %s", url.c_str());
+    ESP_LOGI(TAG, "║   Protocol Version: %d", version_);
+    ESP_LOGI(TAG, "║   Token: %s", token.empty() ? "(无)" : "(已配置)");
+    ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════════╝");
+    
     if (!websocket_->Connect(url.c_str())) {
-        ESP_LOGE(TAG, "Failed to connect to websocket server");
+        ESP_LOGE(TAG, "❌ Failed to connect to websocket server: %s", url.c_str());
         SetError(Lang::Strings::SERVER_NOT_CONNECTED);
         return false;
     }
+    
+    ESP_LOGI(TAG, "✅ WebSocket 连接成功: %s", url.c_str());
 
     // Send hello message to describe the client
     auto message = GetHelloMessage();
