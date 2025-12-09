@@ -5,6 +5,12 @@
 #include "led/led.h"
 #include "display/display.h"
 
+#ifdef CONFIG_ENABLE_DOLL_INTERACTION
+#include "motor/motor_controller.h"
+#include "motion/motion_engine.h"
+#include "motion/motion_sequence.h"
+#endif
+
 #include <esp_log.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
@@ -30,6 +36,7 @@ HardwareTestService::HardwareTestService()
     , led_effect_running_(false)
     , current_emotion_("neutral")
     , emotion_running_(false)
+    , motion_initialized_(false)
     , nfc_event_callback_(nullptr) {
     ESP_LOGI(TAG, "Hardware test service created");
 }
@@ -711,12 +718,472 @@ std::string HardwareTestService::Reset() {
     current_emotion_ = "neutral";
     emotion_running_ = false;
 
+#ifdef CONFIG_ENABLE_DOLL_INTERACTION
+    // 重置动作系统
+    if (motion_initialized_) {
+        MotorController::GetInstance().Home();
+        MotionEngine::GetInstance().StopMotion();
+    }
+#endif
+
     cJSON* data = cJSON_CreateObject();
     cJSON_AddNumberToObject(data, "servo_angle", 90);
     cJSON_AddBoolToObject(data, "led_off", true);
     cJSON_AddBoolToObject(data, "emotion_neutral", true);
     cJSON_AddBoolToObject(data, "nfc_stopped", true);
+    cJSON_AddBoolToObject(data, "motion_homed", motion_initialized_);
 
     return BuildSuccessResponse("test_reset", "测试模块已重置", data);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 动作测试实现
+// ═══════════════════════════════════════════════════════════════
+
+std::string HardwareTestService::MotionInit(int yaw_gpio, int pitch_gpio) {
+    ESP_LOGI(TAG, "MotionInit: yaw_gpio=%d, pitch_gpio=%d", yaw_gpio, pitch_gpio);
+
+#ifdef CONFIG_ENABLE_DOLL_INTERACTION
+    auto& motor_ctrl = MotorController::GetInstance();
+    auto& motion_engine = MotionEngine::GetInstance();
+    
+    // 初始化电机控制器
+    motor_ctrl.Initialize();
+    motor_ctrl.Start();
+    
+    // 初始化动作引擎
+    motion_engine.Initialize();
+    motion_engine.Start();
+    
+    motion_initialized_ = true;
+
+    // 获取限位信息
+    float yaw_min, yaw_max, pitch_min, pitch_max;
+    motor_ctrl.GetYawLimits(yaw_min, yaw_max);
+    motor_ctrl.GetPitchLimits(pitch_min, pitch_max);
+
+    cJSON* data = cJSON_CreateObject();
+    
+    cJSON* yaw_info = cJSON_CreateObject();
+    cJSON_AddNumberToObject(yaw_info, "gpio", yaw_gpio < 0 ? 2 : yaw_gpio);
+    cJSON_AddNumberToObject(yaw_info, "min", yaw_min);
+    cJSON_AddNumberToObject(yaw_info, "max", yaw_max);
+    cJSON_AddNumberToObject(yaw_info, "center", motor_ctrl.GetYawCenter());
+    cJSON_AddNumberToObject(yaw_info, "current", motor_ctrl.GetYawAngle());
+    cJSON_AddItemToObject(data, "yaw", yaw_info);
+
+    cJSON* pitch_info = cJSON_CreateObject();
+    cJSON_AddNumberToObject(pitch_info, "gpio", pitch_gpio < 0 ? 3 : pitch_gpio);
+    cJSON_AddNumberToObject(pitch_info, "min", pitch_min);
+    cJSON_AddNumberToObject(pitch_info, "max", pitch_max);
+    cJSON_AddNumberToObject(pitch_info, "center", motor_ctrl.GetPitchCenter());
+    cJSON_AddNumberToObject(pitch_info, "current", motor_ctrl.GetPitchAngle());
+    cJSON_AddItemToObject(data, "pitch", pitch_info);
+
+    return BuildSuccessResponse("test_motion_init", "动作系统初始化成功", data);
+#else
+    return BuildErrorResponse("test_motion_init", TEST_ERROR_NOT_SUPPORTED,
+                              "动作系统未启用 (CONFIG_ENABLE_DOLL_INTERACTION)");
+#endif
+}
+
+std::string HardwareTestService::MotionSetYaw(float angle) {
+    ESP_LOGI(TAG, "MotionSetYaw: angle=%.1f", angle);
+
+#ifdef CONFIG_ENABLE_DOLL_INTERACTION
+    if (!motion_initialized_) {
+        return BuildErrorResponse("test_motion_set_yaw", TEST_ERROR_NOT_INITIALIZED,
+                                  "动作系统未初始化，请先调用 motion_init");
+    }
+
+    auto& motor_ctrl = MotorController::GetInstance();
+    float previous = motor_ctrl.GetYawAngle();
+    motor_ctrl.SetYawAngle(angle);
+
+    cJSON* data = cJSON_CreateObject();
+    cJSON_AddNumberToObject(data, "target", angle);
+    cJSON_AddNumberToObject(data, "previous", previous);
+    cJSON_AddNumberToObject(data, "current", motor_ctrl.GetYawAngle());
+
+    return BuildSuccessResponse("test_motion_set_yaw", "Yaw角度设置成功", data);
+#else
+    return BuildErrorResponse("test_motion_set_yaw", TEST_ERROR_NOT_SUPPORTED,
+                              "动作系统未启用");
+#endif
+}
+
+std::string HardwareTestService::MotionSetPitch(float angle) {
+    ESP_LOGI(TAG, "MotionSetPitch: angle=%.1f", angle);
+
+#ifdef CONFIG_ENABLE_DOLL_INTERACTION
+    if (!motion_initialized_) {
+        return BuildErrorResponse("test_motion_set_pitch", TEST_ERROR_NOT_INITIALIZED,
+                                  "动作系统未初始化，请先调用 motion_init");
+    }
+
+    auto& motor_ctrl = MotorController::GetInstance();
+    float previous = motor_ctrl.GetPitchAngle();
+    motor_ctrl.SetPitchAngle(angle);
+
+    cJSON* data = cJSON_CreateObject();
+    cJSON_AddNumberToObject(data, "target", angle);
+    cJSON_AddNumberToObject(data, "previous", previous);
+    cJSON_AddNumberToObject(data, "current", motor_ctrl.GetPitchAngle());
+
+    return BuildSuccessResponse("test_motion_set_pitch", "Pitch角度设置成功", data);
+#else
+    return BuildErrorResponse("test_motion_set_pitch", TEST_ERROR_NOT_SUPPORTED,
+                              "动作系统未启用");
+#endif
+}
+
+std::string HardwareTestService::MotionSetBoth(float yaw, float pitch) {
+    ESP_LOGI(TAG, "MotionSetBoth: yaw=%.1f, pitch=%.1f", yaw, pitch);
+
+#ifdef CONFIG_ENABLE_DOLL_INTERACTION
+    if (!motion_initialized_) {
+        return BuildErrorResponse("test_motion_set_both", TEST_ERROR_NOT_INITIALIZED,
+                                  "动作系统未初始化，请先调用 motion_init");
+    }
+
+    auto& motor_ctrl = MotorController::GetInstance();
+    float prev_yaw = motor_ctrl.GetYawAngle();
+    float prev_pitch = motor_ctrl.GetPitchAngle();
+    motor_ctrl.SetBothAngles(yaw, pitch);
+
+    cJSON* data = cJSON_CreateObject();
+    
+    cJSON* yaw_info = cJSON_CreateObject();
+    cJSON_AddNumberToObject(yaw_info, "target", yaw);
+    cJSON_AddNumberToObject(yaw_info, "previous", prev_yaw);
+    cJSON_AddNumberToObject(yaw_info, "current", motor_ctrl.GetYawAngle());
+    cJSON_AddItemToObject(data, "yaw", yaw_info);
+
+    cJSON* pitch_info = cJSON_CreateObject();
+    cJSON_AddNumberToObject(pitch_info, "target", pitch);
+    cJSON_AddNumberToObject(pitch_info, "previous", prev_pitch);
+    cJSON_AddNumberToObject(pitch_info, "current", motor_ctrl.GetPitchAngle());
+    cJSON_AddItemToObject(data, "pitch", pitch_info);
+
+    return BuildSuccessResponse("test_motion_set_both", "双轴角度设置成功", data);
+#else
+    return BuildErrorResponse("test_motion_set_both", TEST_ERROR_NOT_SUPPORTED,
+                              "动作系统未启用");
+#endif
+}
+
+std::string HardwareTestService::MotionMoveYaw(float delta) {
+    ESP_LOGI(TAG, "MotionMoveYaw: delta=%.1f", delta);
+
+#ifdef CONFIG_ENABLE_DOLL_INTERACTION
+    if (!motion_initialized_) {
+        return BuildErrorResponse("test_motion_move_yaw", TEST_ERROR_NOT_INITIALIZED,
+                                  "动作系统未初始化，请先调用 motion_init");
+    }
+
+    auto& motor_ctrl = MotorController::GetInstance();
+    float previous = motor_ctrl.GetYawAngle();
+    motor_ctrl.MoveYawRelative(delta);
+
+    cJSON* data = cJSON_CreateObject();
+    cJSON_AddNumberToObject(data, "delta", delta);
+    cJSON_AddNumberToObject(data, "previous", previous);
+    cJSON_AddNumberToObject(data, "current", motor_ctrl.GetYawAngle());
+    cJSON_AddNumberToObject(data, "actual_delta", motor_ctrl.GetYawAngle() - previous);
+
+    return BuildSuccessResponse("test_motion_move_yaw", "Yaw相对移动成功", data);
+#else
+    return BuildErrorResponse("test_motion_move_yaw", TEST_ERROR_NOT_SUPPORTED,
+                              "动作系统未启用");
+#endif
+}
+
+std::string HardwareTestService::MotionMovePitch(float delta) {
+    ESP_LOGI(TAG, "MotionMovePitch: delta=%.1f", delta);
+
+#ifdef CONFIG_ENABLE_DOLL_INTERACTION
+    if (!motion_initialized_) {
+        return BuildErrorResponse("test_motion_move_pitch", TEST_ERROR_NOT_INITIALIZED,
+                                  "动作系统未初始化，请先调用 motion_init");
+    }
+
+    auto& motor_ctrl = MotorController::GetInstance();
+    float previous = motor_ctrl.GetPitchAngle();
+    motor_ctrl.MovePitchRelative(delta);
+
+    cJSON* data = cJSON_CreateObject();
+    cJSON_AddNumberToObject(data, "delta", delta);
+    cJSON_AddNumberToObject(data, "previous", previous);
+    cJSON_AddNumberToObject(data, "current", motor_ctrl.GetPitchAngle());
+    cJSON_AddNumberToObject(data, "actual_delta", motor_ctrl.GetPitchAngle() - previous);
+
+    return BuildSuccessResponse("test_motion_move_pitch", "Pitch相对移动成功", data);
+#else
+    return BuildErrorResponse("test_motion_move_pitch", TEST_ERROR_NOT_SUPPORTED,
+                              "动作系统未启用");
+#endif
+}
+
+std::string HardwareTestService::MotionPlay(const std::string& motion_name) {
+    ESP_LOGI(TAG, "MotionPlay: motion_name=%s", motion_name.c_str());
+
+#ifdef CONFIG_ENABLE_DOLL_INTERACTION
+    if (!motion_initialized_) {
+        return BuildErrorResponse("test_motion_play", TEST_ERROR_NOT_INITIALIZED,
+                                  "动作系统未初始化，请先调用 motion_init");
+    }
+
+    auto& motion_engine = MotionEngine::GetInstance();
+    
+    // 检查动作是否存在
+    if (!motion_engine.HasMotion(motion_name)) {
+        return BuildErrorResponse("test_motion_play", TEST_ERROR_MOTION_NOT_FOUND,
+                                  "未找到动作: " + motion_name);
+    }
+
+    motion_engine.PlayMotion(motion_name);
+
+    cJSON* data = cJSON_CreateObject();
+    cJSON_AddStringToObject(data, "motion", motion_name.c_str());
+    cJSON_AddBoolToObject(data, "playing", motion_engine.IsPlaying());
+
+    return BuildSuccessResponse("test_motion_play", "动作播放已启动", data);
+#else
+    return BuildErrorResponse("test_motion_play", TEST_ERROR_NOT_SUPPORTED,
+                              "动作系统未启用");
+#endif
+}
+
+std::string HardwareTestService::MotionStop() {
+    ESP_LOGI(TAG, "MotionStop");
+
+#ifdef CONFIG_ENABLE_DOLL_INTERACTION
+    if (!motion_initialized_) {
+        return BuildErrorResponse("test_motion_stop", TEST_ERROR_NOT_INITIALIZED,
+                                  "动作系统未初始化");
+    }
+
+    auto& motion_engine = MotionEngine::GetInstance();
+    std::string previous_motion = motion_engine.GetCurrentMotion();
+    motion_engine.StopMotion();
+
+    cJSON* data = cJSON_CreateObject();
+    cJSON_AddStringToObject(data, "stopped_motion", previous_motion.c_str());
+    cJSON_AddBoolToObject(data, "playing", motion_engine.IsPlaying());
+
+    return BuildSuccessResponse("test_motion_stop", "动作已停止", data);
+#else
+    return BuildErrorResponse("test_motion_stop", TEST_ERROR_NOT_SUPPORTED,
+                              "动作系统未启用");
+#endif
+}
+
+std::string HardwareTestService::MotionHome() {
+    ESP_LOGI(TAG, "MotionHome");
+
+#ifdef CONFIG_ENABLE_DOLL_INTERACTION
+    if (!motion_initialized_) {
+        return BuildErrorResponse("test_motion_home", TEST_ERROR_NOT_INITIALIZED,
+                                  "动作系统未初始化，请先调用 motion_init");
+    }
+
+    auto& motor_ctrl = MotorController::GetInstance();
+    motor_ctrl.Home();
+
+    cJSON* data = cJSON_CreateObject();
+    cJSON_AddNumberToObject(data, "yaw", motor_ctrl.GetYawAngle());
+    cJSON_AddNumberToObject(data, "pitch", motor_ctrl.GetPitchAngle());
+
+    return BuildSuccessResponse("test_motion_home", "已回到中位", data);
+#else
+    return BuildErrorResponse("test_motion_home", TEST_ERROR_NOT_SUPPORTED,
+                              "动作系统未启用");
+#endif
+}
+
+std::string HardwareTestService::MotionList() {
+    ESP_LOGI(TAG, "MotionList");
+
+#ifdef CONFIG_ENABLE_DOLL_INTERACTION
+    // P0 动作列表
+    static const struct {
+        const char* name;
+        const char* description;
+        const char* category;
+    } p0_motions[] = {
+        {"home",        "归位 - 回到中位",               "P0"},
+        {"nod",         "点头 - 表示肯定/理解",          "P0"},
+        {"shake",       "摇头 - 表示否定/不理解",        "P0"},
+        {"greeting",    "打招呼 - 小幅点头示意",         "P0"},
+        {"listening",   "倾听 - 微微侧头",               "P0"},
+        {"speaking",    "说话 - 轻微点头(循环)",         "P0"},
+        {"thinking",    "思考 - 左右缓慢往返",           "P0"},
+        {"wake_up",     "唤醒响应 - 小幅转向/点头",      "P0"},
+        {"idle_alive",  "待机微动 - 偶尔轻转",           "P0"},
+    };
+
+    cJSON* data = cJSON_CreateObject();
+    cJSON_AddNumberToObject(data, "count", sizeof(p0_motions) / sizeof(p0_motions[0]));
+
+    cJSON* motions_array = cJSON_CreateArray();
+    for (const auto& m : p0_motions) {
+        cJSON* item = cJSON_CreateObject();
+        cJSON_AddStringToObject(item, "name", m.name);
+        cJSON_AddStringToObject(item, "description", m.description);
+        cJSON_AddStringToObject(item, "category", m.category);
+        cJSON_AddItemToArray(motions_array, item);
+    }
+    cJSON_AddItemToObject(data, "motions", motions_array);
+
+    return BuildSuccessResponse("test_motion_list", "获取动作列表成功", data);
+#else
+    return BuildErrorResponse("test_motion_list", TEST_ERROR_NOT_SUPPORTED,
+                              "动作系统未启用");
+#endif
+}
+
+std::string HardwareTestService::MotionGetStatus() {
+    ESP_LOGI(TAG, "MotionGetStatus");
+
+#ifdef CONFIG_ENABLE_DOLL_INTERACTION
+    cJSON* data = cJSON_CreateObject();
+    cJSON_AddBoolToObject(data, "initialized", motion_initialized_);
+
+    if (motion_initialized_) {
+        auto& motor_ctrl = MotorController::GetInstance();
+        auto& motion_engine = MotionEngine::GetInstance();
+
+        // 电机控制器状态
+        cJSON* motor_status = cJSON_CreateObject();
+        cJSON_AddBoolToObject(motor_status, "running", motor_ctrl.IsRunning());
+        cJSON_AddBoolToObject(motor_status, "busy", motor_ctrl.IsBusy());
+        cJSON_AddBoolToObject(motor_status, "emergency_stopped", motor_ctrl.IsEmergencyStopped());
+        
+        cJSON* yaw = cJSON_CreateObject();
+        float yaw_min, yaw_max;
+        motor_ctrl.GetYawLimits(yaw_min, yaw_max);
+        cJSON_AddNumberToObject(yaw, "angle", motor_ctrl.GetYawAngle());
+        cJSON_AddNumberToObject(yaw, "center", motor_ctrl.GetYawCenter());
+        cJSON_AddNumberToObject(yaw, "min", yaw_min);
+        cJSON_AddNumberToObject(yaw, "max", yaw_max);
+        cJSON_AddItemToObject(motor_status, "yaw", yaw);
+
+        cJSON* pitch = cJSON_CreateObject();
+        float pitch_min, pitch_max;
+        motor_ctrl.GetPitchLimits(pitch_min, pitch_max);
+        cJSON_AddNumberToObject(pitch, "angle", motor_ctrl.GetPitchAngle());
+        cJSON_AddNumberToObject(pitch, "center", motor_ctrl.GetPitchCenter());
+        cJSON_AddNumberToObject(pitch, "min", pitch_min);
+        cJSON_AddNumberToObject(pitch, "max", pitch_max);
+        cJSON_AddItemToObject(motor_status, "pitch", pitch);
+        
+        cJSON_AddItemToObject(data, "motor_controller", motor_status);
+
+        // 动作引擎状态
+        cJSON* engine_status = cJSON_CreateObject();
+        cJSON_AddBoolToObject(engine_status, "running", motion_engine.IsRunning());
+        cJSON_AddBoolToObject(engine_status, "playing", motion_engine.IsPlaying());
+        cJSON_AddBoolToObject(engine_status, "paused", motion_engine.IsPaused());
+        cJSON_AddStringToObject(engine_status, "current_motion", motion_engine.GetCurrentMotion().c_str());
+        cJSON_AddBoolToObject(engine_status, "idle_alive_timer", motion_engine.IsIdleAliveTimerRunning());
+        cJSON_AddItemToObject(data, "motion_engine", engine_status);
+    }
+
+    return BuildSuccessResponse("test_motion_status", "获取动作系统状态成功", data);
+#else
+    cJSON* data = cJSON_CreateObject();
+    cJSON_AddBoolToObject(data, "supported", false);
+    cJSON_AddStringToObject(data, "reason", "CONFIG_ENABLE_DOLL_INTERACTION 未启用");
+    return BuildSuccessResponse("test_motion_status", "动作系统不可用", data);
+#endif
+}
+
+std::string HardwareTestService::MotionSweep(int axis, int cycles) {
+    ESP_LOGI(TAG, "MotionSweep: axis=%d, cycles=%d", axis, cycles);
+
+#ifdef CONFIG_ENABLE_DOLL_INTERACTION
+    if (!motion_initialized_) {
+        return BuildErrorResponse("test_motion_sweep", TEST_ERROR_NOT_INITIALIZED,
+                                  "动作系统未初始化，请先调用 motion_init");
+    }
+
+    if (axis < 0 || axis > 2) {
+        return BuildErrorResponse("test_motion_sweep", TEST_ERROR_PARAM_OUT_OF_RANGE,
+                                  "axis 参数无效 (0=Yaw, 1=Pitch, 2=Both)");
+    }
+
+    auto& motor_ctrl = MotorController::GetInstance();
+    motor_ctrl.TestSweep(axis, cycles);
+
+    const char* axis_names[] = {"Yaw", "Pitch", "Both"};
+    
+    cJSON* data = cJSON_CreateObject();
+    cJSON_AddStringToObject(data, "axis", axis_names[axis]);
+    cJSON_AddNumberToObject(data, "cycles", cycles);
+    cJSON_AddNumberToObject(data, "yaw_angle", motor_ctrl.GetYawAngle());
+    cJSON_AddNumberToObject(data, "pitch_angle", motor_ctrl.GetPitchAngle());
+
+    return BuildSuccessResponse("test_motion_sweep", "舵机扫描测试完成", data);
+#else
+    return BuildErrorResponse("test_motion_sweep", TEST_ERROR_NOT_SUPPORTED,
+                              "动作系统未启用");
+#endif
+}
+
+std::string HardwareTestService::MotionTestAllP0(uint32_t interval_ms) {
+    ESP_LOGI(TAG, "MotionTestAllP0: interval_ms=%lu", interval_ms);
+
+#ifdef CONFIG_ENABLE_DOLL_INTERACTION
+    if (!motion_initialized_) {
+        return BuildErrorResponse("test_motion_test_all_p0", TEST_ERROR_NOT_INITIALIZED,
+                                  "动作系统未初始化，请先调用 motion_init");
+    }
+
+    auto& motion_engine = MotionEngine::GetInstance();
+    
+    // P0 动作名称列表
+    static const char* p0_names[] = {
+        "home", "nod", "shake", "greeting", "listening",
+        "speaking", "thinking", "wake_up", "idle_alive"
+    };
+
+    cJSON* results = cJSON_CreateArray();
+    int success_count = 0;
+
+    for (const char* name : p0_names) {
+        cJSON* item = cJSON_CreateObject();
+        cJSON_AddStringToObject(item, "name", name);
+
+        if (motion_engine.HasMotion(name)) {
+            motion_engine.PlayMotion(name);
+            
+            // 等待动作完成或超时
+            vTaskDelay(pdMS_TO_TICKS(interval_ms));
+            motion_engine.StopMotion();
+            
+            cJSON_AddBoolToObject(item, "success", true);
+            success_count++;
+        } else {
+            cJSON_AddBoolToObject(item, "success", false);
+            cJSON_AddStringToObject(item, "error", "动作未注册");
+        }
+
+        cJSON_AddItemToArray(results, item);
+    }
+
+    // 测试完成后回到中位
+    motion_engine.PlayMotion("home");
+
+    cJSON* data = cJSON_CreateObject();
+    cJSON_AddNumberToObject(data, "total", sizeof(p0_names) / sizeof(p0_names[0]));
+    cJSON_AddNumberToObject(data, "success", success_count);
+    cJSON_AddNumberToObject(data, "interval_ms", interval_ms);
+    cJSON_AddItemToObject(data, "results", results);
+
+    return BuildSuccessResponse("test_motion_test_all_p0", "P0动作测试完成", data);
+#else
+    return BuildErrorResponse("test_motion_test_all_p0", TEST_ERROR_NOT_SUPPORTED,
+                              "动作系统未启用");
+#endif
 }
 

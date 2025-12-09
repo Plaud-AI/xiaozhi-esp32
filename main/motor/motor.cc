@@ -3,82 +3,182 @@
 #ifdef CONFIG_ENABLE_DOLL_INTERACTION
 
 #include <esp_log.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <cmath>
 
 #define TAG "Motor"
 
-Motor::Motor(const std::string& name)
+Motor::Motor(const std::string& name, gpio_num_t gpio_pin, 
+             ledc_channel_t channel, const ServoLimits& limits)
     : name_(name),
-      current_position_(0),
-      target_position_(0),
-      is_moving_(false) {
+      gpio_pin_(gpio_pin),
+      channel_(channel),
+      limits_(limits),
+      current_angle_(limits.center_angle),
+      target_angle_(limits.center_angle),
+      is_moving_(false),
+      initialized_(false) {
+}
+
+Motor::~Motor() {
+    Deinitialize();
 }
 
 bool Motor::Initialize() {
-    ESP_LOGI(TAG, "Initializing motor: %s (simulation mode)", name_.c_str());
+    if (initialized_) {
+        ESP_LOGW(TAG, "[%s] Already initialized", name_.c_str());
+        return true;
+    }
 
-    // TODO: 硬件到位后实现
-    // 舵机：
-    //   1. 配置 PWM 通道
-    //   2. 设置 PWM 频率（50Hz）
-    //   3. 设置初始位置
-    //
-    // 步进电机：
-    //   1. 配置 GPIO 引脚
-    //   2. 初始化步进驱动器
-    //   3. 设置步进参数
+    ESP_LOGI(TAG, "[%s] Initializing on GPIO %d, channel %d", 
+             name_.c_str(), gpio_pin_, channel_);
+    ESP_LOGI(TAG, "[%s] Limits: %.1f ~ %.1f, center: %.1f", 
+             name_.c_str(), limits_.min_angle, limits_.max_angle, limits_.center_angle);
 
-    ESP_LOGI(TAG, "Motor %s initialized (simulation)", name_.c_str());
+    // 创建舵机配置
+    servo_config_t config = {
+        .gpio_pin = gpio_pin_,
+        .timer = LEDC_TIMER_0,  // 所有舵机共用 Timer 0
+        .channel = channel_,
+        .frequency = 50,        // 50Hz 标准舵机频率
+        .resolution = LEDC_TIMER_12_BIT,
+        .min_pulse_us = 500,    // 0.5ms -> 0°
+        .max_pulse_us = 2500,   // 2.5ms -> 180°
+        .default_angle = (uint32_t)limits_.center_angle
+    };
+
+    servo_driver_ = std::make_unique<ServoDriver>(config);
+    
+    esp_err_t ret = servo_driver_->Init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "[%s] Failed to initialize servo: %s", 
+                 name_.c_str(), esp_err_to_name(ret));
+        servo_driver_.reset();
+        return false;
+    }
+
+    current_angle_ = limits_.center_angle;
+    target_angle_ = limits_.center_angle;
+    initialized_ = true;
+
+    ESP_LOGI(TAG, "[%s] Initialized successfully", name_.c_str());
     return true;
 }
 
-void Motor::MoveTo(int position, int speed) {
-    ESP_LOGI(TAG, "[%s] MoveTo: position=%d, speed=%d", name_.c_str(), position, speed);
+void Motor::Deinitialize() {
+    if (!initialized_) {
+        return;
+    }
 
-    target_position_ = position;
+    ESP_LOGI(TAG, "[%s] Deinitializing", name_.c_str());
+    
+    if (servo_driver_) {
+        servo_driver_->Deinit();
+        servo_driver_.reset();
+    }
+
+    initialized_ = false;
+}
+
+float Motor::ClampAngle(float angle) const {
+    if (angle < limits_.min_angle) {
+        return limits_.min_angle;
+    }
+    if (angle > limits_.max_angle) {
+        return limits_.max_angle;
+    }
+    return angle;
+}
+
+void Motor::MoveTo(float angle) {
+    if (!initialized_ || !servo_driver_) {
+        ESP_LOGW(TAG, "[%s] Not initialized", name_.c_str());
+        return;
+    }
+
+    // 限幅保护
+    float clamped_angle = ClampAngle(angle);
+    if (clamped_angle != angle) {
+        ESP_LOGW(TAG, "[%s] Angle %.1f clamped to %.1f", 
+                 name_.c_str(), angle, clamped_angle);
+    }
+
+    target_angle_ = clamped_angle;
     is_moving_ = true;
 
-    // TODO: 硬件到位后实现
-    // 舵机：
-    //   1. 计算 PWM 占空比
-    //   2. 设置 PWM 输出
-    //   3. 可选：实现平滑插值
-    //
-    // 步进电机：
-    //   1. 计算步数
-    //   2. 启动步进任务
-    //   3. 实现加减速曲线
+    // 直接设置角度（舵机会自行移动）
+    esp_err_t ret = servo_driver_->SetAngle((uint32_t)clamped_angle);
+    if (ret == ESP_OK) {
+        current_angle_ = clamped_angle;
+        ESP_LOGD(TAG, "[%s] MoveTo: %.1f°", name_.c_str(), current_angle_);
+    } else {
+        ESP_LOGE(TAG, "[%s] MoveTo failed: %s", name_.c_str(), esp_err_to_name(ret));
+    }
 
-    // 模拟：立即到达目标位置
-    current_position_ = target_position_;
     is_moving_ = false;
+}
+
+void Motor::MoveToSmooth(float angle, uint32_t duration_ms) {
+    if (!initialized_ || !servo_driver_) {
+        ESP_LOGW(TAG, "[%s] Not initialized", name_.c_str());
+        return;
+    }
+
+    float clamped_angle = ClampAngle(angle);
+    float start_angle = current_angle_;
+    float delta = clamped_angle - start_angle;
+    
+    if (std::abs(delta) < 0.5f) {
+        // 角度差太小，直接到位
+        MoveTo(clamped_angle);
+        return;
+    }
+
+    target_angle_ = clamped_angle;
+    is_moving_ = true;
+
+    // 计算步进参数
+    const uint32_t step_interval_ms = 20;  // 每 20ms 更新一次
+    uint32_t steps = duration_ms / step_interval_ms;
+    if (steps < 1) steps = 1;
+
+    ESP_LOGD(TAG, "[%s] MoveToSmooth: %.1f -> %.1f in %lu ms (%lu steps)", 
+             name_.c_str(), start_angle, clamped_angle, duration_ms, steps);
+
+    // 平滑移动
+    for (uint32_t i = 0; i <= steps; i++) {
+        float progress = (float)i / steps;
+        float current = start_angle + delta * progress;
+        servo_driver_->SetAngle((uint32_t)current);
+        current_angle_ = current;
+        
+        if (i < steps) {
+            vTaskDelay(pdMS_TO_TICKS(step_interval_ms));
+        }
+    }
+
+    // 确保到达目标
+    servo_driver_->SetAngle((uint32_t)clamped_angle);
+    current_angle_ = clamped_angle;
+    is_moving_ = false;
+}
+
+void Motor::MoveRelative(float delta_angle) {
+    float target = current_angle_ + delta_angle;
+    MoveTo(target);
+}
+
+void Motor::Home() {
+    ESP_LOGI(TAG, "[%s] Homing to center: %.1f°", name_.c_str(), limits_.center_angle);
+    MoveTo(limits_.center_angle);
 }
 
 void Motor::Stop() {
-    ESP_LOGI(TAG, "[%s] Stop", name_.c_str());
-
+    // 舵机本身没有"停止"概念，保持当前位置
     is_moving_ = false;
-
-    // TODO: 硬件到位后实现
-    // 舵机：保持当前 PWM 输出
-    // 步进电机：停止步进脉冲
-}
-
-int Motor::GetPosition() const {
-    return current_position_;
-}
-
-bool Motor::IsMoving() const {
-    return is_moving_;
-}
-
-bool Motor::CheckLimit() const {
-    // TODO: 硬件到位后实现
-    // 1. 检查硬件限位开关
-    // 2. 检查软件限位
-    // 3. 返回是否触碰限位
-
-    return false;  // 模拟：无限位触发
+    target_angle_ = current_angle_;
+    ESP_LOGD(TAG, "[%s] Stop at %.1f°", name_.c_str(), current_angle_);
 }
 
 #endif // CONFIG_ENABLE_DOLL_INTERACTION
-

@@ -14,6 +14,60 @@ config ENABLE_DOLL_INTERACTION
         This feature is experimental and requires additional hardware.
         If you don't have the hardware, keep this disabled.
 
+config SERVO_YAW_GPIO
+    int "Yaw Servo GPIO Pin"
+    default 2
+    depends on ENABLE_DOLL_INTERACTION
+    help
+        GPIO pin for the Yaw (horizontal rotation) servo motor.
+        Default: GPIO 2
+
+config SERVO_PITCH_GPIO
+    int "Pitch Servo GPIO Pin"
+    default 3
+    depends on ENABLE_DOLL_INTERACTION
+    help
+        GPIO pin for the Pitch (vertical tilt) servo motor.
+        Default: GPIO 3
+
+config SERVO_YAW_MIN_ANGLE
+    int "Yaw Servo Minimum Angle"
+    default 20
+    range 0 90
+    depends on ENABLE_DOLL_INTERACTION
+    help
+        Minimum angle limit for Yaw servo (software limit protection).
+        Default: 20 degrees
+
+config SERVO_YAW_MAX_ANGLE
+    int "Yaw Servo Maximum Angle"
+    default 160
+    range 90 180
+    depends on ENABLE_DOLL_INTERACTION
+    help
+        Maximum angle limit for Yaw servo (software limit protection).
+        Default: 160 degrees
+
+config SERVO_PITCH_MIN_ANGLE
+    int "Pitch Servo Minimum Angle"
+    default 80
+    range 0 90
+    depends on ENABLE_DOLL_INTERACTION
+    help
+        Minimum angle limit for Pitch servo (software limit protection).
+        Pitch range is typically ±10 degrees from center.
+        Default: 80 degrees (center 90 - 10)
+
+config SERVO_PITCH_MAX_ANGLE
+    int "Pitch Servo Maximum Angle"
+    default 100
+    range 90 180
+    depends on ENABLE_DOLL_INTERACTION
+    help
+        Maximum angle limit for Pitch servo (software limit protection).
+        Pitch range is typically ±10 degrees from center.
+        Default: 100 degrees (center 90 + 10)
+
 config OTA_URL
     string "Default OTA URL"
     default "http://18.143.177.88:8003/xiaozhi/ota/"

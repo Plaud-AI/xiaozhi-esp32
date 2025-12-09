@@ -229,6 +229,100 @@ public:
     std::string EmotionSequence(const std::vector<std::string>& emotions, uint32_t interval_ms);
 
     // ═══════════════════════════════════════════════════════════════
+    // 动作测试接口（双舵机 + P0 动作）
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * @brief 初始化动作系统（双舵机）
+     * @param yaw_gpio Yaw 舵机 GPIO (-1 使用默认)
+     * @param pitch_gpio Pitch 舵机 GPIO (-1 使用默认)
+     * @return JSON 响应字符串
+     */
+    std::string MotionInit(int yaw_gpio = -1, int pitch_gpio = -1);
+
+    /**
+     * @brief 设置 Yaw 角度
+     * @param angle 角度 (20-160)
+     * @return JSON 响应字符串
+     */
+    std::string MotionSetYaw(float angle);
+
+    /**
+     * @brief 设置 Pitch 角度
+     * @param angle 角度 (80-100)
+     * @return JSON 响应字符串
+     */
+    std::string MotionSetPitch(float angle);
+
+    /**
+     * @brief 设置双轴角度
+     * @param yaw Yaw 角度
+     * @param pitch Pitch 角度
+     * @return JSON 响应字符串
+     */
+    std::string MotionSetBoth(float yaw, float pitch);
+
+    /**
+     * @brief 相对移动 Yaw
+     * @param delta 相对角度 (正=右转, 负=左转)
+     * @return JSON 响应字符串
+     */
+    std::string MotionMoveYaw(float delta);
+
+    /**
+     * @brief 相对移动 Pitch
+     * @param delta 相对角度 (正=抬头, 负=低头)
+     * @return JSON 响应字符串
+     */
+    std::string MotionMovePitch(float delta);
+
+    /**
+     * @brief 播放预设动作
+     * @param motion_name 动作名称 (home, nod, shake, greeting, listening, speaking, thinking, wake_up, idle_alive)
+     * @return JSON 响应字符串
+     */
+    std::string MotionPlay(const std::string& motion_name);
+
+    /**
+     * @brief 停止当前动作
+     * @return JSON 响应字符串
+     */
+    std::string MotionStop();
+
+    /**
+     * @brief 回到中位
+     * @return JSON 响应字符串
+     */
+    std::string MotionHome();
+
+    /**
+     * @brief 获取动作列表
+     * @return JSON 响应字符串
+     */
+    std::string MotionList();
+
+    /**
+     * @brief 获取动作系统状态
+     * @return JSON 响应字符串
+     */
+    std::string MotionGetStatus();
+
+    /**
+     * @brief 舵机扫描测试
+     * @param axis 轴 (0=Yaw, 1=Pitch, 2=Both)
+     * @param cycles 往返次数
+     * @return JSON 响应字符串
+     */
+    std::string MotionSweep(int axis, int cycles = 1);
+
+    /**
+     * @brief 测试所有 P0 动作
+     * @param interval_ms 动作间隔时间
+     * @return JSON 响应字符串
+     */
+    std::string MotionTestAllP0(uint32_t interval_ms = 2000);
+
+    // ═══════════════════════════════════════════════════════════════
     // 综合测试接口
     // ═══════════════════════════════════════════════════════════════
 
@@ -270,6 +364,9 @@ private:
     // 表情状态
     std::string current_emotion_;
     bool emotion_running_;
+
+    // 动作系统状态
+    bool motion_initialized_;
 
     // NFC 事件回调
     std::function<void(const std::string&)> nfc_event_callback_;
@@ -316,6 +413,9 @@ private:
 #define TEST_ERROR_SERVO_NOT_READY      4005
 #define TEST_ERROR_LED_FAILURE          4006
 #define TEST_ERROR_EMOTION_NOT_FOUND    4007
+#define TEST_ERROR_MOTION_NOT_FOUND     4008
+#define TEST_ERROR_MOTION_BUSY          4009
+#define TEST_ERROR_MOTION_STOPPED       4010
 
 #endif // _HARDWARE_TEST_SERVICE_H_
 
