@@ -91,13 +91,32 @@ bool Ota::CheckVersion() {
 
     std::string data = board.GetSystemInfoJson();
     std::string method = data.length() > 0 ? "POST" : "GET";
+    
+    ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════════╗");
+    ESP_LOGI(TAG, "║   📤 OTA 请求详情                                              ║");
+    ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════════╣");
+    ESP_LOGI(TAG, "║   URL: %s", url.c_str());
+    ESP_LOGI(TAG, "║   方法: %s", method.c_str());
+    ESP_LOGI(TAG, "║   Device-Id Header: %s", board.GetDeviceId().c_str());
+    ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════════╣");
+    ESP_LOGI(TAG, "║   📋 请求 Body (POST data):                                    ║");
+    ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════════╝");
+    
+    // 分段打印请求 body（ESP_LOG 有长度限制）
+    if (data.length() > 0) {
+        const size_t chunk_size = 200;
+        for (size_t i = 0; i < data.length(); i += chunk_size) {
+            std::string chunk = data.substr(i, chunk_size);
+            ESP_LOGI(TAG, "%s", chunk.c_str());
+        }
+    } else {
+        ESP_LOGI(TAG, "(空)");
+    }
+    ESP_LOGI(TAG, "════════════════════════════════════════════════════════════════");
+
     http->SetContent(std::move(data));
 
-    ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "正在连接 OTA 服务器...");
-    ESP_LOGI(TAG, "URL: %s", url.c_str());
-    ESP_LOGI(TAG, "方法: %s", method.c_str());
-    ESP_LOGI(TAG, "========================================");
 
     if (!http->Open(method, url)) {
         ESP_LOGE(TAG, "❌ 无法连接到 OTA 服务器");
@@ -106,8 +125,7 @@ bool Ota::CheckVersion() {
     }
 
     auto status_code = http->GetStatusCode();
-    ESP_LOGI(TAG, "✅ OTA 服务器连接成功");
-    ESP_LOGI(TAG, "HTTP 状态码: %d", status_code);
+    ESP_LOGI(TAG, "✅ OTA 服务器连接成功, HTTP 状态码: %d", status_code);
     
     if (status_code != 200) {
         ESP_LOGE(TAG, "❌ 服务器返回错误状态码: %d", status_code);
@@ -115,10 +133,20 @@ bool Ota::CheckVersion() {
     }
 
     data = http->ReadAll();
-    ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "服务器响应内容:");
-    ESP_LOGI(TAG, "%s", data.c_str());
-    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════════╗");
+    ESP_LOGI(TAG, "║   📥 OTA 服务器响应                                            ║");
+    ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════════╝");
+    // 分段打印响应内容
+    if (data.length() > 0) {
+        const size_t chunk_size = 200;
+        for (size_t i = 0; i < data.length(); i += chunk_size) {
+            std::string chunk = data.substr(i, chunk_size);
+            ESP_LOGI(TAG, "%s", chunk.c_str());
+        }
+    } else {
+        ESP_LOGI(TAG, "(空)");
+    }
+    ESP_LOGI(TAG, "════════════════════════════════════════════════════════════════");
     http->Close();
 
     // Response: { "firmware": { "version": "1.0.0", "url": "http://" } }
@@ -187,6 +215,28 @@ bool Ota::CheckVersion() {
             }
         }
         has_mqtt_config_ = true;
+        
+        // 打印从 OTA 服务器获取到的 MQTT 配置
+        ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════════╗");
+        ESP_LOGI(TAG, "║   📡 OTA 返回的 MQTT 配置                                      ║");
+        ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════════╣");
+        cJSON *mqtt_endpoint = cJSON_GetObjectItem(mqtt, "endpoint");
+        cJSON *mqtt_client_id = cJSON_GetObjectItem(mqtt, "client_id");
+        cJSON *mqtt_username = cJSON_GetObjectItem(mqtt, "username");
+        cJSON *mqtt_topic = cJSON_GetObjectItem(mqtt, "publish_topic");
+        if (cJSON_IsString(mqtt_endpoint)) {
+            ESP_LOGI(TAG, "║   Endpoint: %s", mqtt_endpoint->valuestring);
+        }
+        if (cJSON_IsString(mqtt_client_id)) {
+            ESP_LOGI(TAG, "║   Client ID: %s", mqtt_client_id->valuestring);
+        }
+        if (cJSON_IsString(mqtt_username)) {
+            ESP_LOGI(TAG, "║   Username: %s", mqtt_username->valuestring);
+        }
+        if (cJSON_IsString(mqtt_topic)) {
+            ESP_LOGI(TAG, "║   Publish Topic: %s", mqtt_topic->valuestring);
+        }
+        ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════════╝");
     } else {
         ESP_LOGI(TAG, "No mqtt section found !");
     }
