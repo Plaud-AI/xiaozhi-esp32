@@ -118,7 +118,7 @@ bool WebsocketProtocol::OpenAudioChannel() {
 
     websocket_->OnData([this](const char* data, size_t len, bool binary) {
         if (binary) {
-            // ESP_LOGI(TAG, "🎵 Received AUDIO packet: %zu bytes", len);  // 已屏蔽
+            ESP_LOGI(TAG, "🎵 Received binary data: %zu bytes, first byte: 0x%02x", len, (uint8_t)data[0]);
             if (on_incoming_audio_ != nullptr) {
                 if (version_ == 2) {
                     BinaryProtocol2* bp2 = (BinaryProtocol2*)data;
@@ -145,12 +145,46 @@ bool WebsocketProtocol::OpenAudioChannel() {
                         .payload = std::vector<uint8_t>(payload, payload + bp3->payload_size)
                     }));
                 } else {
-                    on_incoming_audio_(std::make_unique<AudioStreamPacket>(AudioStreamPacket{
-                        .sample_rate = server_sample_rate_,
-                        .frame_duration = server_frame_duration_,
-                        .timestamp = 0,
-                        .payload = std::vector<uint8_t>((uint8_t*)data, (uint8_t*)data + len)
-                    }));
+                    // 默认版本：解析服务端新增的 16 字节头部
+                    // 头部格式：type(1) + message_tag(1) + payload_size(4, big-endian) + reserved(10) = 16 bytes
+                    if (len >= sizeof(AudioPacketHeader)) {
+                        const AudioPacketHeader* header = (const AudioPacketHeader*)data;
+                        if (header->type == 0x01) {
+                            // 这是带有 16 字节头部的音频包
+                            // payload_size 是大端序，需要转换
+                            uint32_t payload_size = ntohl(header->payload_size);
+                            
+                            // 验证数据包大小
+                            if (len >= sizeof(AudioPacketHeader) + payload_size) {
+                                auto payload = (uint8_t*)header->payload;
+                                on_incoming_audio_(std::make_unique<AudioStreamPacket>(AudioStreamPacket{
+                                    .sample_rate = server_sample_rate_,
+                                    .frame_duration = server_frame_duration_,
+                                    .timestamp = 0,
+                                    .payload = std::vector<uint8_t>(payload, payload + payload_size)
+                                }));
+                            } else {
+                                ESP_LOGE(TAG, "Audio packet size mismatch: len=%zu, header_size=%zu, payload_size=%lu", 
+                                         len, sizeof(AudioPacketHeader), payload_size);
+                            }
+                        } else {
+                            // 非音频消息类型，按原始数据处理
+                            on_incoming_audio_(std::make_unique<AudioStreamPacket>(AudioStreamPacket{
+                                .sample_rate = server_sample_rate_,
+                                .frame_duration = server_frame_duration_,
+                                .timestamp = 0,
+                                .payload = std::vector<uint8_t>((uint8_t*)data, (uint8_t*)data + len)
+                            }));
+                        }
+                    } else {
+                        // 数据太短，按原始数据处理（向后兼容）
+                        on_incoming_audio_(std::make_unique<AudioStreamPacket>(AudioStreamPacket{
+                            .sample_rate = server_sample_rate_,
+                            .frame_duration = server_frame_duration_,
+                            .timestamp = 0,
+                            .payload = std::vector<uint8_t>((uint8_t*)data, (uint8_t*)data + len)
+                        }));
+                    }
                 }
             }
         } else {

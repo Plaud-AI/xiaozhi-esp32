@@ -30,6 +30,19 @@ struct BinaryProtocol3 {
     uint8_t payload[];
 } __attribute__((packed));
 
+// 新的 16 字节音频包头部格式（服务端新协议）
+// header[0] = 1 (音频消息类型)
+// header[1] = message_tag
+// header[2:6] = opus 数据长度 (big endian, 4字节)
+// header[6:16] = 保留字节
+struct AudioPacketHeader {
+    uint8_t type;           // 1: audio message
+    uint8_t message_tag;    // Message tag for audio packet
+    uint32_t payload_size;  // Payload size in bytes (big endian)
+    uint8_t reserved[10];   // Reserved for future use
+    uint8_t payload[];      // Payload data
+} __attribute__((packed));
+
 enum AbortReason {
     kAbortReasonNone,
     kAbortReasonWakeWordDetected
