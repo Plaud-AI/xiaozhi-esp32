@@ -134,8 +134,8 @@ private:
             ChangeVolume(-10);
         });
         volume_down_button_.OnLongPress([this]() {
-            GetAudioCodec()->SetOutputVolume(0);
-            GetDisplay()->ShowNotification(Lang::Strings::MUTED);
+            GetAudioCodec()->SetOutputVolume(10);  // 长按设为最低音量 10%
+            GetDisplay()->ShowNotification(Lang::Strings::VOLUME + std::to_string(10));
         });
         
         ESP_LOGI(TAG, "按键初始化完成");
@@ -146,7 +146,7 @@ private:
         auto codec = GetAudioCodec();
         int volume = codec->output_volume() + delta;
         if (volume > 100) volume = 100;
-        if (volume < 0) volume = 0;
+        if (volume < 10) volume = 10;  // 最低音量 10%
         codec->SetOutputVolume(volume);
         GetDisplay()->ShowNotification(Lang::Strings::VOLUME + std::to_string(volume));
         ESP_LOGI(TAG, "音量调节: %d", volume);

@@ -18,8 +18,8 @@
 // ✅ Using ESPHome official v2 model "Okay Nabu" for testing
 // Downloaded from: https://github.com/esphome/micro-wake-word-models
 #include "wake_words/micro/okay_nabu.h"
-// ✅ Using custom Plaud AI model "Hey Ploud"
-#include "wake_words/micro/hey_ploud.h"
+// ✅ Using custom Plaud AI model "Hey Ploud" V2 (20251209 训练)
+#include "wake_words/micro/hey_ploudv2.h"
 #endif
 #else
 #include "wake_words/esp_wake_word.h"
@@ -818,13 +818,13 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
             tensor_arena_okay_nabu
         );
         
-        // Model 2: Plaud AI 定制 Hey Ploud 模型
-        ESP_LOGI(TAG, "📦 Model 2: Hey Ploud (Plaud AI Custom)");
+        // Model 2: Plaud AI 定制 Hey Ploud V2 模型 (20251209 训练)
+        ESP_LOGI(TAG, "📦 Model 2: Hey Ploud V2 (Plaud AI Custom, 20251209)");
         ESP_LOGI(TAG, "   - Threshold: %.2f (initial, needs testing)", threshold_hey_ploud);
         ESP_LOGI(TAG, "   - Tensor Arena: %u bytes (initial estimate)", (unsigned int)tensor_arena_hey_ploud);
         ESP_LOGI(TAG, "   - Wake Phrase: 'Hey Ploud'");
         micro_ww->add_wake_word_model(
-            hey_ploud_tflite,
+            hey_ploud_v2_tflite,
             threshold_hey_ploud,
             sliding_window,
             "hey ploud",
