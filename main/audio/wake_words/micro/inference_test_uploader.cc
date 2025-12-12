@@ -100,14 +100,16 @@ bool InferenceTestUploader::Submit(InferenceTestRecorder::UploadPacket&& packet)
     
     // 非阻塞发送
     if (xQueueSend(upload_queue_, &heap_packet, 0) != pdTRUE) {
-        ESP_LOGW(TAG, "Upload queue full, dropping packet (PCM: %zu, Prob: %zu)",
-                 heap_packet->pcm_data.size(), heap_packet->probabilities.size());
+        ESP_LOGW(TAG, "Upload queue full, dropping packet (PCM: %lu, Prob: %lu)",
+                 (unsigned long)heap_packet->pcm_data.size(), 
+                 (unsigned long)heap_packet->probabilities.size());
         delete heap_packet;
         return false;
     }
     
-    ESP_LOGI(TAG, "📤 Packet submitted to upload queue (PCM: %zu samples, Prob: %zu values)",
-             heap_packet->pcm_data.size(), heap_packet->probabilities.size());
+    ESP_LOGI(TAG, "📤 Packet submitted (PCM: %lu samples, Prob: %lu values)",
+             (unsigned long)heap_packet->pcm_data.size(), 
+             (unsigned long)heap_packet->probabilities.size());
     return true;
 }
 
@@ -130,9 +132,12 @@ void InferenceTestUploader::UploadTask() {
                 break;
             }
             
-            // 计算音频时长
-            uint32_t audio_duration_ms = packet->pcm_data.size() * 1000 / 16000;  // 16kHz
-            size_t pcm_bytes = packet->pcm_data.size() * sizeof(int16_t);
+            // 计算音频时长和数据量
+            uint32_t pcm_samples = (uint32_t)packet->pcm_data.size();
+            uint32_t prob_count = (uint32_t)packet->probabilities.size();
+            uint32_t audio_duration_ms = pcm_samples * 1000 / 16000;  // 16kHz
+            uint32_t pcm_bytes = pcm_samples * sizeof(int16_t);
+            uint32_t pcm_kb = pcm_bytes / 1024;
             
             // 上传开始总结
             ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════╗");
@@ -142,9 +147,9 @@ void InferenceTestUploader::UploadTask() {
             ESP_LOGI(TAG, "║  Detection Probability: %-31.3f ║", packet->final_probability);
             ESP_LOGI(TAG, "║  Detection Duration: %-34lu ms ║", (unsigned long)packet->duration_ms);
             ESP_LOGI(TAG, "║  Audio Duration: %-38lu ms ║", (unsigned long)audio_duration_ms);
-            ESP_LOGI(TAG, "║  PCM Data: %-31zu samples (%zu KB) ║", 
-                     packet->pcm_data.size(), pcm_bytes / 1024);
-            ESP_LOGI(TAG, "║  Inference Count: %-37zu ║", packet->probabilities.size());
+            ESP_LOGI(TAG, "║  PCM Data: %lu samples (%lu KB)                          ║", 
+                     (unsigned long)pcm_samples, (unsigned long)pcm_kb);
+            ESP_LOGI(TAG, "║  Inference Count: %-37lu ║", (unsigned long)prob_count);
             ESP_LOGI(TAG, "║  Server: %-46s ║", server_url_.c_str());
             ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════╝");
             
