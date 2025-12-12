@@ -177,10 +177,18 @@ void MicroWakeWord::Feed(const std::vector<int16_t> &data) {
       detected_ = true;
       set_state_(State::DETECTED);
       
-      // 【测试模式】检测成功，打包数据并提交上传
+      // 【测试模式】只有 hey ploud 检测成功时才上传（因为只记录了它的概率）
       if (test_recorder_ && test_uploader_) {
-        auto packet = test_recorder_->OnDetectionEnd(detected_wake_word_, detected_probability_);
-        test_uploader_->Submit(std::move(packet));
+        if (detected_wake_word_ == "hey ploud") {
+          auto packet = test_recorder_->OnDetectionEnd(detected_wake_word_, detected_probability_);
+          test_uploader_->Submit(std::move(packet));
+          ESP_LOGI(TAG, "📤 Test data submitted for 'hey ploud'");
+        } else {
+          // 其他唤醒词检测成功，取消记录（不上传）
+          test_recorder_->OnDetectionCancelled();
+          ESP_LOGI(TAG, "📤 Test data discarded (detected '%s', not 'hey ploud')", 
+                   detected_wake_word_.c_str());
+        }
       }
       
       if (detection_callback_) {
