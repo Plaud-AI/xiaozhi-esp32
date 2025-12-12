@@ -775,7 +775,9 @@ void Application::OnWakeWordDetected() {
 
     if (device_state_ == kDeviceStateIdle) {
         ESP_LOGI(TAG, "Device in IDLE state, processing wake word...");
-        audio_service_.EncodeWakeWord();
+        // ⚠️ 暂时屏蔽 OPUS 编码：排查崩溃问题
+        // audio_service_.EncodeWakeWord();
+        ESP_LOGW(TAG, "⚠️ EncodeWakeWord() DISABLED (debugging crash)");
 
         if (!protocol_->IsAudioChannelOpened()) {
             ESP_LOGI(TAG, "Opening audio channel...");
