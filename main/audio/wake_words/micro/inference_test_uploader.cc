@@ -158,7 +158,7 @@ void InferenceTestUploader::UploadTask() {
             
             // 上传 PCM 数据
             if (!packet->pcm_data.empty()) {
-                ESP_LOGI(TAG, "📤 [1/2] Uploading PCM data (%zu KB)...", pcm_bytes / 1024);
+                ESP_LOGI(TAG, "📤 [1/2] Uploading PCM data (%lu KB)...", (unsigned long)pcm_kb);
                 pcm_success = UploadPCM(packet->pcm_data);
                 if (pcm_success) {
                     ESP_LOGI(TAG, "✅ [1/2] PCM upload success");
@@ -169,8 +169,8 @@ void InferenceTestUploader::UploadTask() {
             
             // 上传概率数据
             if (!packet->probabilities.empty()) {
-                ESP_LOGI(TAG, "📤 [2/2] Uploading probabilities (%zu values)...", 
-                         packet->probabilities.size());
+                ESP_LOGI(TAG, "📤 [2/2] Uploading probabilities (%lu values)...", 
+                         (unsigned long)prob_count);
                 prob_success = UploadProbabilities(packet->probabilities);
                 if (prob_success) {
                     ESP_LOGI(TAG, "✅ [2/2] Probabilities upload success");
@@ -189,8 +189,8 @@ void InferenceTestUploader::UploadTask() {
             ESP_LOGI(TAG, "╠══════════════════════════════════════════════════════════╣");
             ESP_LOGI(TAG, "║  PCM Upload:    %-39s ║", pcm_success ? "✅ SUCCESS" : "❌ FAILED");
             ESP_LOGI(TAG, "║  Prob Upload:   %-39s ║", prob_success ? "✅ SUCCESS" : "❌ FAILED");
-            ESP_LOGI(TAG, "║  Total Data:    %-30zu KB + %zu values ║", 
-                     pcm_bytes / 1024, packet->probabilities.size());
+            ESP_LOGI(TAG, "║  Total Data:    %lu KB + %lu values                       ║", 
+                     (unsigned long)pcm_kb, (unsigned long)prob_count);
             ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════╝");
             
             // 释放数据包
@@ -205,7 +205,8 @@ void InferenceTestUploader::UploadTask() {
 bool InferenceTestUploader::UploadPCM(const std::vector<int16_t>& pcm_data) {
     std::string url = server_url_ + "/upload/bytes";
     
-    ESP_LOGD(TAG, "POST %s (%zu bytes)", url.c_str(), pcm_data.size() * sizeof(int16_t));
+    ESP_LOGD(TAG, "POST %s (%lu bytes)", url.c_str(), 
+             (unsigned long)(pcm_data.size() * sizeof(int16_t)));
     
     esp_http_client_config_t config = {};
     config.url = url.c_str();
@@ -262,7 +263,7 @@ bool InferenceTestUploader::UploadProbabilities(const std::vector<uint8_t>& prob
     }
     std::string text = oss.str();
     
-    ESP_LOGD(TAG, "POST %s (%zu chars)", url.c_str(), text.length());
+    ESP_LOGD(TAG, "POST %s (%lu chars)", url.c_str(), (unsigned long)text.length());
     
     esp_http_client_config_t config = {};
     config.url = url.c_str();
