@@ -101,9 +101,7 @@ bool MicroWakeWord::Initialize(AudioCodec *codec, srmodel_list_t *models_list) {
   // ========================================================================
   // Initialize inference test mode (auto-start for device vs server comparison)
   // Only initialize once to avoid destroying running tasks
-  // ⚠️ 暂时禁用：排查 OPUS 编码崩溃问题
   // ========================================================================
-#if 0  // 暂时禁用测试模式
   if (!test_recorder_) {
     test_recorder_ = std::make_unique<InferenceTestRecorder>();
   }
@@ -118,9 +116,6 @@ bool MicroWakeWord::Initialize(AudioCodec *codec, srmodel_list_t *models_list) {
   } else {
     ESP_LOGI(TAG, "📹 Inference test mode already initialized, skipping");
   }
-#else
-  ESP_LOGW(TAG, "📹 Inference test mode DISABLED (debugging OPUS crash)");
-#endif
 
   return true;
 }
