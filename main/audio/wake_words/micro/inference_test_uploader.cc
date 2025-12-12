@@ -67,14 +67,12 @@ void InferenceTestUploader::Stop() {
         InferenceTestRecorder::UploadPacket* null_ptr = nullptr;
         xQueueSend(upload_queue_, &null_ptr, pdMS_TO_TICKS(100));
         
-        // 等待任务退出
-        vTaskDelay(pdMS_TO_TICKS(200));
+        // 等待任务自己退出（任务会调用 vTaskDelete(nullptr) 自删除）
+        vTaskDelay(pdMS_TO_TICKS(300));
     }
     
-    if (upload_task_) {
-        vTaskDelete(upload_task_);
-        upload_task_ = nullptr;
-    }
+    // 注意：不要调用 vTaskDelete(upload_task_)，因为任务已经自删除了
+    upload_task_ = nullptr;
     
     // 清空队列中残留的数据
     if (upload_queue_) {
@@ -132,39 +130,66 @@ void InferenceTestUploader::UploadTask() {
                 break;
             }
             
-            ESP_LOGI(TAG, "📤 Processing upload packet:");
-            ESP_LOGI(TAG, "   - Wake word: %s", packet->wake_word.c_str());
-            ESP_LOGI(TAG, "   - PCM: %zu samples (%zu bytes)", 
-                     packet->pcm_data.size(), packet->pcm_data.size() * sizeof(int16_t));
-            ESP_LOGI(TAG, "   - Probabilities: %zu values", packet->probabilities.size());
-            ESP_LOGI(TAG, "   - Duration: %lu ms", (unsigned long)packet->duration_ms);
-            ESP_LOGI(TAG, "   - Final probability: %.3f", packet->final_probability);
+            // 计算音频时长
+            uint32_t audio_duration_ms = packet->pcm_data.size() * 1000 / 16000;  // 16kHz
+            size_t pcm_bytes = packet->pcm_data.size() * sizeof(int16_t);
+            
+            // 上传开始总结
+            ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════╗");
+            ESP_LOGI(TAG, "║  📤 Inference Test Upload Started                        ║");
+            ESP_LOGI(TAG, "╠══════════════════════════════════════════════════════════╣");
+            ESP_LOGI(TAG, "║  Wake Word: %-43s ║", packet->wake_word.c_str());
+            ESP_LOGI(TAG, "║  Detection Probability: %-31.3f ║", packet->final_probability);
+            ESP_LOGI(TAG, "║  Detection Duration: %-34lu ms ║", (unsigned long)packet->duration_ms);
+            ESP_LOGI(TAG, "║  Audio Duration: %-38lu ms ║", (unsigned long)audio_duration_ms);
+            ESP_LOGI(TAG, "║  PCM Data: %-31zu samples (%zu KB) ║", 
+                     packet->pcm_data.size(), pcm_bytes / 1024);
+            ESP_LOGI(TAG, "║  Inference Count: %-37zu ║", packet->probabilities.size());
+            ESP_LOGI(TAG, "║  Server: %-46s ║", server_url_.c_str());
+            ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════╝");
+            
+            bool pcm_success = true;
+            bool prob_success = true;
             
             // 上传 PCM 数据
             if (!packet->pcm_data.empty()) {
-                ESP_LOGI(TAG, "📤 Uploading PCM data...");
-                if (UploadPCM(packet->pcm_data)) {
-                    ESP_LOGI(TAG, "✅ PCM upload success (%zu bytes)", 
-                             packet->pcm_data.size() * sizeof(int16_t));
+                ESP_LOGI(TAG, "📤 [1/2] Uploading PCM data (%zu KB)...", pcm_bytes / 1024);
+                pcm_success = UploadPCM(packet->pcm_data);
+                if (pcm_success) {
+                    ESP_LOGI(TAG, "✅ [1/2] PCM upload success");
                 } else {
-                    ESP_LOGE(TAG, "❌ PCM upload failed");
+                    ESP_LOGE(TAG, "❌ [1/2] PCM upload failed");
                 }
             }
             
             // 上传概率数据
             if (!packet->probabilities.empty()) {
-                ESP_LOGI(TAG, "📤 Uploading probabilities...");
-                if (UploadProbabilities(packet->probabilities)) {
-                    ESP_LOGI(TAG, "✅ Probabilities upload success (%zu values)", 
-                             packet->probabilities.size());
+                ESP_LOGI(TAG, "📤 [2/2] Uploading probabilities (%zu values)...", 
+                         packet->probabilities.size());
+                prob_success = UploadProbabilities(packet->probabilities);
+                if (prob_success) {
+                    ESP_LOGI(TAG, "✅ [2/2] Probabilities upload success");
                 } else {
-                    ESP_LOGE(TAG, "❌ Probabilities upload failed");
+                    ESP_LOGE(TAG, "❌ [2/2] Probabilities upload failed");
                 }
             }
             
+            // 上传完成总结
+            ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════╗");
+            if (pcm_success && prob_success) {
+                ESP_LOGI(TAG, "║  ✅ Upload Complete - SUCCESS                            ║");
+            } else {
+                ESP_LOGE(TAG, "║  ❌ Upload Complete - FAILED                             ║");
+            }
+            ESP_LOGI(TAG, "╠══════════════════════════════════════════════════════════╣");
+            ESP_LOGI(TAG, "║  PCM Upload:    %-39s ║", pcm_success ? "✅ SUCCESS" : "❌ FAILED");
+            ESP_LOGI(TAG, "║  Prob Upload:   %-39s ║", prob_success ? "✅ SUCCESS" : "❌ FAILED");
+            ESP_LOGI(TAG, "║  Total Data:    %-30zu KB + %zu values ║", 
+                     pcm_bytes / 1024, packet->probabilities.size());
+            ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════╝");
+            
             // 释放数据包
             delete packet;
-            ESP_LOGI(TAG, "📤 Upload packet processed");
         }
     }
     
@@ -274,4 +299,5 @@ bool InferenceTestUploader::UploadProbabilities(const std::vector<uint8_t>& prob
 }
 
 }  // namespace micro_wake_word
+
 
