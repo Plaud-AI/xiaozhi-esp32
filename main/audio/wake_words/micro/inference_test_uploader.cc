@@ -4,6 +4,7 @@
 #include <cstring>
 #include <sstream>
 #include <iomanip>
+#include <new>  // for std::nothrow
 
 static const char* TAG = "InferenceTestUploader";
 
@@ -96,7 +97,12 @@ bool InferenceTestUploader::Submit(InferenceTestRecorder::UploadPacket&& packet)
     }
     
     // 在堆上分配，避免栈上大对象
-    auto* heap_packet = new InferenceTestRecorder::UploadPacket(std::move(packet));
+    // 注意：std::vector 内部会使用默认分配器，在 ESP-IDF 中会优先使用 PSRAM（如果配置了）
+    auto* heap_packet = new (std::nothrow) InferenceTestRecorder::UploadPacket(std::move(packet));
+    if (!heap_packet) {
+        ESP_LOGE(TAG, "Failed to allocate upload packet on heap!");
+        return false;
+    }
     
     // 非阻塞发送
     if (xQueueSend(upload_queue_, &heap_packet, 0) != pdTRUE) {
