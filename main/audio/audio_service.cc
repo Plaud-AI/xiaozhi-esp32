@@ -805,21 +805,9 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
         ESP_LOGI(TAG, "   - MIC Input: SLOT0 only (主麦克风) ✅");
         ESP_LOGI(TAG, "   - Sliding Window: %u", (unsigned int)sliding_window);
         
-        // Model 1: ESPHome 官方 Okay Nabu 模型
-        ESP_LOGI(TAG, "📦 Model 1: Okay Nabu (ESPHome Official v2)");
-        ESP_LOGI(TAG, "   - Threshold: %.2f (adjusted for resampling)", threshold_okay_nabu);
-        ESP_LOGI(TAG, "   - Tensor Arena: %u bytes", (unsigned int)tensor_arena_okay_nabu);
-        ESP_LOGI(TAG, "   - Wake Phrase: 'Okay Nabu'");
-        micro_ww->add_wake_word_model(
-            okay_nabu_tflite,
-            threshold_okay_nabu,
-            sliding_window,
-            "okay nabu",
-            tensor_arena_okay_nabu
-        );
-        
-        // Model 2: Plaud AI 定制 Hey Ploud V2 模型 (20251209 训练)
-        ESP_LOGI(TAG, "📦 Model 2: Hey Ploud V2 (Plaud AI Custom, 20251209)");
+        // Model 1: Plaud AI 定制 Hey Ploud V2 模型 (20251209 训练)
+        // 【测试模式】放在第一个，以便记录其推理概率
+        ESP_LOGI(TAG, "📦 Model 1: Hey Ploud V2 (Plaud AI Custom, 20251209) ⭐ 测试中");
         ESP_LOGI(TAG, "   - Threshold: %.2f (initial, needs testing)", threshold_hey_ploud);
         ESP_LOGI(TAG, "   - Tensor Arena: %u bytes (initial estimate)", (unsigned int)tensor_arena_hey_ploud);
         ESP_LOGI(TAG, "   - Wake Phrase: 'Hey Ploud'");
@@ -829,6 +817,19 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
             sliding_window,
             "hey ploud",
             tensor_arena_hey_ploud
+        );
+        
+        // Model 2: ESPHome 官方 Okay Nabu 模型
+        ESP_LOGI(TAG, "📦 Model 2: Okay Nabu (ESPHome Official v2)");
+        ESP_LOGI(TAG, "   - Threshold: %.2f (adjusted for resampling)", threshold_okay_nabu);
+        ESP_LOGI(TAG, "   - Tensor Arena: %u bytes", (unsigned int)tensor_arena_okay_nabu);
+        ESP_LOGI(TAG, "   - Wake Phrase: 'Okay Nabu'");
+        micro_ww->add_wake_word_model(
+            okay_nabu_tflite,
+            threshold_okay_nabu,
+            sliding_window,
+            "okay nabu",
+            tensor_arena_okay_nabu
         );
         
         ESP_LOGI(TAG, "✅ All wake word models loaded successfully");

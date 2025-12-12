@@ -478,8 +478,11 @@ void MicroWakeWord::update_model_probabilities_() {
 
   for (size_t i = 0; i < this->wake_word_models_.size(); i++) {
     auto &model = this->wake_word_models_[i];
-    // Perform inference（传入 test_recorder_ 用于记录原始概率）
-    model->perform_streaming_inference(audio_features, test_recorder_.get());
+    // Perform inference
+    // 【注意】只给第一个模型传递 recorder，避免多模型概率交织
+    // 如果需要测试其他模型，调整模型加载顺序即可
+    InferenceTestRecorder* recorder = (i == 0) ? test_recorder_.get() : nullptr;
+    model->perform_streaming_inference(audio_features, recorder);
     
     float prob = model->get_sliding_window_average();
     
