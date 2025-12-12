@@ -288,6 +288,38 @@ bool InferenceTestUploader::UploadProbabilities(const std::vector<uint8_t>& prob
     }
     std::string text = oss.str();
     
+    // 打印概率序列摘要
+    ESP_LOGI(TAG, "📊 Probability sequence (%lu values):", (unsigned long)probabilities.size());
+    
+    // 找出非零概率及其位置
+    ESP_LOGI(TAG, "   Non-zero probabilities:");
+    int non_zero_count = 0;
+    for (size_t i = 0; i < probabilities.size(); ++i) {
+        if (probabilities[i] > 0) {
+            float prob = static_cast<float>(probabilities[i]) / 255.0f;
+            ESP_LOGI(TAG, "   [%3lu] %.4f (raw: %u)", (unsigned long)i, prob, probabilities[i]);
+            non_zero_count++;
+            if (non_zero_count >= 30) {
+                ESP_LOGI(TAG, "   ... (truncated, too many non-zero values)");
+                break;
+            }
+        }
+    }
+    if (non_zero_count == 0) {
+        ESP_LOGI(TAG, "   (all zeros)");
+    }
+    
+    // 打印最后 20 个值（通常包含唤醒词检测的关键部分）
+    ESP_LOGI(TAG, "   Last 20 probabilities:");
+    size_t start = probabilities.size() > 20 ? probabilities.size() - 20 : 0;
+    std::ostringstream last_oss;
+    last_oss << std::fixed << std::setprecision(3);
+    for (size_t i = start; i < probabilities.size(); ++i) {
+        if (i > start) last_oss << ", ";
+        last_oss << (static_cast<float>(probabilities[i]) / 255.0f);
+    }
+    ESP_LOGI(TAG, "   %s", last_oss.str().c_str());
+    
     ESP_LOGD(TAG, "POST %s (%lu chars)", url.c_str(), (unsigned long)text.length());
     
     esp_http_client_config_t config = {};

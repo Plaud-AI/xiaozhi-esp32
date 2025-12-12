@@ -792,8 +792,8 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
         // 
         // ✅ 配置参数：根据实际测试调整
         // 由于使用 24kHz->16kHz 重采样，阈值需要相应调整
-        float threshold_okay_nabu = 0.55;  // 调整后的阈值（考虑重采样影响）
-        float threshold_hey_ploud = 0.55;  // Hey Ploud 初始阈值（需要实际测试调整）
+        float threshold_okay_nabu = 0.85;  // 调整后的阈值
+        float threshold_hey_ploud = 0.85;  // Hey Ploud 阈值（测试中）
         size_t sliding_window = 5;  // 官方推荐滑动窗口
         size_t tensor_arena_okay_nabu = 26080;  // Okay Nabu 的 tensor arena
         size_t tensor_arena_hey_ploud = 26080;  // Hey Ploud 的 tensor arena（初始估计，可能需要调整）
