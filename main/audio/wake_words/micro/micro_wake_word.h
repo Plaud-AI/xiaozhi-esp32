@@ -4,6 +4,8 @@
 #include "streaming_model.h"
 #include "preprocessor_settings.h"
 #include "helpers.h"
+#include "inference_test_recorder.h"
+#include "inference_test_uploader.h"
 
 #include "tensorflow/lite/experimental/microfrontend/lib/frontend_util.h"
 #include <tensorflow/lite/core/c/common.h>
@@ -51,6 +53,9 @@ class MicroWakeWord : public WakeWord {
                            size_t sliding_window_average_size, const std::string &wake_word,
                            size_t tensor_arena_size);
 
+  // Inference test mode access
+  InferenceTestRecorder* GetTestRecorder() { return test_recorder_.get(); }
+
  protected:
   AudioCodec *codec_{nullptr};
   State state_{State::IDLE};
@@ -88,6 +93,10 @@ class MicroWakeWord : public WakeWord {
   // Wake word recording for OPUS encoding
   std::vector<int16_t> wake_word_pcm_;
   std::vector<uint8_t> wake_word_opus_;
+
+  // Inference test mode (for comparing device vs server inference)
+  std::unique_ptr<InferenceTestRecorder> test_recorder_;
+  std::unique_ptr<InferenceTestUploader> test_uploader_;
 
   void set_state_(State state);
 

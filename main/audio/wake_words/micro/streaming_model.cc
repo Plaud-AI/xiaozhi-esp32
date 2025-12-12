@@ -129,7 +129,8 @@ float StreamingModel::get_sliding_window_average() const {
   return sum / this->recent_streaming_probabilities_.size();
 }
 
-bool StreamingModel::perform_streaming_inference(const int8_t features[PREPROCESSOR_FEATURE_SIZE]) {
+bool StreamingModel::perform_streaming_inference(const int8_t features[PREPROCESSOR_FEATURE_SIZE],
+                                                 InferenceTestRecorder* recorder) {
   if (this->interpreter_ != nullptr) {
     TfLiteTensor *input = this->interpreter_->input(0);
     
@@ -207,6 +208,11 @@ bool StreamingModel::perform_streaming_inference(const int8_t features[PREPROCES
       if (invoke_count % 100 == 0) {
         ESP_LOGI(TAG, "🔍 Invoke #%u: raw model output = %u (%.3f)", 
                  (unsigned int)invoke_count, raw_output, raw_output / 255.0f);
+      }
+
+      // 【测试模式】记录原始推理概率（滑动窗口平均前）
+      if (recorder) {
+        recorder->RecordProbability(raw_output);
       }
 
       ++this->last_n_index_;

@@ -2,6 +2,7 @@
 
 #include "preprocessor_settings.h"
 #include "helpers.h"
+#include "inference_test_recorder.h"
 
 #include <tensorflow/lite/core/c/common.h>
 #include <tensorflow/lite/micro/micro_interpreter.h>
@@ -22,7 +23,14 @@ class StreamingModel {
   virtual void log_model_config() = 0;
   virtual bool determine_detected() = 0;
 
-  bool perform_streaming_inference(const int8_t features[PREPROCESSOR_FEATURE_SIZE]);
+  /**
+   * @brief 执行流式推理
+   * @param features 输入特征数组 (40-dim int8)
+   * @param recorder 可选的测试记录器，用于记录原始推理概率
+   * @return 成功返回 true
+   */
+  bool perform_streaming_inference(const int8_t features[PREPROCESSOR_FEATURE_SIZE],
+                                   InferenceTestRecorder* recorder = nullptr);
 
   /// @brief Sets all recent_streaming_probabilities to 0
   void reset_probabilities();

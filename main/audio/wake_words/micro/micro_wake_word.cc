@@ -98,6 +98,18 @@ bool MicroWakeWord::Initialize(AudioCodec *codec, srmodel_list_t *models_list) {
            PCAN_GAIN_CONTROL_STRENGTH, PCAN_GAIN_CONTROL_OFFSET);
   ESP_LOGI(TAG, "   - Log Scale: shift=%d", LOG_SCALE_SCALE_SHIFT);
 
+  // ========================================================================
+  // Initialize inference test mode (auto-start for device vs server comparison)
+  // ========================================================================
+  test_recorder_ = std::make_unique<InferenceTestRecorder>();
+  test_uploader_ = std::make_unique<InferenceTestUploader>();
+  if (test_uploader_->Start()) {
+    ESP_LOGI(TAG, "📹 Inference test mode enabled (auto-start)");
+    ESP_LOGI(TAG, "   - Server: %s", test_uploader_->GetServerUrl().c_str());
+  } else {
+    ESP_LOGW(TAG, "⚠️ Failed to start inference test uploader");
+  }
+
   return true;
 }
 
@@ -126,6 +138,11 @@ void MicroWakeWord::Feed(const std::vector<int16_t> &data) {
              feed_count, (unsigned)data.size(), (unsigned)ring_buffer_available_, avg, max_val);
   }
 
+  // 【测试模式】记录 PCM 数据用于上传对比
+  if (test_recorder_) {
+    test_recorder_->RecordPCM(data.data(), data.size());
+  }
+
   // Store data for wake word recording
   wake_word_pcm_.insert(wake_word_pcm_.end(), data.begin(), data.end());
   // Keep about 2 seconds of data
@@ -152,6 +169,13 @@ void MicroWakeWord::Feed(const std::vector<int16_t> &data) {
       ESP_LOGI(TAG, "🎯 Wake Word '%s' Detected!", detected_wake_word_.c_str());
       detected_ = true;
       set_state_(State::DETECTED);
+      
+      // 【测试模式】检测成功，打包数据并提交上传
+      if (test_recorder_ && test_uploader_) {
+        auto packet = test_recorder_->OnDetectionEnd(detected_wake_word_, detected_probability_);
+        test_uploader_->Submit(std::move(packet));
+      }
+      
       if (detection_callback_) {
         ESP_LOGI(TAG, "Calling detection callback...");
         detection_callback_(detected_wake_word_);
@@ -203,6 +227,12 @@ void MicroWakeWord::Start() {
 
   reset_states_();
   set_state_(State::DETECTING_WAKE_WORD);
+  
+  // 【测试模式】开始记录
+  if (test_recorder_) {
+    test_recorder_->OnDetectionStart();
+  }
+  
   ESP_LOGI(TAG, "✅ MicroWakeWord detection started successfully");
 }
 
@@ -212,6 +242,11 @@ void MicroWakeWord::Stop() {
   if (state_ == State::IDLE) {
     ESP_LOGW(TAG, "Wake word is already stopped");
     return;
+  }
+
+  // 【测试模式】取消记录（未检测到唤醒词）
+  if (test_recorder_) {
+    test_recorder_->OnDetectionCancelled();
   }
 
   set_state_(State::IDLE);
@@ -436,8 +471,8 @@ void MicroWakeWord::update_model_probabilities_() {
 
   for (size_t i = 0; i < this->wake_word_models_.size(); i++) {
     auto &model = this->wake_word_models_[i];
-    // Perform inference
-    model->perform_streaming_inference(audio_features);
+    // Perform inference（传入 test_recorder_ 用于记录原始概率）
+    model->perform_streaming_inference(audio_features, test_recorder_.get());
     
     float prob = model->get_sliding_window_average();
     
