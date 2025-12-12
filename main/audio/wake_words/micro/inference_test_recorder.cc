@@ -9,11 +9,12 @@ namespace micro_wake_word {
 
 InferenceTestRecorder::InferenceTestRecorder() {
     // 预分配内存，避免运行时频繁分配
-    // 注意：减少到 3 秒以降低内存压力
-    pcm_data_.reserve(kSampleRate * 3);  // 预留 3 秒 = 48000 samples = 96KB
-    probabilities_.reserve(300);
-    ESP_LOGI(TAG, "InferenceTestRecorder created (max %u samples, %u KB)", 
-             (unsigned)kMaxPCMSamples, (unsigned)(kMaxPCMSamples * sizeof(int16_t) / 1024));
+    pcm_data_.reserve(kMaxPCMSamples);
+    probabilities_.reserve(kMaxProbabilities);
+    ESP_LOGI(TAG, "InferenceTestRecorder created (ring buffer: %u samples = %u ms, %u KB)", 
+             (unsigned)kMaxPCMSamples, 
+             (unsigned)kMaxDurationMs,
+             (unsigned)(kMaxPCMSamples * sizeof(int16_t) / 1024));
 }
 
 InferenceTestRecorder::~InferenceTestRecorder() {
@@ -84,16 +85,14 @@ void InferenceTestRecorder::RecordPCM(const int16_t* data, size_t samples) {
         return;
     }
     
-    // 检查是否超出最大容量
-    size_t space_left = kMaxPCMSamples - pcm_data_.size();
-    size_t to_copy = std::min(samples, space_left);
+    // 使用环形缓冲策略：如果超出最大容量，删除最旧的数据
+    // 这样始终保留最近 kMaxPCMSamples 个样本（即最近 N 秒的音频）
+    pcm_data_.insert(pcm_data_.end(), data, data + samples);
     
-    if (to_copy > 0) {
-        pcm_data_.insert(pcm_data_.end(), data, data + to_copy);
-    }
-    
-    if (to_copy < samples) {
-        ESP_LOGW(TAG, "PCM buffer full, dropped %lu samples", (unsigned long)(samples - to_copy));
+    if (pcm_data_.size() > kMaxPCMSamples) {
+        // 删除最旧的数据，只保留最近的
+        size_t excess = pcm_data_.size() - kMaxPCMSamples;
+        pcm_data_.erase(pcm_data_.begin(), pcm_data_.begin() + excess);
     }
 }
 
@@ -104,14 +103,11 @@ void InferenceTestRecorder::RecordProbability(uint8_t raw_probability) {
         return;
     }
     
-    if (probabilities_.size() < kMaxProbabilities) {
-        probabilities_.push_back(raw_probability);
-    } else {
-        static bool warned = false;
-        if (!warned) {
-            ESP_LOGW(TAG, "Probability buffer full, dropping subsequent values");
-            warned = true;
-        }
+    // 使用环形缓冲策略：如果超出最大容量，删除最旧的数据
+    probabilities_.push_back(raw_probability);
+    
+    if (probabilities_.size() > kMaxProbabilities) {
+        probabilities_.erase(probabilities_.begin());
     }
 }
 
