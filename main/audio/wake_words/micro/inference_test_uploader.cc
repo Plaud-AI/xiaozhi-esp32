@@ -161,40 +161,59 @@ void InferenceTestUploader::UploadTask() {
             
             bool pcm_success = true;
             bool prob_success = true;
+            bool pcm_saved = false;
+            bool prob_saved = false;
             
             // 上传 PCM 数据
             if (!packet->pcm_data.empty()) {
-                ESP_LOGI(TAG, "📤 [1/2] Uploading PCM data (%lu KB)...", (unsigned long)pcm_kb);
+                ESP_LOGI(TAG, "📤 [1/4] Uploading PCM data (%lu KB)...", (unsigned long)pcm_kb);
                 pcm_success = UploadPCM(packet->pcm_data);
                 if (pcm_success) {
-                    ESP_LOGI(TAG, "✅ [1/2] PCM upload success");
+                    ESP_LOGI(TAG, "✅ [1/4] PCM upload success");
+                    // 调用 save/bytes 保存到服务器文件
+                    ESP_LOGI(TAG, "💾 [2/4] Saving PCM to file on server...");
+                    pcm_saved = SaveBytes();
+                    if (!pcm_saved) {
+                        ESP_LOGW(TAG, "⚠️ [2/4] PCM save failed (upload was OK)");
+                    }
                 } else {
-                    ESP_LOGE(TAG, "❌ [1/2] PCM upload failed");
+                    ESP_LOGE(TAG, "❌ [1/4] PCM upload failed");
                 }
             }
             
             // 上传概率数据
             if (!packet->probabilities.empty()) {
-                ESP_LOGI(TAG, "📤 [2/2] Uploading probabilities (%lu values)...", 
+                ESP_LOGI(TAG, "📤 [3/4] Uploading probabilities (%lu values)...", 
                          (unsigned long)prob_count);
                 prob_success = UploadProbabilities(packet->probabilities);
                 if (prob_success) {
-                    ESP_LOGI(TAG, "✅ [2/2] Probabilities upload success");
+                    ESP_LOGI(TAG, "✅ [3/4] Probabilities upload success");
+                    // 调用 save/text 保存到服务器文件
+                    ESP_LOGI(TAG, "💾 [4/4] Saving probabilities to file on server...");
+                    prob_saved = SaveText();
+                    if (!prob_saved) {
+                        ESP_LOGW(TAG, "⚠️ [4/4] Probabilities save failed (upload was OK)");
+                    }
                 } else {
-                    ESP_LOGE(TAG, "❌ [2/2] Probabilities upload failed");
+                    ESP_LOGE(TAG, "❌ [3/4] Probabilities upload failed");
                 }
             }
             
             // 上传完成总结
+            bool all_success = pcm_success && prob_success && pcm_saved && prob_saved;
             ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════╗");
-            if (pcm_success && prob_success) {
-                ESP_LOGI(TAG, "║  ✅ Upload Complete - SUCCESS                            ║");
+            if (all_success) {
+                ESP_LOGI(TAG, "║  ✅ Upload & Save Complete - SUCCESS                     ║");
+            } else if (pcm_success && prob_success) {
+                ESP_LOGW(TAG, "║  ⚠️  Upload OK, Save Partial                             ║");
             } else {
                 ESP_LOGE(TAG, "║  ❌ Upload Complete - FAILED                             ║");
             }
             ESP_LOGI(TAG, "╠══════════════════════════════════════════════════════════╣");
             ESP_LOGI(TAG, "║  PCM Upload:    %-39s ║", pcm_success ? "✅ SUCCESS" : "❌ FAILED");
+            ESP_LOGI(TAG, "║  PCM Save:      %-39s ║", pcm_saved ? "✅ SAVED" : "❌ NOT SAVED");
             ESP_LOGI(TAG, "║  Prob Upload:   %-39s ║", prob_success ? "✅ SUCCESS" : "❌ FAILED");
+            ESP_LOGI(TAG, "║  Prob Save:     %-39s ║", prob_saved ? "✅ SAVED" : "❌ NOT SAVED");
             ESP_LOGI(TAG, "║  Total Data:    %lu KB + %lu values                       ║", 
                      (unsigned long)pcm_kb, (unsigned long)prob_count);
             ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════╝");
@@ -307,6 +326,76 @@ bool InferenceTestUploader::UploadProbabilities(const std::vector<uint8_t>& prob
         return false;
     }
     
+    return true;
+}
+
+bool InferenceTestUploader::SaveBytes() {
+    std::string url = server_url_ + "/save/bytes";
+    
+    ESP_LOGI(TAG, "💾 Saving bytes on server: %s", url.c_str());
+    
+    esp_http_client_config_t config = {};
+    config.url = url.c_str();
+    config.method = HTTP_METHOD_POST;
+    config.timeout_ms = kHttpTimeoutMs;
+    
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (!client) {
+        ESP_LOGE(TAG, "Failed to init HTTP client for save/bytes");
+        return false;
+    }
+    
+    esp_err_t err = esp_http_client_perform(client);
+    int status_code = esp_http_client_get_status_code(client);
+    
+    esp_http_client_cleanup(client);
+    
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "save/bytes request failed: %s", esp_err_to_name(err));
+        return false;
+    }
+    
+    if (status_code != 200) {
+        ESP_LOGE(TAG, "save/bytes HTTP status %d", status_code);
+        return false;
+    }
+    
+    ESP_LOGI(TAG, "💾 Bytes saved successfully on server");
+    return true;
+}
+
+bool InferenceTestUploader::SaveText() {
+    std::string url = server_url_ + "/save/text";
+    
+    ESP_LOGI(TAG, "💾 Saving text on server: %s", url.c_str());
+    
+    esp_http_client_config_t config = {};
+    config.url = url.c_str();
+    config.method = HTTP_METHOD_POST;
+    config.timeout_ms = kHttpTimeoutMs;
+    
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (!client) {
+        ESP_LOGE(TAG, "Failed to init HTTP client for save/text");
+        return false;
+    }
+    
+    esp_err_t err = esp_http_client_perform(client);
+    int status_code = esp_http_client_get_status_code(client);
+    
+    esp_http_client_cleanup(client);
+    
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "save/text request failed: %s", esp_err_to_name(err));
+        return false;
+    }
+    
+    if (status_code != 200) {
+        ESP_LOGE(TAG, "save/text HTTP status %d", status_code);
+        return false;
+    }
+    
+    ESP_LOGI(TAG, "💾 Text saved successfully on server");
     return true;
 }
 
