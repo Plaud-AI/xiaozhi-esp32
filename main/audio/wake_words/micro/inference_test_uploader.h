@@ -74,6 +74,20 @@ private:
      * @return 成功返回 true
      */
     bool UploadProbabilities(const std::vector<uint8_t>& probabilities);
+    
+    /**
+     * @brief 保存字节数据到服务器文件
+     * POST {server_url}/save/bytes
+     * @return 成功返回 true
+     */
+    bool SaveBytes();
+    
+    /**
+     * @brief 保存文本数据到服务器文件
+     * POST {server_url}/save/text
+     * @return 成功返回 true
+     */
+    bool SaveText();
 
     // 服务器配置
     std::string server_url_ = "http://115.190.161.149:7007";
