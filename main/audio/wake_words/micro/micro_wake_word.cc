@@ -100,14 +100,21 @@ bool MicroWakeWord::Initialize(AudioCodec *codec, srmodel_list_t *models_list) {
 
   // ========================================================================
   // Initialize inference test mode (auto-start for device vs server comparison)
+  // Only initialize once to avoid destroying running tasks
   // ========================================================================
-  test_recorder_ = std::make_unique<InferenceTestRecorder>();
-  test_uploader_ = std::make_unique<InferenceTestUploader>();
-  if (test_uploader_->Start()) {
-    ESP_LOGI(TAG, "📹 Inference test mode enabled (auto-start)");
-    ESP_LOGI(TAG, "   - Server: %s", test_uploader_->GetServerUrl().c_str());
+  if (!test_recorder_) {
+    test_recorder_ = std::make_unique<InferenceTestRecorder>();
+  }
+  if (!test_uploader_) {
+    test_uploader_ = std::make_unique<InferenceTestUploader>();
+    if (test_uploader_->Start()) {
+      ESP_LOGI(TAG, "📹 Inference test mode enabled (auto-start)");
+      ESP_LOGI(TAG, "   - Server: %s", test_uploader_->GetServerUrl().c_str());
+    } else {
+      ESP_LOGW(TAG, "⚠️ Failed to start inference test uploader");
+    }
   } else {
-    ESP_LOGW(TAG, "⚠️ Failed to start inference test uploader");
+    ESP_LOGI(TAG, "📹 Inference test mode already initialized, skipping");
   }
 
   return true;
