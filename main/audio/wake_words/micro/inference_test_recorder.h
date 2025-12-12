@@ -102,9 +102,9 @@ private:
     
     // 配置常量
     static constexpr uint32_t kSampleRate = 16000;
-    static constexpr uint32_t kMaxDurationMs = 5000;  // 最大记录 5 秒（减少内存压力）
+    static constexpr uint32_t kMaxDurationMs = 5000;   // 最大记录 5 秒
     static constexpr size_t kMaxPCMSamples = kSampleRate * kMaxDurationMs / 1000;  // 80000 samples = 160KB
-    static constexpr size_t kMaxProbabilities = 500;  // 最多 500 次推理
+    static constexpr size_t kMaxProbabilities = 500;   // 最多 500 次推理
 };
 
 }  // namespace micro_wake_word
