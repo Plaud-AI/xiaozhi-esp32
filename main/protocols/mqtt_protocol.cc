@@ -26,6 +26,9 @@ MqttProtocol::MqttProtocol() {
             }
         },
         .arg = this,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "mqtt_reconnect",
+        .skip_unhandled_events = true,  // ⚠️ 防止重连时回调堆积
     };
     esp_timer_create(&reconnect_timer_args, &reconnect_timer_);
 }
@@ -123,7 +126,6 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
         last_incoming_time_ = std::chrono::steady_clock::now();
     });
 
-    ESP_LOGI(TAG, "Connecting to endpoint %s", endpoint.c_str());
     std::string broker_address;
     int broker_port = 8883;
     size_t pos = endpoint.find(':');
@@ -133,13 +135,23 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
     } else {
         broker_address = endpoint;
     }
+    
+    ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════════╗");
+    ESP_LOGI(TAG, "║   🔗 正在连接 MQTT 服务器                                      ║");
+    ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════════╣");
+    ESP_LOGI(TAG, "║   Broker: %s:%d", broker_address.c_str(), broker_port);
+    ESP_LOGI(TAG, "║   Client ID: %s", client_id.c_str());
+    ESP_LOGI(TAG, "║   Username: %s", username.empty() ? "(无)" : username.c_str());
+    ESP_LOGI(TAG, "║   Publish Topic: %s", publish_topic_.c_str());
+    ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════════╝");
+    
     if (!mqtt_->Connect(broker_address, broker_port, client_id, username, password)) {
-        ESP_LOGE(TAG, "Failed to connect to endpoint");
+        ESP_LOGE(TAG, "❌ Failed to connect to MQTT broker: %s:%d", broker_address.c_str(), broker_port);
         SetError(Lang::Strings::SERVER_NOT_CONNECTED);
         return false;
     }
 
-    ESP_LOGI(TAG, "Connected to endpoint");
+    ESP_LOGI(TAG, "✅ MQTT 连接成功: %s:%d", broker_address.c_str(), broker_port);
     return true;
 }
 
@@ -341,8 +353,13 @@ void MqttProtocol::ParseServerHello(const cJSON* root) {
     auto key = cJSON_GetObjectItem(udp, "key")->valuestring;
     auto nonce = cJSON_GetObjectItem(udp, "nonce")->valuestring;
 
-    // auto encryption = cJSON_GetObjectItem(udp, "encryption")->valuestring;
-    // ESP_LOGI(TAG, "UDP server: %s, port: %d, encryption: %s", udp_server_.c_str(), udp_port_, encryption);
+    ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════════╗");
+    ESP_LOGI(TAG, "║   📡 服务器分配的 UDP 音频通道                                 ║");
+    ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════════╣");
+    ESP_LOGI(TAG, "║   UDP Server: %s:%d", udp_server_.c_str(), udp_port_);
+    ESP_LOGI(TAG, "║   Session ID: %s", session_id_.c_str());
+    ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════════╝");
+    
     aes_nonce_ = DecodeHexString(nonce);
     mbedtls_aes_init(&aes_ctx_);
     mbedtls_aes_setkey_enc(&aes_ctx_, (const unsigned char*)DecodeHexString(key).c_str(), 128);

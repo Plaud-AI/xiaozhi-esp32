@@ -34,12 +34,24 @@ void AudioCodec::Start() {
         output_volume_ = 10;
     }
 
+    // 容错处理：I2S 通道可能已经被底层 codec 驱动 enable，或因硬件时序问题处于异常状态
+    // 使用非致命错误处理，避免因 I2S 状态问题导致设备 crash
     if (tx_handle_ != nullptr) {
-        ESP_ERROR_CHECK(i2s_channel_enable(tx_handle_));
+        esp_err_t ret = i2s_channel_enable(tx_handle_);
+        if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+            ESP_LOGE(TAG, "Failed to enable TX channel: %s (0x%x)", esp_err_to_name(ret), ret);
+        } else if (ret == ESP_ERR_INVALID_STATE) {
+            ESP_LOGW(TAG, "TX channel already enabled or in invalid state, continuing...");
+        }
     }
 
     if (rx_handle_ != nullptr) {
-        ESP_ERROR_CHECK(i2s_channel_enable(rx_handle_));
+        esp_err_t ret = i2s_channel_enable(rx_handle_);
+        if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+            ESP_LOGE(TAG, "Failed to enable RX channel: %s (0x%x)", esp_err_to_name(ret), ret);
+        } else if (ret == ESP_ERR_INVALID_STATE) {
+            ESP_LOGW(TAG, "RX channel already enabled or in invalid state, continuing...");
+        }
     }
 
     EnableInput(true);

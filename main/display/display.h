@@ -39,6 +39,13 @@ public:
     virtual Theme* GetTheme() { return current_theme_; }
     virtual void UpdateStatusBar(bool update_all = false);
     virtual void SetPowerSaveMode(bool on);
+    
+    /**
+     * @brief 直接通过路径显示动画（设备状态驱动，简化方案）
+     * @param animation_path 动画文件的完整路径
+     * @param loop 是否循环播放
+     */
+    virtual void ShowAnimationByPath(const char* animation_path, bool loop = true);
 
     inline int width() const { return width_; }
     inline int height() const { return height_; }

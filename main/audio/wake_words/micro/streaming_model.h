@@ -2,7 +2,6 @@
 
 #include "preprocessor_settings.h"
 #include "helpers.h"
-#include "inference_test_recorder.h"
 
 #include <tensorflow/lite/core/c/common.h>
 #include <tensorflow/lite/micro/micro_interpreter.h>
@@ -23,14 +22,7 @@ class StreamingModel {
   virtual void log_model_config() = 0;
   virtual bool determine_detected() = 0;
 
-  /**
-   * @brief 执行流式推理
-   * @param features 输入特征数组 (40-dim int8)
-   * @param recorder 可选的测试记录器，用于记录原始推理概率
-   * @return 成功返回 true
-   */
-  bool perform_streaming_inference(const int8_t features[PREPROCESSOR_FEATURE_SIZE],
-                                   InferenceTestRecorder* recorder = nullptr);
+  bool perform_streaming_inference(const int8_t features[PREPROCESSOR_FEATURE_SIZE]);
 
   /// @brief Sets all recent_streaming_probabilities to 0
   void reset_probabilities();
@@ -42,6 +34,9 @@ class StreamingModel {
 
   /// @brief Destroys the TFLite interpreter and frees the tensor and variable arenas' memory
   void unload_model();
+
+  /// @brief Check if the model is loaded (interpreter allocated)
+  bool is_loaded() const { return interpreter_ != nullptr; }
 
   /// @brief Get the probability cutoff threshold
   /// @return The probability cutoff value
@@ -71,7 +66,7 @@ class StreamingModel {
 class WakeWordModel final : public StreamingModel {
  public:
   WakeWordModel(const uint8_t *model_start, float probability_cutoff, size_t sliding_window_average_size,
-                const std::string &wake_word, size_t tensor_arena_size);
+                const std::string &wake_word, size_t tensor_arena_size, const std::string &model_id = "");
 
   void log_model_config() override;
 
@@ -81,9 +76,27 @@ class WakeWordModel final : public StreamingModel {
   bool determine_detected() override;
 
   const std::string &get_wake_word() const { return this->wake_word_; }
+  
+  /// @brief Get the model ID (used for BLE control)
+  const std::string &get_model_id() const { return this->model_id_; }
+  
+  /// @brief Check if the model is enabled
+  bool is_enabled() const { return this->enabled_; }
+  
+  /// @brief Enable or disable the model at runtime
+  void set_enabled(bool enabled) { this->enabled_ = enabled; }
+  
+  /// @brief Check if this model is always enabled (cannot be disabled)
+  bool is_always_enabled() const { return this->always_enabled_; }
+  
+  /// @brief Set whether this model should always be enabled
+  void set_always_enabled(bool always) { this->always_enabled_ = always; }
 
  protected:
   std::string wake_word_;
+  std::string model_id_;      // Unique identifier for BLE control (e.g., "okay_nabu", "hey_ironman")
+  bool enabled_{true};        // Runtime enable/disable flag
+  bool always_enabled_{false}; // If true, model cannot be disabled
 };
 
 class VADModel final : public StreamingModel {

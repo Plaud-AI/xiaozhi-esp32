@@ -49,9 +49,24 @@ void Protocol::SendAbortSpeaking(AbortReason reason) {
 }
 
 void Protocol::SendWakeWordDetected(const std::string& wake_word) {
+    ESP_LOGI(TAG, "📡 SendWakeWordDetected() called");
+    ESP_LOGI(TAG, "   wake_word: '%s'", wake_word.c_str());
+    ESP_LOGI(TAG, "   session_id: '%s'", session_id_.c_str());
+    
+    if (session_id_.empty()) {
+        ESP_LOGE(TAG, "❌ session_id is EMPTY! Server may not have sent hello response.");
+    }
+    
     std::string json = "{\"session_id\":\"" + session_id_ + 
                       "\",\"type\":\"listen\",\"state\":\"detect\",\"text\":\"" + wake_word + "\"}";
-    SendText(json);
+    ESP_LOGI(TAG, "📤 Sending JSON: %s", json.c_str());
+    
+    bool success = SendText(json);
+    if (success) {
+        ESP_LOGI(TAG, "✅ SendWakeWordDetected succeeded");
+    } else {
+        ESP_LOGE(TAG, "❌ SendWakeWordDetected FAILED!");
+    }
 }
 
 void Protocol::SendStartListening(ListeningMode mode) {

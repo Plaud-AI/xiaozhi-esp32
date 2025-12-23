@@ -102,7 +102,21 @@ BoxAudioCodec::BoxAudioCodec(void* i2c_master_handle, int input_sample_rate, int
         .sample_rate = (uint32_t)input_sample_rate_,
         .mclk_multiple = 0,
     };
-    esp_err_t ret = esp_codec_dev_open(input_dev_, &input_fs);
+    
+    // ES7210 上电后需要时间稳定，增加重试机制处理偶发的 I2C NACK 错误
+    esp_err_t ret = ESP_FAIL;
+    const int max_retries = 3;
+    for (int retry = 0; retry < max_retries; retry++) {
+        if (retry > 0) {
+            ESP_LOGW(TAG, "⏳ Retrying input device open (attempt %d/%d)...", retry + 1, max_retries);
+            vTaskDelay(pdMS_TO_TICKS(50));  // 等待 50ms 让 I2C 设备稳定
+        }
+        ret = esp_codec_dev_open(input_dev_, &input_fs);
+        if (ret == ESP_OK) {
+            break;
+        }
+    }
+    
     if (ret == ESP_OK) {
         // 设置通道增益
         ESP_LOGI(TAG, "🔧 Setting input gain to %.1f dB...", (float)input_gain_);
@@ -115,7 +129,8 @@ BoxAudioCodec::BoxAudioCodec(void* i2c_master_handle, int input_sample_rate, int
         input_device_permanently_open_ = true;
         ESP_LOGI(TAG, "Input device opened and will remain open (duplex mode optimization)");
     } else {
-        ESP_LOGW(TAG, "Failed to pre-open input device: %s, will use dynamic open/close", esp_err_to_name(ret));
+        ESP_LOGW(TAG, "Failed to pre-open input device after %d attempts: %s, will use dynamic open/close", 
+                 max_retries, esp_err_to_name(ret));
         input_device_permanently_open_ = false;
     }
 

@@ -24,7 +24,6 @@
 #define MAIN_EVENT_ERROR (1 << 4)
 #define MAIN_EVENT_CHECK_NEW_VERSION_DONE (1 << 5)
 #define MAIN_EVENT_CLOCK_TICK (1 << 6)
-#define MAIN_EVENT_WAKE_WORD_TEST_CYCLE (1 << 7)  // 唤醒词测试模式循环事件
 
 
 enum AecMode {
@@ -66,11 +65,8 @@ public:
     void PlaySuccessSound();  // 播放成功提示音（通用方法，可在多处复用）
     AudioService& GetAudioService() { return audio_service_; }
     bool ApplyWakeWordConfig();  // 应用唤醒词配置（运行时生效）
-    
-    // 唤醒词测试模式
-    void EnableWakeWordTestMode(bool enable);  // 开启/关闭测试模式
-    bool IsWakeWordTestModeEnabled() const { return wake_word_test_mode_enabled_; }
-    void StartWakeWordTestCycle();  // 开始一个测试循环
+    void StartConfigMode();
+    void StopConfigMode();
 
 private:
     Application();
@@ -92,21 +88,12 @@ private:
     int clock_ticks_ = 0;
     TaskHandle_t check_new_version_task_handle_ = nullptr;
     TaskHandle_t main_event_loop_task_handle_ = nullptr;
-    
-    // 唤醒词测试模式相关
-    bool wake_word_test_mode_enabled_ = false;  // 测试模式开关
-    float last_wake_word_probability_ = 0.0f;    // 最后检测到的概率
-    std::string last_wake_word_name_;            // 最后检测到的唤醒词名称
-    esp_timer_handle_t wake_word_test_timer_ = nullptr;  // 测试循环定时器
 
     void OnWakeWordDetected();
-    void OnWakeWordDetectedInTestMode();  // 测试模式下的唤醒处理
     void CheckNewVersion(Ota& ota);
     void CheckAssetsVersion();
     void ShowActivationCode(const std::string& code, const std::string& message);
-    void SpeakProbability(float probability);  // 播报概率数字
     void SetListeningMode(ListeningMode mode);
-    void PlayBeepTone(int frequency_hz, int duration_ms);  // 播放提示音
 };
 
 

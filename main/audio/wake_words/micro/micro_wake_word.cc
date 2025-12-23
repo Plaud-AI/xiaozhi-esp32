@@ -5,6 +5,7 @@
 #include "frontend.h"
 #include "frontend_util.h"
 #include <opus_encoder.h>
+#include <nvs_flash.h>
 #include <cmath>
 #include <algorithm>
 
@@ -12,6 +13,10 @@
 #ifndef OPUS_FRAME_DURATION_MS
 #define OPUS_FRAME_DURATION_MS 60
 #endif
+
+// NVS namespace and key for wake word model states
+#define MWW_NVS_NAMESPACE "micro_ww"
+#define MWW_NVS_KEY "model_states"
 
 namespace micro_wake_word {
 
@@ -98,25 +103,6 @@ bool MicroWakeWord::Initialize(AudioCodec *codec, srmodel_list_t *models_list) {
            PCAN_GAIN_CONTROL_STRENGTH, PCAN_GAIN_CONTROL_OFFSET);
   ESP_LOGI(TAG, "   - Log Scale: shift=%d", LOG_SCALE_SCALE_SHIFT);
 
-  // ========================================================================
-  // Initialize inference test mode (auto-start for device vs server comparison)
-  // Only initialize once to avoid destroying running tasks
-  // ========================================================================
-  if (!test_recorder_) {
-    test_recorder_ = std::make_unique<InferenceTestRecorder>();
-  }
-  if (!test_uploader_) {
-    test_uploader_ = std::make_unique<InferenceTestUploader>();
-    if (test_uploader_->Start()) {
-      ESP_LOGI(TAG, "📹 Inference test mode enabled (auto-start)");
-      ESP_LOGI(TAG, "   - Server: %s", test_uploader_->GetServerUrl().c_str());
-    } else {
-      ESP_LOGW(TAG, "⚠️ Failed to start inference test uploader");
-    }
-  } else {
-    ESP_LOGI(TAG, "📹 Inference test mode already initialized, skipping");
-  }
-
   return true;
 }
 
@@ -131,7 +117,7 @@ void MicroWakeWord::Feed(const std::vector<int16_t> &data) {
     return;
   }
 
-  if (feed_count % 100 == 0) {
+  if (feed_count % 1000 == 0) {
     // Calculate audio level to check if we're receiving valid data
     int32_t sum = 0;
     int16_t max_val = 0;
@@ -141,13 +127,8 @@ void MicroWakeWord::Feed(const std::vector<int16_t> &data) {
     }
     int16_t avg = data.size() > 0 ? sum / std::min(data.size(), (size_t)100) : 0;
     
-    ESP_LOGI(TAG, "Feed #%lu: Received %u samples, ring buffer: %u, avg_level: %d, max: %d", 
+    ESP_LOGD(TAG, "Feed #%lu: Received %u samples, ring buffer: %u, avg_level: %d, max: %d", 
              feed_count, (unsigned)data.size(), (unsigned)ring_buffer_available_, avg, max_val);
-  }
-
-  // 【测试模式】记录 PCM 数据用于上传对比
-  if (test_recorder_) {
-    test_recorder_->RecordPCM(data.data(), data.size());
   }
 
   // Store data for wake word recording
@@ -168,29 +149,11 @@ void MicroWakeWord::Feed(const std::vector<int16_t> &data) {
   int process_count = 0;
   while (has_enough_samples_()) {
     process_count++;
-    if (feed_count % 100 == 0) {
-      ESP_LOGI(TAG, "Processing audio window #%d", process_count);
-    }
     update_model_probabilities_();
     if (detect_wake_words_()) {
       ESP_LOGI(TAG, "🎯 Wake Word '%s' Detected!", detected_wake_word_.c_str());
       detected_ = true;
       set_state_(State::DETECTED);
-      
-      // 【测试模式】只有 hey ploud 检测成功时才上传（因为只记录了它的概率）
-      if (test_recorder_ && test_uploader_) {
-        if (detected_wake_word_ == "hey ploud") {
-          auto packet = test_recorder_->OnDetectionEnd(detected_wake_word_, detected_probability_);
-          test_uploader_->Submit(std::move(packet));
-          ESP_LOGI(TAG, "📤 Test data submitted for 'hey ploud'");
-        } else {
-          // 其他唤醒词检测成功，取消记录（不上传）
-          test_recorder_->OnDetectionCancelled();
-          ESP_LOGI(TAG, "📤 Test data discarded (detected '%s', not 'hey ploud')", 
-                   detected_wake_word_.c_str());
-        }
-      }
-      
       if (detection_callback_) {
         ESP_LOGI(TAG, "Calling detection callback...");
         detection_callback_(detected_wake_word_);
@@ -201,9 +164,6 @@ void MicroWakeWord::Feed(const std::vector<int16_t> &data) {
     }
   }
   
-  if (process_count > 0 && feed_count % 50 == 0) {
-    ESP_LOGI(TAG, "Processed %d audio windows in this feed cycle", process_count);
-  }
 }
 
 void MicroWakeWord::OnWakeWordDetected(std::function<void(const std::string &)> callback) {
@@ -211,8 +171,10 @@ void MicroWakeWord::OnWakeWordDetected(std::function<void(const std::string &)> 
 }
 
 void MicroWakeWord::Start() {
+  size_t enabled_count = get_enabled_model_count();
   ESP_LOGI(TAG, "🚀 Starting MicroWakeWord detection (ESPHome-aligned)");
-  ESP_LOGI(TAG, "  - Wake word models: %u", (unsigned int)wake_word_models_.size());
+  ESP_LOGI(TAG, "  - Wake word models: %u total, %u enabled", 
+           (unsigned int)wake_word_models_.size(), (unsigned int)enabled_count);
   ESP_LOGI(TAG, "  - Sample rate: %u Hz", (unsigned int)AUDIO_SAMPLE_FREQUENCY);
   ESP_LOGI(TAG, "  - Feature duration: %d ms", FEATURE_DURATION_MS);
   ESP_LOGI(TAG, "  - Ring buffer: %u ms (%u samples, %.1f KB)", 
@@ -228,6 +190,10 @@ void MicroWakeWord::Start() {
     ESP_LOGE(TAG, "❌ No wake word models configured!");
     return;
   }
+  
+  if (enabled_count == 0) {
+    ESP_LOGW(TAG, "⚠️ No wake word models enabled! Detection will not work.");
+  }
 
   ESP_LOGI(TAG, "Loading models and allocating buffers...");
   if (!load_models_()) {
@@ -242,12 +208,6 @@ void MicroWakeWord::Start() {
 
   reset_states_();
   set_state_(State::DETECTING_WAKE_WORD);
-  
-  // 【测试模式】开始记录
-  if (test_recorder_) {
-    test_recorder_->OnDetectionStart();
-  }
-  
   ESP_LOGI(TAG, "✅ MicroWakeWord detection started successfully");
 }
 
@@ -257,11 +217,6 @@ void MicroWakeWord::Stop() {
   if (state_ == State::IDLE) {
     ESP_LOGW(TAG, "Wake word is already stopped");
     return;
-  }
-
-  // 【测试模式】取消记录（未检测到唤醒词）
-  if (test_recorder_) {
-    test_recorder_->OnDetectionCancelled();
   }
 
   set_state_(State::IDLE);
@@ -275,32 +230,77 @@ size_t MicroWakeWord::GetFeedSize() {
 }
 
 void MicroWakeWord::EncodeWakeWordData() {
-  ESP_LOGI(TAG, "Encoding wake word data to OPUS");
+  ESP_LOGI(TAG, "Encoding wake word data to OPUS (Async)");
   
   if (wake_word_pcm_.empty()) {
     ESP_LOGW(TAG, "No wake word PCM data to encode");
     return;
   }
 
-  auto encoder = std::make_unique<OpusEncoderWrapper>(16000, 1, OPUS_FRAME_DURATION_MS);
-  encoder->SetComplexity(0);  // Fastest encoding
+  const size_t stack_size = 4096 * 7;
+  if (wake_word_encode_task_stack_ == nullptr) {
+    wake_word_encode_task_stack_ = (StackType_t*)heap_caps_malloc(stack_size, MALLOC_CAP_SPIRAM);
+  }
+  if (wake_word_encode_task_buffer_ == nullptr) {
+    wake_word_encode_task_buffer_ = (StaticTask_t*)heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  }
 
-  wake_word_opus_.clear();
-  
-  // Encode the PCM data
-  encoder->Encode(std::move(wake_word_pcm_), [this](std::vector<uint8_t>&& opus) {
-    wake_word_opus_.insert(wake_word_opus_.end(), opus.begin(), opus.end());
-  });
+  if (!wake_word_encode_task_stack_ || !wake_word_encode_task_buffer_) {
+    ESP_LOGE(TAG, "Failed to allocate task resources for encoding");
+    return;
+  }
 
-  ESP_LOGI(TAG, "Wake word encoding complete: %zu bytes", wake_word_opus_.size());
+  {
+      std::lock_guard<std::mutex> lock(wake_word_mutex_);
+      wake_word_opus_.clear();
+  }
+
+  wake_word_encode_task_ = xTaskCreateStatic([](void* arg) {
+    auto* this_ = static_cast<MicroWakeWord*>(arg);
+    
+    std::vector<int16_t> pcm_data;
+    pcm_data = std::move(this_->wake_word_pcm_);
+    
+    auto start_time = esp_timer_get_time();
+    auto encoder = std::make_unique<OpusEncoderWrapper>(16000, 1, OPUS_FRAME_DURATION_MS);
+    
+    int packets = 0;
+    if (encoder) {
+        encoder->SetComplexity(0);
+        encoder->Encode(std::move(pcm_data), [this_, &packets](std::vector<uint8_t>&& opus) {
+            std::lock_guard<std::mutex> lock(this_->wake_word_mutex_);
+            this_->wake_word_opus_.emplace_back(std::move(opus));
+            this_->wake_word_cv_.notify_all();
+            packets++;
+        });
+    }
+    
+    // Push empty packet as sentinel
+    {
+        std::lock_guard<std::mutex> lock(this_->wake_word_mutex_);
+        this_->wake_word_opus_.emplace_back(std::vector<uint8_t>());
+        this_->wake_word_cv_.notify_all();
+    }
+    
+    auto end_time = esp_timer_get_time();
+    ESP_LOGI(TAG, "Encoded %d wake word packets in %ld ms", packets, (long)((end_time - start_time) / 1000));
+
+    vTaskDelete(NULL);
+  }, "mw_encode", stack_size, this, 2, wake_word_encode_task_stack_, wake_word_encode_task_buffer_);
 }
 
 bool MicroWakeWord::GetWakeWordOpus(std::vector<uint8_t> &opus) {
-  if (wake_word_opus_.empty()) {
-    return false;
+  std::unique_lock<std::mutex> lock(wake_word_mutex_);
+  wake_word_cv_.wait(lock, [this]() {
+    return !wake_word_opus_.empty();
+  });
+  
+  opus = std::move(wake_word_opus_.front());
+  wake_word_opus_.pop_front();
+  
+  if (opus.empty()) {
+      return false;
   }
-  opus = std::move(wake_word_opus_);  // 移动而非复制，同时清空 wake_word_opus_
-  ESP_LOGD(TAG, "✅ Wake word OPUS data moved to caller (%zu bytes), internal buffer now empty", opus.size());
   return true;
 }
 
@@ -310,12 +310,132 @@ const std::string &MicroWakeWord::GetLastDetectedWakeWord() const {
 
 void MicroWakeWord::add_wake_word_model(const uint8_t *model_start, float probability_cutoff,
                                         size_t sliding_window_average_size, const std::string &wake_word,
-                                        size_t tensor_arena_size) {
-  this->wake_word_models_.push_back(
-      std::make_unique<WakeWordModel>(model_start, probability_cutoff, sliding_window_average_size, wake_word,
-                                       tensor_arena_size));
-  ESP_LOGI(TAG, "➕ Added wake word model: '%s' (threshold: %.3f, window: %u, arena: %u bytes)", 
-           wake_word.c_str(), probability_cutoff, (unsigned int)sliding_window_average_size, (unsigned int)tensor_arena_size);
+                                        size_t tensor_arena_size, const std::string &model_id,
+                                        bool always_enabled, bool initial_enabled) {
+  auto model = std::make_unique<WakeWordModel>(model_start, probability_cutoff, sliding_window_average_size, 
+                                                wake_word, tensor_arena_size, model_id);
+  model->set_always_enabled(always_enabled);
+  model->set_enabled(always_enabled ? true : initial_enabled);
+  
+  ESP_LOGI(TAG, "➕ Added wake word model: '%s' (id: %s, threshold: %.3f, window: %u, arena: %u bytes)", 
+           wake_word.c_str(), model->get_model_id().c_str(), probability_cutoff, 
+           (unsigned int)sliding_window_average_size, (unsigned int)tensor_arena_size);
+  ESP_LOGI(TAG, "   - enabled: %s, always_enabled: %s", 
+           model->is_enabled() ? "true" : "false",
+           model->is_always_enabled() ? "true" : "false");
+  
+  this->wake_word_models_.push_back(std::move(model));
+}
+
+std::vector<std::string> MicroWakeWord::get_model_ids() const {
+  std::vector<std::string> ids;
+  for (const auto &model : this->wake_word_models_) {
+    auto *ww_model = static_cast<WakeWordModel *>(model.get());
+    ids.push_back(ww_model->get_model_id());
+  }
+  return ids;
+}
+
+std::vector<MicroWakeWord::ModelInfo> MicroWakeWord::get_models_info() const {
+  std::vector<ModelInfo> infos;
+  for (const auto &model : this->wake_word_models_) {
+    auto *ww_model = static_cast<WakeWordModel *>(model.get());
+    ModelInfo info;
+    info.model_id = ww_model->get_model_id();
+    info.wake_word = ww_model->get_wake_word();
+    info.enabled = ww_model->is_enabled();
+    info.always_enabled = ww_model->is_always_enabled();
+    info.loaded = model->is_loaded();  // 真正检查模型是否加载
+    infos.push_back(info);
+  }
+  return infos;
+}
+
+bool MicroWakeWord::enable_model(const std::string &model_id) {
+  for (auto &model : this->wake_word_models_) {
+    auto *ww_model = static_cast<WakeWordModel *>(model.get());
+    if (ww_model->get_model_id() == model_id) {
+      if (ww_model->is_enabled()) {
+        ESP_LOGW(TAG, "Model '%s' is already enabled", model_id.c_str());
+        return true;
+      }
+      
+      // 真正的动态加载：如果模型未加载，则加载它
+      if (!model->is_loaded()) {
+        ESP_LOGI(TAG, "🔄 Dynamically loading model '%s'...", model_id.c_str());
+        if (!model->load_model(this->streaming_op_resolver_)) {
+          ESP_LOGE(TAG, "❌ Failed to load model '%s'", model_id.c_str());
+          return false;
+        }
+        model->reset_probabilities();
+        ESP_LOGI(TAG, "✅ Model '%s' loaded successfully", model_id.c_str());
+      }
+      
+      ww_model->set_enabled(true);
+      ESP_LOGI(TAG, "✅ Model '%s' enabled (loaded: %s)", 
+               model_id.c_str(), model->is_loaded() ? "yes" : "no");
+      
+      // 保存状态到 NVS
+      save_model_states_to_nvs();
+      return true;
+    }
+  }
+  ESP_LOGW(TAG, "Model '%s' not found", model_id.c_str());
+  return false;
+}
+
+bool MicroWakeWord::disable_model(const std::string &model_id) {
+  for (auto &model : this->wake_word_models_) {
+    auto *ww_model = static_cast<WakeWordModel *>(model.get());
+    if (ww_model->get_model_id() == model_id) {
+      if (ww_model->is_always_enabled()) {
+        ESP_LOGW(TAG, "Model '%s' is always enabled, cannot disable", model_id.c_str());
+        return false;
+      }
+      if (!ww_model->is_enabled()) {
+        ESP_LOGW(TAG, "Model '%s' is already disabled", model_id.c_str());
+        return true;
+      }
+      
+      ww_model->set_enabled(false);
+      
+      // 真正的动态卸载：释放模型占用的 PSRAM
+      if (model->is_loaded()) {
+        ESP_LOGI(TAG, "🔄 Dynamically unloading model '%s' to free PSRAM...", model_id.c_str());
+        model->unload_model();
+        ESP_LOGI(TAG, "✅ Model '%s' unloaded, PSRAM freed", model_id.c_str());
+      }
+      
+      ESP_LOGI(TAG, "✅ Model '%s' disabled", model_id.c_str());
+      
+      // 保存状态到 NVS
+      save_model_states_to_nvs();
+      return true;
+    }
+  }
+  ESP_LOGW(TAG, "Model '%s' not found", model_id.c_str());
+  return false;
+}
+
+bool MicroWakeWord::is_model_enabled(const std::string &model_id) const {
+  for (const auto &model : this->wake_word_models_) {
+    auto *ww_model = static_cast<WakeWordModel *>(model.get());
+    if (ww_model->get_model_id() == model_id) {
+      return ww_model->is_enabled();
+    }
+  }
+  return false;
+}
+
+size_t MicroWakeWord::get_enabled_model_count() const {
+  size_t count = 0;
+  for (const auto &model : this->wake_word_models_) {
+    auto *ww_model = static_cast<WakeWordModel *>(model.get());
+    if (ww_model->is_enabled()) {
+      count++;
+    }
+  }
+  return count;
 }
 
 void MicroWakeWord::set_state_(State state) {
@@ -418,6 +538,15 @@ void MicroWakeWord::deallocate_buffers_() {
     this->ring_buffer_ = nullptr;
     this->ring_buffer_size_ = 0;
   }
+
+  if (wake_word_encode_task_stack_) {
+    heap_caps_free(wake_word_encode_task_stack_);
+    wake_word_encode_task_stack_ = nullptr;
+  }
+  if (wake_word_encode_task_buffer_) {
+    heap_caps_free(wake_word_encode_task_buffer_);
+    wake_word_encode_task_buffer_ = nullptr;
+  }
   
   ring_buffer_read_pos_ = 0;
   ring_buffer_write_pos_ = 0;
@@ -425,7 +554,12 @@ void MicroWakeWord::deallocate_buffers_() {
 }
 
 bool MicroWakeWord::load_models_() {
-  ESP_LOGI(TAG, "🔧 Loading %u wake word models...", (unsigned int)wake_word_models_.size());
+  size_t total_models = wake_word_models_.size();
+  size_t enabled_models = get_enabled_model_count();
+  
+  ESP_LOGI(TAG, "🔧 Loading wake word models (only enabled ones for PSRAM efficiency)");
+  ESP_LOGI(TAG, "   Total registered: %u, Enabled: %u", 
+           (unsigned int)total_models, (unsigned int)enabled_models);
   
   // Setup preprocessor feature generator
   ESP_LOGI(TAG, "Initializing audio frontend (sample rate: %d Hz)...", AUDIO_SAMPLE_FREQUENCY);
@@ -436,20 +570,40 @@ bool MicroWakeWord::load_models_() {
   }
   ESP_LOGI(TAG, "✅ Audio frontend initialized");
 
-  // Setup streaming models
+  // 真正的动态加载：只加载启用的模型，节省 PSRAM
   int model_idx = 0;
+  int loaded_count = 0;
+  int skipped_count = 0;
+  
   for (auto &model : this->wake_word_models_) {
     model_idx++;
-    ESP_LOGI(TAG, "Loading model #%d: '%s'...", model_idx, model->get_wake_word().c_str());
-    if (!model->load_model(this->streaming_op_resolver_)) {
-      ESP_LOGE(TAG, "❌ Failed to initialize wake word model '%s'", model->get_wake_word().c_str());
-      return false;
+    auto *ww_model = static_cast<WakeWordModel *>(model.get());
+    const char* always = ww_model->is_always_enabled() ? " (always)" : "";
+    
+    if (ww_model->is_enabled()) {
+      // 只加载启用的模型
+      ESP_LOGI(TAG, "📦 Loading model #%d: '%s' [enabled%s]...", 
+               model_idx, ww_model->get_wake_word().c_str(), always);
+      if (!model->load_model(this->streaming_op_resolver_)) {
+        ESP_LOGE(TAG, "❌ Failed to initialize wake word model '%s'", ww_model->get_wake_word().c_str());
+        return false;
+      }
+      model->log_model_config();
+      ESP_LOGI(TAG, "✅ Model '%s' loaded successfully", ww_model->get_wake_word().c_str());
+      loaded_count++;
+    } else {
+      // 禁用的模型不加载，节省 PSRAM
+      ESP_LOGI(TAG, "⏭️  Skipping model #%d: '%s' [disabled] - PSRAM saved (~26KB)", 
+               model_idx, ww_model->get_wake_word().c_str());
+      skipped_count++;
     }
-    model->log_model_config();
-    ESP_LOGI(TAG, "✅ Model '%s' loaded successfully", model->get_wake_word().c_str());
   }
 
-  ESP_LOGI(TAG, "✅ All %d models loaded successfully", model_idx);
+  ESP_LOGI(TAG, "═══════════════════════════════════════════════════");
+  ESP_LOGI(TAG, "✅ Model loading complete:");
+  ESP_LOGI(TAG, "   - Loaded: %d models (~%d KB PSRAM used)", loaded_count, loaded_count * 26);
+  ESP_LOGI(TAG, "   - Skipped: %d models (~%d KB PSRAM saved)", skipped_count, skipped_count * 26);
+  ESP_LOGI(TAG, "═══════════════════════════════════════════════════");
   return true;
 }
 
@@ -464,21 +618,10 @@ void MicroWakeWord::unload_models_() {
 }
 
 void MicroWakeWord::update_model_probabilities_() {
-  static uint32_t update_count = 0;
-  update_count++;
-  
   int8_t audio_features[PREPROCESSOR_FEATURE_SIZE];
 
   if (!this->generate_features_for_window_(audio_features)) {
-    if (update_count % 50 == 0) {
-      ESP_LOGI(TAG, "Update #%lu: Failed to generate features (not enough samples)", update_count);
-    }
     return;
-  }
-
-  if (update_count % 100 == 0) {
-    ESP_LOGI(TAG, "Update #%lu: Generated features, performing inference on %u models", 
-             update_count, (unsigned)wake_word_models_.size());
   }
 
   // Increase the counter since the last positive detection
@@ -486,47 +629,46 @@ void MicroWakeWord::update_model_probabilities_() {
 
   for (size_t i = 0; i < this->wake_word_models_.size(); i++) {
     auto &model = this->wake_word_models_[i];
+    auto *ww_model = static_cast<WakeWordModel *>(model.get());
+    
+    // Skip disabled or unloaded models
+    if (!ww_model->is_enabled() || !model->is_loaded()) {
+      continue;
+    }
+    
     // Perform inference
-    // 【注意】只给第一个模型传递 recorder，避免多模型概率交织
-    // 如果需要测试其他模型，调整模型加载顺序即可
-    InferenceTestRecorder* recorder = (i == 0) ? test_recorder_.get() : nullptr;
-    model->perform_streaming_inference(audio_features, recorder);
+    model->perform_streaming_inference(audio_features);
     
     float prob = model->get_sliding_window_average();
     
-    // 打印模型输出
-    if (update_count % 100 == 0) {
-      // 定期打印
-      ESP_LOGI(TAG, "  Model '%s': probability %.3f (threshold: %.3f)", 
-               model->get_wake_word().c_str(), prob, model->get_probability_cutoff());
-    } else if (prob > 0.10) {
-      // 🎯 有显著输出时立即打印（降低噪音，只打印 > 0.10 的）
-      ESP_LOGI(TAG, "  🎯 Model '%s': probability %.3f (threshold: %.3f) [说话时]", 
-               model->get_wake_word().c_str(), prob, model->get_probability_cutoff());
+    // 只在接近阈值时打印（prob > 0.3 表示可能正在说唤醒词）
+    if (prob > 0.30) {
+      ESP_LOGI(TAG, "🎯 Model '%s': probability %.3f (threshold: %.3f)", 
+               ww_model->get_wake_word().c_str(), prob, model->get_probability_cutoff());
     }
   }
 }
 
 bool MicroWakeWord::detect_wake_words_() {
-  static uint32_t detect_count = 0;
-  detect_count++;
-  
   // Verify we have processed samples since the last positive detection
   if (this->ignore_windows_ < 0) {
-    if (detect_count % 100 == 0) {
-      ESP_LOGI(TAG, "Detect #%lu: Still in ignore period (%d windows remaining)", 
-               detect_count, -this->ignore_windows_);
-    }
     return false;
   }
 
   for (size_t i = 0; i < this->wake_word_models_.size(); i++) {
     auto &model = this->wake_word_models_[i];
+    auto *ww_model = static_cast<WakeWordModel *>(model.get());
+    
+    // Skip disabled or unloaded models
+    if (!ww_model->is_enabled() || !model->is_loaded()) {
+      continue;
+    }
+    
     if (model->determine_detected()) {
-      this->detected_wake_word_ = model->get_wake_word();
-      this->detected_probability_ = model->get_sliding_window_average();  // 存储检测概率
+      this->detected_wake_word_ = ww_model->get_wake_word();
+      float prob = model->get_sliding_window_average();
       ESP_LOGI(TAG, "🎉 Model '%s' detected! (probability: %.3f, threshold: %.3f)", 
-               this->detected_wake_word_.c_str(), this->detected_probability_, model->get_probability_cutoff());
+               this->detected_wake_word_.c_str(), prob, model->get_probability_cutoff());
       return true;
     }
   }
@@ -536,43 +678,19 @@ bool MicroWakeWord::detect_wake_words_() {
 
 bool MicroWakeWord::generate_features_for_window_(int8_t features[PREPROCESSOR_FEATURE_SIZE]) {
   // ✅ ESPHome implementation - directly ported for compatibility
-  static uint32_t feature_count = 0;
-  feature_count++;
-  
   // Ensure we have enough new audio samples in the ring buffer for a full window
   if (!this->has_enough_samples_()) {
-    if (feature_count % 100 == 0) {
-      ESP_LOGI(TAG, "Feature #%lu: Not enough samples (available: %u, needed: %u)", 
-               feature_count, (unsigned)ring_buffer_available_, (unsigned)this->new_samples_to_get_());
-    }
     return false;
   }
 
   size_t samples_read = this->read_from_ring_buffer_(this->preprocessor_audio_buffer_, this->new_samples_to_get_());
 
   if (samples_read < this->new_samples_to_get_()) {
-    ESP_LOGW(TAG, "Feature #%lu: Partial read of data: got %u samples, needed %u", 
-             feature_count, (unsigned)samples_read, (unsigned)this->new_samples_to_get_());
+    ESP_LOGW(TAG, "Partial read of data: got %u samples, needed %u", 
+             (unsigned)samples_read, (unsigned)this->new_samples_to_get_());
     return false;
   }
 
-  // 🔍 Diagnostic logging (kept for debugging)
-  if (feature_count % 100 == 0) {
-    int32_t input_sum = 0;
-    int16_t input_max = 0, input_min = 32767;
-    int input_zero_count = 0;
-    for (size_t i = 0; i < this->new_samples_to_get_(); ++i) {
-      int16_t sample = this->preprocessor_audio_buffer_[i];
-      input_sum += abs(sample);
-      if (sample == 0) input_zero_count++;
-      if (abs(sample) > input_max) input_max = abs(sample);
-      if (abs(sample) < abs(input_min)) input_min = sample;
-    }
-    int16_t input_avg = this->new_samples_to_get_() > 0 ? input_sum / this->new_samples_to_get_() : 0;
-    ESP_LOGI(TAG, "  🎤 Input to Frontend (count #%u): size=%u, avg=%d, min=%d, max=%d, zeros=%d/%u", 
-             feature_count, (unsigned)this->new_samples_to_get_(), 
-             input_avg, input_min, input_max, input_zero_count, (unsigned)this->new_samples_to_get_());
-  }
 
   // ===== ESPHome Frontend Processing =====
   size_t num_samples_read = 0;
@@ -580,26 +698,6 @@ bool MicroWakeWord::generate_features_for_window_(int8_t features[PREPROCESSOR_F
       FrontendProcessSamples(&this->frontend_state_, this->preprocessor_audio_buffer_, this->new_samples_to_get_(),
                              &num_samples_read);
 
-  // Diagnostic logging
-  if (feature_count % 100 == 0) {
-    int64_t raw_sum = 0;
-    int16_t raw_max = 0, raw_min = 32767;
-    int zero_count = 0;
-    
-    for (size_t i = 0; i < frontend_output.size; ++i) {
-      int16_t raw_val = frontend_output.values[i];
-      raw_sum += raw_val;
-      if (raw_val == 0) zero_count++;
-      if (raw_val > raw_max) raw_max = raw_val;
-      if (raw_val < raw_min) raw_min = raw_val;
-    }
-    int16_t raw_avg = frontend_output.size > 0 ? raw_sum / frontend_output.size : 0;
-    
-    ESP_LOGI(TAG, "Feature #%lu: Frontend processed %u samples, output: %u", 
-             feature_count, (unsigned)num_samples_read, (unsigned)frontend_output.size);
-    ESP_LOGI(TAG, "  🎛️  Raw frontend values: avg=%d, min=%d, max=%d, zero_count=%d/40", 
-             raw_avg, raw_min, raw_max, zero_count);
-  }
 
   // ===== ESPHome Feature Scaling (exact copy) =====
   for (size_t i = 0; i < frontend_output.size; ++i) {
@@ -625,20 +723,6 @@ bool MicroWakeWord::generate_features_for_window_(int8_t features[PREPROCESSOR_F
     features[i] = static_cast<int8_t>(std::clamp<int32_t>(value, INT8_MIN, INT8_MAX));
   }
 
-  // Additional diagnostic
-  if (feature_count % 100 == 0) {
-    int32_t feature_sum = 0;
-    int8_t feature_max = INT8_MIN, feature_min = INT8_MAX;
-    for (size_t i = 0; i < frontend_output.size; ++i) {
-      feature_sum += features[i];
-      if (features[i] > feature_max) feature_max = features[i];
-      if (features[i] < feature_min) feature_min = features[i];
-    }
-    int8_t feature_avg = frontend_output.size > 0 ? feature_sum / frontend_output.size : 0;
-    ESP_LOGI(TAG, "  📊 Scaled features: avg=%d, min=%d, max=%d", 
-             feature_avg, feature_min, feature_max);
-  }
-
   return true;
 }
 
@@ -656,7 +740,10 @@ void MicroWakeWord::reset_states_() {
   }
   
   wake_word_pcm_.clear();
-  wake_word_opus_.clear();
+  {
+      std::lock_guard<std::mutex> lock(wake_word_mutex_);
+      wake_word_opus_.clear();
+  }
 }
 
 bool MicroWakeWord::register_streaming_ops_(tflite::MicroMutableOpResolver<20> &op_resolver) {
@@ -702,6 +789,134 @@ bool MicroWakeWord::register_streaming_ops_(tflite::MicroMutableOpResolver<20> &
     return false;
 
   ESP_LOGI(TAG, "Successfully registered all TFLite streaming operations");
+  return true;
+}
+
+bool MicroWakeWord::save_model_states_to_nvs() {
+  ESP_LOGI(TAG, "💾 Saving model states to NVS...");
+  
+  nvs_handle_t nvs_handle;
+  esp_err_t err = nvs_open(MWW_NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "❌ Failed to open NVS: %s", esp_err_to_name(err));
+    return false;
+  }
+  
+  // 构建简单的状态字符串：model_id:enabled,model_id:enabled,...
+  // 只保存非 always_enabled 的模型状态
+  std::string states_str;
+  int saved_count = 0;
+  
+  for (const auto &model : this->wake_word_models_) {
+    auto *ww_model = static_cast<WakeWordModel *>(model.get());
+    
+    // 跳过 always_enabled 的模型（它们总是启用）
+    if (ww_model->is_always_enabled()) {
+      continue;
+    }
+    
+    if (!states_str.empty()) {
+      states_str += ",";
+    }
+    states_str += ww_model->get_model_id();
+    states_str += ":";
+    states_str += ww_model->is_enabled() ? "1" : "0";
+    saved_count++;
+  }
+  
+  err = nvs_set_str(nvs_handle, MWW_NVS_KEY, states_str.c_str());
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "❌ Failed to write to NVS: %s", esp_err_to_name(err));
+    nvs_close(nvs_handle);
+    return false;
+  }
+  
+  err = nvs_commit(nvs_handle);
+  nvs_close(nvs_handle);
+  
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "❌ Failed to commit NVS: %s", esp_err_to_name(err));
+    return false;
+  }
+  
+  ESP_LOGI(TAG, "✅ Saved %d model states to NVS: %s", saved_count, states_str.c_str());
+  return true;
+}
+
+bool MicroWakeWord::load_model_states_from_nvs() {
+  ESP_LOGI(TAG, "📖 Loading model states from NVS...");
+  
+  nvs_handle_t nvs_handle;
+  esp_err_t err = nvs_open(MWW_NVS_NAMESPACE, NVS_READONLY, &nvs_handle);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "⚠️  NVS not found (first boot?): %s", esp_err_to_name(err));
+    return false;
+  }
+  
+  // 获取字符串长度
+  size_t required_size = 0;
+  err = nvs_get_str(nvs_handle, MWW_NVS_KEY, nullptr, &required_size);
+  if (err != ESP_OK || required_size == 0) {
+    ESP_LOGW(TAG, "⚠️  No saved model states found");
+    nvs_close(nvs_handle);
+    return false;
+  }
+  
+  // 读取字符串
+  char* states_str = (char*)malloc(required_size);
+  if (!states_str) {
+    ESP_LOGE(TAG, "❌ Failed to allocate memory");
+    nvs_close(nvs_handle);
+    return false;
+  }
+  
+  err = nvs_get_str(nvs_handle, MWW_NVS_KEY, states_str, &required_size);
+  nvs_close(nvs_handle);
+  
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "❌ Failed to read from NVS: %s", esp_err_to_name(err));
+    free(states_str);
+    return false;
+  }
+  
+  ESP_LOGI(TAG, "📜 Loaded states: %s", states_str);
+  
+  // 解析状态字符串：model_id:enabled,model_id:enabled,...
+  std::string str(states_str);
+  free(states_str);
+  
+  int restored_count = 0;
+  size_t pos = 0;
+  while (pos < str.length()) {
+    // 找到下一个逗号或字符串结尾
+    size_t comma_pos = str.find(',', pos);
+    if (comma_pos == std::string::npos) {
+      comma_pos = str.length();
+    }
+    
+    std::string item = str.substr(pos, comma_pos - pos);
+    size_t colon_pos = item.find(':');
+    
+    if (colon_pos != std::string::npos) {
+      std::string model_id = item.substr(0, colon_pos);
+      bool enabled = (item.substr(colon_pos + 1) == "1");
+      
+      // 应用状态到模型
+      for (auto &model : this->wake_word_models_) {
+        auto *ww_model = static_cast<WakeWordModel *>(model.get());
+        if (ww_model->get_model_id() == model_id && !ww_model->is_always_enabled()) {
+          ww_model->set_enabled(enabled);
+          ESP_LOGI(TAG, "   ✅ Restored '%s' -> %s", model_id.c_str(), enabled ? "enabled" : "disabled");
+          restored_count++;
+          break;
+        }
+      }
+    }
+    
+    pos = comma_pos + 1;
+  }
+  
+  ESP_LOGI(TAG, "✅ Restored %d model states from NVS", restored_count);
   return true;
 }
 

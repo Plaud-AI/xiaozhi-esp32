@@ -4,11 +4,17 @@
 #define TAG "OpusEncoderWrapper"
 
 OpusEncoderWrapper::OpusEncoderWrapper(int sample_rate, int channels, int duration_ms)
-    : sample_rate_(sample_rate), duration_ms_(duration_ms) {
+    : sample_rate_(sample_rate), duration_ms_(duration_ms), frame_size_(0) {
     int error;
+    
+    // 先计算 frame_size_（即使创建失败也需要有效值）
+    frame_size_ = sample_rate / 1000 * channels * duration_ms;
+    
     audio_enc_ = opus_encoder_create(sample_rate, channels, OPUS_APPLICATION_VOIP, &error);
     if (audio_enc_ == nullptr) {
-        ESP_LOGE(TAG, "Failed to create audio encoder, error code: %d", error);
+        ESP_LOGE(TAG, "❌ Failed to create audio encoder, error code: %d", error);
+        ESP_LOGE(TAG, "   Sample rate: %d, Channels: %d, Duration: %d ms", 
+                 sample_rate, channels, duration_ms);
         return;
     }
 
@@ -16,8 +22,9 @@ OpusEncoderWrapper::OpusEncoderWrapper(int sample_rate, int channels, int durati
     SetDtx(true);
     // Complexity 5 almost uses up all CPU of ESP32C3 while complexity 0 uses the least
     SetComplexity(0);
-
-    frame_size_ = sample_rate / 1000 * channels * duration_ms;
+    
+    ESP_LOGI(TAG, "✅ OPUS encoder created (sample_rate=%d, channels=%d, frame_size=%d)", 
+             sample_rate, channels, frame_size_);
 }
 
 OpusEncoderWrapper::~OpusEncoderWrapper() {

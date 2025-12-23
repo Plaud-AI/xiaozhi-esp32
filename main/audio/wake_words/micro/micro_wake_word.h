@@ -4,8 +4,6 @@
 #include "streaming_model.h"
 #include "preprocessor_settings.h"
 #include "helpers.h"
-#include "inference_test_recorder.h"
-#include "inference_test_uploader.h"
 
 #include "tensorflow/lite/experimental/microfrontend/lib/frontend_util.h"
 #include <tensorflow/lite/core/c/common.h>
@@ -13,9 +11,14 @@
 #include <tensorflow/lite/micro/micro_mutable_op_resolver.h>
 
 #include <vector>
+#include <deque>
 #include <memory>
 #include <functional>
 #include <string>
+#include <mutex>
+#include <condition_variable>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 namespace micro_wake_word {
 
@@ -44,17 +47,50 @@ class MicroWakeWord : public WakeWord {
   void EncodeWakeWordData() override;
   bool GetWakeWordOpus(std::vector<uint8_t> &opus) override;
   const std::string &GetLastDetectedWakeWord() const override;
-  float GetLastDetectedProbability() const { return detected_probability_; }  // 获取最后检测到的概率
 
   // Configuration methods
   void set_features_step_size(uint8_t step_size) { this->features_step_size_ = step_size; }
 
   void add_wake_word_model(const uint8_t *model_start, float probability_cutoff,
                            size_t sliding_window_average_size, const std::string &wake_word,
-                           size_t tensor_arena_size);
+                           size_t tensor_arena_size, const std::string &model_id = "",
+                           bool always_enabled = false, bool initial_enabled = true);
 
-  // Inference test mode access
-  InferenceTestRecorder* GetTestRecorder() { return test_recorder_.get(); }
+  // Runtime model control methods
+  /// @brief Get list of all registered model IDs
+  std::vector<std::string> get_model_ids() const;
+  
+  /// @brief Get model info (id, wake_word, enabled, always_enabled)
+  struct ModelInfo {
+    std::string model_id;
+    std::string wake_word;
+    bool enabled;
+    bool always_enabled;
+    bool loaded;
+  };
+  std::vector<ModelInfo> get_models_info() const;
+  
+  /// @brief Enable a model by ID
+  /// @return true if successful, false if model not found or is always_enabled
+  bool enable_model(const std::string &model_id);
+  
+  /// @brief Disable a model by ID
+  /// @return true if successful, false if model not found or is always_enabled
+  bool disable_model(const std::string &model_id);
+  
+  /// @brief Check if a model is enabled
+  bool is_model_enabled(const std::string &model_id) const;
+  
+  /// @brief Get count of enabled models
+  size_t get_enabled_model_count() const;
+  
+  /// @brief Save model enabled states to NVS
+  /// @return true if successful
+  bool save_model_states_to_nvs();
+  
+  /// @brief Load model enabled states from NVS
+  /// @return true if successful (states were loaded)
+  bool load_model_states_from_nvs();
 
  protected:
   AudioCodec *codec_{nullptr};
@@ -87,16 +123,18 @@ class MicroWakeWord : public WakeWord {
 
   bool detected_{false};
   std::string detected_wake_word_{""};
-  float detected_probability_{0.0f};  // 最后检测到的概率
   std::function<void(const std::string &)> detection_callback_;
 
   // Wake word recording for OPUS encoding
   std::vector<int16_t> wake_word_pcm_;
-  std::vector<uint8_t> wake_word_opus_;
+  std::deque<std::vector<uint8_t>> wake_word_opus_;
 
-  // Inference test mode (for comparing device vs server inference)
-  std::unique_ptr<InferenceTestRecorder> test_recorder_;
-  std::unique_ptr<InferenceTestUploader> test_uploader_;
+  // Async encoding task members
+  std::mutex wake_word_mutex_;
+  std::condition_variable wake_word_cv_;
+  TaskHandle_t wake_word_encode_task_ = nullptr;
+  StackType_t* wake_word_encode_task_stack_ = nullptr;
+  StaticTask_t* wake_word_encode_task_buffer_ = nullptr;
 
   void set_state_(State state);
 

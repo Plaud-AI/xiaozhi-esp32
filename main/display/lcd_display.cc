@@ -75,15 +75,18 @@ LcdDisplay::LcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_
     current_theme_ = LvglThemeManager::GetInstance().GetTheme(theme_name);
 
     // Create a timer to hide the preview image
+    // ⚠️ CRITICAL: skip_unhandled_events = true 防止定时器回调堆积
     esp_timer_create_args_t preview_timer_args = {
         .callback = [](void* arg) {
             LcdDisplay* display = static_cast<LcdDisplay*>(arg);
-            display->SetPreviewImage(nullptr);
+            if (display) {
+                display->SetPreviewImage(nullptr);
+            }
         },
         .arg = this,
         .dispatch_method = ESP_TIMER_TASK,
         .name = "preview_timer",
-        .skip_unhandled_events = false,
+        .skip_unhandled_events = true,  // ⚠️ 跳过未处理的事件
     };
     esp_timer_create(&preview_timer_args, &preview_timer_);
 }
@@ -119,10 +122,8 @@ SpiLcdDisplay::SpiLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_h
 
     ESP_LOGI(TAG, "Initialize LVGL port");
     lvgl_port_cfg_t port_cfg = ESP_LVGL_PORT_INIT_CONFIG();
-    port_cfg.task_priority = 1;
-#if CONFIG_SOC_CPU_CORES_NUM > 1
-    port_cfg.task_affinity = 1;
-#endif
+    // 优化任务调度：优先级 3，不固定 CPU
+    port_cfg.task_priority = 3;
     lvgl_port_init(&port_cfg);
 
     ESP_LOGI(TAG, "Adding LCD display");
@@ -182,7 +183,8 @@ RgbLcdDisplay::RgbLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_h
 
     ESP_LOGI(TAG, "Initialize LVGL port");
     lvgl_port_cfg_t port_cfg = ESP_LVGL_PORT_INIT_CONFIG();
-    port_cfg.task_priority = 1;
+    // 优化任务调度：优先级 3，不固定 CPU
+    port_cfg.task_priority = 3;
     port_cfg.timer_period_ms = 50;
     lvgl_port_init(&port_cfg);
 

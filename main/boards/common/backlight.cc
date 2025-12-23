@@ -82,10 +82,11 @@ void Backlight::OnTransitionTimer() {
 }
 
 PwmBacklight::PwmBacklight(gpio_num_t pin, bool output_invert, uint32_t freq_hz) : Backlight() {
+    // 使用 LEDC_TIMER_2 和 LEDC_CHANNEL_4
     const ledc_timer_config_t backlight_timer = {
         .speed_mode = LEDC_LOW_SPEED_MODE,
         .duty_resolution = LEDC_TIMER_10_BIT,
-        .timer_num = LEDC_TIMER_0,
+        .timer_num = LEDC_TIMER_2,  // 使用 Timer 2 避免冲突
         .freq_hz = freq_hz, //背光pwm频率需要高一点，防止电感啸叫
         .clk_cfg = LEDC_AUTO_CLK,
         .deconfigure = false
@@ -96,9 +97,9 @@ PwmBacklight::PwmBacklight(gpio_num_t pin, bool output_invert, uint32_t freq_hz)
     const ledc_channel_config_t backlight_channel = {
         .gpio_num = pin,
         .speed_mode = LEDC_LOW_SPEED_MODE,
-        .channel = LEDC_CHANNEL_0,
+        .channel = LEDC_CHANNEL_4,  // 使用 Channel 4 避免冲突
         .intr_type = LEDC_INTR_DISABLE,
-        .timer_sel = LEDC_TIMER_0,
+        .timer_sel = LEDC_TIMER_2,  // 绑定到 Timer 2
         .duty = 0,
         .hpoint = 0,
         .flags = {
@@ -109,13 +110,13 @@ PwmBacklight::PwmBacklight(gpio_num_t pin, bool output_invert, uint32_t freq_hz)
 }
 
 PwmBacklight::~PwmBacklight() {
-    ledc_stop(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
+    ledc_stop(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4, 0);
 }
 
 void PwmBacklight::SetBrightnessImpl(uint8_t brightness) {
     // LEDC resolution set to 10bits, thus: 100% = 1023
     uint32_t duty_cycle = (1023 * brightness) / 100;
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty_cycle);
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4, duty_cycle);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4);
 }
 

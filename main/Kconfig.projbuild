@@ -1,22 +1,8 @@
 menu "Xiaozhi Assistant"
 
-config ENABLE_DOLL_INTERACTION
-    bool "Enable Doll Interaction Features"
-    default n
-    help
-        Enable hand-figure/doll interaction features including:
-        - NFC reader support
-        - Pressure sensor for doll detection
-        - Touch sensor support
-        - Motor controller for motions
-        - Motion engine and template system
-        
-        This feature is experimental and requires additional hardware.
-        If you don't have the hardware, keep this disabled.
-
 config OTA_URL
     string "Default OTA URL"
-    default "http://34.221.190.98:8002/xiaozhi/ota/"
+    default "http://18.143.177.88:8003/xiaozhi/ota/"
     help
         The application will access this URL to check for new firmwares and server address.
 
@@ -128,6 +114,9 @@ choice BOARD_TYPE
         depends on IDF_TARGET_ESP32C3
     config BOARD_TYPE_ESP32S3_KORVO2_V3
         bool "ESP32S3 KORVO2 V3"
+        depends on IDF_TARGET_ESP32S3
+    config BOARD_TYPE_ESP32S3_BLEHD_V1
+        bool "ESP32S3 BLEHD V1 (自定义板)"
         depends on IDF_TARGET_ESP32S3
     config BOARD_TYPE_ESP32_SPEAKER_S3_CLASSIC
         bool "ESP32 Speaker S3 Classic"
@@ -509,6 +498,18 @@ choice DISPLAY_ESP32S3_KORVO2_V3
         bool "ILI9341 240*320"
 endchoice
 
+choice DISPLAY_ESP32S3_BLEHD_V1
+    depends on BOARD_TYPE_ESP32S3_BLEHD_V1
+    prompt "ESP32S3_BLEHD_V1 LCD Type"
+    default ESP32S3_BLEHD_V1_LCD_ST7789
+    help
+        LCD Display Type
+    config ESP32S3_BLEHD_V1_LCD_ST7789
+        bool "ST7789 240*280"
+    config ESP32S3_BLEHD_V1_LCD_ILI9341
+        bool "ILI9341 240*320"
+endchoice
+
 choice DISPLAY_ESP32S3_AUDIO_BOARD
     depends on BOARD_TYPE_ESP32S3_AUDIO_BOARD
     prompt "ESP32S3_AUDIO_BOARD LCD Type"
@@ -647,6 +648,16 @@ config MICRO_WAKE_WORD_TENSOR_ARENA_SIZE
         Increase if model loading fails. Uses PSRAM preferentially.
         Minimum 10000 bytes, recommended 20000-23000 bytes.
         Default: 20000 (20KB)
+
+# Note: Micro Wake Word models are now runtime configurable via BLE commands.
+# All models are compiled into firmware and can be enabled/disabled at runtime.
+# 
+# Available models:
+#   - okay_nabu (always enabled, cannot be disabled)
+#   - hey_hellokitty
+#   - hey_ironman
+#   - hey_luigi
+#   - hey_stitch
 
 config SEND_WAKE_WORD_DATA
     bool "Send Wake Word Data"

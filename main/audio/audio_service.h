@@ -90,7 +90,6 @@ public:
     void EncodeWakeWord();
     std::unique_ptr<AudioStreamPacket> PopWakeWordPacket();
     const std::string& GetLastWakeWord() const;
-    float GetLastWakeWordProbability() const;  // 获取最后检测到的唤醒词概率
     bool IsVoiceDetected() const { return voice_detected_; }
     bool IsIdle();
     bool IsWakeWordRunning() const { return xEventGroupGetBits(event_group_) & AS_EVENT_WAKE_WORD_RUNNING; }
@@ -151,6 +150,14 @@ private:
     esp_timer_handle_t audio_power_timer_ = nullptr;
     std::chrono::steady_clock::time_point last_input_time_;
     std::chrono::steady_clock::time_point last_output_time_;
+
+    // PSRAM Stack buffers for tasks
+    StackType_t* audio_input_task_stack_ = nullptr;
+    StaticTask_t* audio_input_task_buffer_ = nullptr;
+    StackType_t* audio_output_task_stack_ = nullptr;
+    StaticTask_t* audio_output_task_buffer_ = nullptr;
+    StackType_t* opus_codec_task_stack_ = nullptr;
+    StaticTask_t* opus_codec_task_buffer_ = nullptr;
 
     void AudioInputTask();
     void AudioOutputTask();

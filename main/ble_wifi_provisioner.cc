@@ -1,22 +1,29 @@
 #include "ble_wifi_provisioner.h"
 #include "bluetooth_service.h"
+#include "boards/common/board.h"
 #include "system_info.h"
 #include "settings.h"
 #include "clear_wifi_helper.h"
 #include "wake_word_manager.h"
 #include "application.h"
+#include "ota.h"
+#include "display/display.h"
+#include "assets/lang_config.h"
+#include "audio/audio_codec.h"
 
 #include <esp_log.h>
 #include <esp_wifi.h>
 #include <esp_system.h>
 #include <esp_mac.h>
 #include <esp_app_desc.h>
+#include <nvs_flash.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
 #include <cJSON.h>
 #include <wifi_station.h>
 #include <ssid_manager.h>
+#include <http.h>
 
 #define TAG "BLEWiFiProvisioner"
 
@@ -115,6 +122,21 @@ bool BLEWiFiProvisioner::Start() {
         return false;
     }
 
+    // 🔧 关键修复：禁用 WiFi 省电模式以防止 BLE/WiFi 共存冲突 (rwble.c 508 assert)
+    // 当 WiFi 进入睡眠 (pm_go_to_sleep) 而 BLE 需要射频时，可能会导致控制器崩溃
+    wifi_mode_t mode;
+    if (esp_wifi_get_mode(&mode) == ESP_OK) {
+        ESP_LOGW(TAG, "⚠️  禁用 WiFi 省电模式以保证 BLE 稳定性...");
+        esp_err_t err = esp_wifi_set_ps(WIFI_PS_NONE);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "无法禁用 WiFi 省电模式: %s", esp_err_to_name(err));
+        } else {
+            ESP_LOGI(TAG, "✅ WiFi 省电模式已禁用");
+            // 给一点时间让 PS 状态切换生效
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+    }
+
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════");
     ESP_LOGI(TAG, "║ 🚀 启动 BLE WiFi Provisioner");
@@ -123,6 +145,9 @@ bool BLEWiFiProvisioner::Start() {
     ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════");
 
     auto& ble_service = BluetoothService::GetInstance();
+    
+    // 允许自动重启广播（IDLE 状态下 BLE 可用）
+    ble_service.SetAdvertisingEnabled(true);
     
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "🔄 正在启动 BLE 广播...");
@@ -170,10 +195,34 @@ bool BLEWiFiProvisioner::Start() {
 }
 
 void BLEWiFiProvisioner::Stop() {
+    // 检查是否正在运行，避免重复停止
+    if (!is_provisioning_) {
+        ESP_LOGD(TAG, "BLE WiFi Provisioner 已经停止，跳过");
+        return;
+    }
+
     ESP_LOGI(TAG, "停止 BLE WiFi Provisioner");
     
     auto& ble_service = BluetoothService::GetInstance();
+    
+    // ====== 关键：禁止自动重启广播 ======
+    // 语音交互期间 BLE 必须完全关闭，不能自动重启
+    ble_service.SetAdvertisingEnabled(false);
+    
+    // ====== 断开已有的 BLE 连接 ======
+    // 语音交互期间需要完全释放 BLE 资源，避免与 WiFi/UDP 冲突
+    if (ble_service.IsConnected()) {
+        ESP_LOGI(TAG, "🔌 断开当前 BLE 连接（进入语音交互状态）");
+        ble_service.Disconnect();
+        vTaskDelay(pdMS_TO_TICKS(100));  // 等待断开完成
+    }
+    
     ble_service.StopAdvertising();
+    
+    // ⚠️ 不再在这里恢复 WiFi 省电模式
+    // WiFi Power Save 的控制权交给调用者 (WifiBoard::StartNetwork)
+    // 之前这里启用 WIFI_PS_MIN_MODEM 会与后续的 SetPowerSaveMode(false) 冲突，
+    // 并且可能导致 WiFi/BLE 共存定时器问题 (StoreProhibited in timer_insert)
     
     is_provisioning_ = false;
     ESP_LOGI(TAG, "✓ BLE WiFi Provisioner 已停止");
@@ -378,6 +427,37 @@ void BLEWiFiProvisioner::HandleReceivedData(const std::string& data) {
     else if (cmd == "reset_wake_words") {
         ESP_LOGI(TAG, "➜ 执行: 重置唤醒词命令");
         HandleResetWakeWordsCommand();
+    }
+    else if (cmd == "set_ota_url") {
+        ESP_LOGI(TAG, "➜ 执行: 设置 OTA URL 命令");
+        HandleSetOtaUrlCommand(root);
+    }
+    else if (cmd == "get_ota_url") {
+        ESP_LOGI(TAG, "➜ 执行: 获取 OTA URL 命令");
+        HandleGetOtaUrlCommand();
+    }
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 新增指令（v2.1）
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    else if (cmd == "set_wake_word_enabled") {
+        ESP_LOGI(TAG, "➜ 执行: 设置语音唤醒开关命令");
+        HandleSetWakeWordEnabledCommand(root);
+    }
+    else if (cmd == "set_volume") {
+        ESP_LOGI(TAG, "➜ 执行: 设置音量命令");
+        HandleSetVolumeCommand(root);
+    }
+    else if (cmd == "check_firmware_update") {
+        ESP_LOGI(TAG, "➜ 执行: 检查固件更新命令");
+        HandleCheckFirmwareUpdateCommand();
+    }
+    else if (cmd == "reset_device") {
+        ESP_LOGI(TAG, "➜ 执行: 重置设备命令");
+        HandleResetDeviceCommand();
+    }
+    else if (cmd == "unbind_device") {
+        ESP_LOGI(TAG, "➜ 执行: 解绑设备命令");
+        HandleUnbindDeviceCommand();
     }
     else {
         ESP_LOGW(TAG, "⚠️  未知命令: %s", cmd.c_str());
@@ -1100,6 +1180,7 @@ std::string BLEWiFiProvisioner::BuildScanResultJson() {
 std::string BLEWiFiProvisioner::BuildDeviceInfoJson() {
     ESP_LOGI(TAG, "构建设备信息JSON");
 
+    auto& board = Board::GetInstance();
     auto& ble_service = BluetoothService::GetInstance();
     auto app_desc = esp_app_get_description();
 
@@ -1108,17 +1189,32 @@ std::string BLEWiFiProvisioner::BuildDeviceInfoJson() {
     cJSON_AddStringToObject(root, "status", "success");
 
     cJSON* data = cJSON_CreateObject();
+    
+    // 设备唯一标识（基于 eFuse MAC，永不变化）
+    cJSON_AddStringToObject(data, "device_id", board.GetDeviceId().c_str());
+    
     cJSON_AddStringToObject(data, "device_name", ble_service.GetDeviceName().c_str());
+    cJSON_AddStringToObject(data, "board_type", BOARD_NAME);
     cJSON_AddStringToObject(data, "firmware_version", app_desc->version);
-    cJSON_AddStringToObject(data, "hardware_version", SystemInfo::GetChipModelName().c_str());
-    cJSON_AddStringToObject(data, "mac_address", ble_service.GetMacAddress().c_str());
+    cJSON_AddStringToObject(data, "chip_model", SystemInfo::GetChipModelName().c_str());
+    cJSON_AddStringToObject(data, "mac_wifi", SystemInfo::GetMacAddress().c_str());
+    cJSON_AddStringToObject(data, "mac_ble", ble_service.GetMacAddress().c_str());
     cJSON_AddNumberToObject(data, "free_heap", esp_get_free_heap_size());
     
-    uint32_t chip_id = 0;
-    esp_efuse_mac_get_default((uint8_t*)&chip_id);
-    char chip_id_str[16];
-    snprintf(chip_id_str, sizeof(chip_id_str), "0x%08lX", (unsigned long)chip_id);
-    cJSON_AddStringToObject(data, "chip_id", chip_id_str);
+    // 新增：音量信息
+    auto codec = board.GetAudioCodec();
+    int volume = codec->output_volume();
+    cJSON_AddNumberToObject(data, "volume", volume);
+    
+    // 新增：语音唤醒开关状态
+    bool wake_word_enabled = true;  // 默认开启
+    try {
+        Settings settings("audio", false);
+        wake_word_enabled = settings.GetInt("wake_word_enabled", 1) != 0;
+    } catch (...) {
+        // 读取失败，使用默认值
+    }
+    cJSON_AddBoolToObject(data, "wake_word_enabled", wake_word_enabled);
 
     cJSON_AddItemToObject(root, "data", data);
 
@@ -1129,11 +1225,15 @@ std::string BLEWiFiProvisioner::BuildDeviceInfoJson() {
         free(json_str);
         
         ESP_LOGI(TAG, "设备信息:");
+        ESP_LOGI(TAG, "  Device ID: %s", board.GetDeviceId().c_str());
         ESP_LOGI(TAG, "  名称: %s", ble_service.GetDeviceName().c_str());
+        ESP_LOGI(TAG, "  板型: %s", BOARD_NAME);
         ESP_LOGI(TAG, "  固件版本: %s", app_desc->version);
-        ESP_LOGI(TAG, "  硬件版本: %s", SystemInfo::GetChipModelName().c_str());
-        ESP_LOGI(TAG, "  MAC地址: %s", ble_service.GetMacAddress().c_str());
-        ESP_LOGI(TAG, "  空闲堆: %lu bytes", (unsigned long)esp_get_free_heap_size());
+        ESP_LOGI(TAG, "  芯片型号: %s", SystemInfo::GetChipModelName().c_str());
+        ESP_LOGI(TAG, "  WiFi MAC: %s", SystemInfo::GetMacAddress().c_str());
+        ESP_LOGI(TAG, "  BLE MAC: %s", ble_service.GetMacAddress().c_str());
+        ESP_LOGI(TAG, "  音量: %d", volume);
+        ESP_LOGI(TAG, "  唤醒开关: %s", wake_word_enabled ? "开启" : "关闭");
     }
     cJSON_Delete(root);
 
@@ -1578,6 +1678,465 @@ void BLEWiFiProvisioner::HandleResetWakeWordsCommand() {
     } else {
         ESP_LOGE(TAG, "❌ 唤醒词重置失败");
         SendErrorResponse("reset_wake_words", -3, "NVS存储失败");
+    }
+    
+    ESP_LOGI(TAG, "========================================");
+}
+
+void BLEWiFiProvisioner::HandleSetOtaUrlCommand(cJSON* root) {
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "设置 OTA URL");
+    
+    // 从 JSON 中提取 URL
+    cJSON* data_item = cJSON_GetObjectItem(root, "data");
+    if (!data_item || !cJSON_IsObject(data_item)) {
+        ESP_LOGE(TAG, "❌ data字段缺失或格式错误");
+        SendErrorResponse("set_ota_url", ERROR_JSON_PARSE_FAILED, "data字段缺失");
+        ESP_LOGI(TAG, "========================================");
+        return;
+    }
+    
+    cJSON* url_item = cJSON_GetObjectItem(data_item, "url");
+    if (!url_item || !cJSON_IsString(url_item)) {
+        ESP_LOGE(TAG, "❌ url字段缺失或格式错误");
+        SendErrorResponse("set_ota_url", ERROR_JSON_PARSE_FAILED, "url字段缺失");
+        ESP_LOGI(TAG, "========================================");
+        return;
+    }
+    
+    std::string url = url_item->valuestring;
+    ESP_LOGI(TAG, "新的 OTA URL: %s", url.c_str());
+    
+    // 基本验证：检查 URL 格式
+    if (url.empty() || (url.find("http://") != 0 && url.find("https://") != 0)) {
+        ESP_LOGE(TAG, "❌ 无效的 URL 格式");
+        SendErrorResponse("set_ota_url", ERROR_JSON_PARSE_FAILED, "URL格式无效，必须以http://或https://开头");
+        ESP_LOGI(TAG, "========================================");
+        return;
+    }
+    
+    // 保存到 NVS
+    try {
+        Settings settings("system", true);
+        settings.SetString("ota_url", url);
+        
+        ESP_LOGI(TAG, "✓ OTA URL 已保存到 NVS");
+        
+        // 构建成功响应
+        cJSON* response = cJSON_CreateObject();
+        cJSON_AddStringToObject(response, "cmd", "set_ota_url");
+        cJSON_AddStringToObject(response, "status", "success");
+        
+        cJSON* response_data = cJSON_CreateObject();
+        cJSON_AddStringToObject(response_data, "message", "OTA URL设置成功");
+        cJSON_AddStringToObject(response_data, "url", url.c_str());
+        cJSON_AddItemToObject(response, "data", response_data);
+        
+        char* json_str = cJSON_PrintUnformatted(response);
+        SendResponse(std::string(json_str));
+        free(json_str);
+        cJSON_Delete(response);
+        
+    } catch (const std::exception& e) {
+        ESP_LOGE(TAG, "❌ 保存 OTA URL 失败: %s", e.what());
+        SendErrorResponse("set_ota_url", ERROR_STORAGE_WRITE_FAILED, "NVS存储失败");
+    }
+    
+    ESP_LOGI(TAG, "========================================");
+}
+
+void BLEWiFiProvisioner::HandleGetOtaUrlCommand() {
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "获取 OTA URL");
+    
+    std::string custom_url;
+    std::string default_url = CONFIG_OTA_URL;
+    bool has_custom = false;
+    
+    // 尝试从 NVS 读取自定义 URL
+    try {
+        Settings settings("system", false);
+        custom_url = settings.GetString("ota_url", "");
+        if (!custom_url.empty()) {
+            has_custom = true;
+            ESP_LOGI(TAG, "✓ 找到自定义 OTA URL: %s", custom_url.c_str());
+        } else {
+            ESP_LOGI(TAG, "ℹ️  使用默认 OTA URL: %s", default_url.c_str());
+        }
+    } catch (const std::exception& e) {
+        ESP_LOGW(TAG, "⚠️  读取自定义 OTA URL 失败: %s，使用默认值", e.what());
+    }
+    
+    // 构建响应
+    cJSON* response = cJSON_CreateObject();
+    cJSON_AddStringToObject(response, "cmd", "get_ota_url");
+    cJSON_AddStringToObject(response, "status", "success");
+    
+    cJSON* response_data = cJSON_CreateObject();
+    cJSON_AddStringToObject(response_data, "default_url", default_url.c_str());
+    cJSON_AddStringToObject(response_data, "current_url", has_custom ? custom_url.c_str() : default_url.c_str());
+    cJSON_AddBoolToObject(response_data, "is_custom", has_custom);
+    cJSON_AddItemToObject(response, "data", response_data);
+    
+    char* json_str = cJSON_PrintUnformatted(response);
+    SendResponse(std::string(json_str));
+    free(json_str);
+    cJSON_Delete(response);
+    
+    ESP_LOGI(TAG, "========================================");
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 新增指令实现（v2.1）
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+void BLEWiFiProvisioner::HandleSetWakeWordEnabledCommand(cJSON* root) {
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "🎤 设置语音唤醒开关");
+    ESP_LOGI(TAG, "========================================");
+    
+    cJSON* data_item = cJSON_GetObjectItem(root, "data");
+    if (!data_item || !cJSON_IsObject(data_item)) {
+        ESP_LOGE(TAG, "❌ data 字段缺失或格式错误");
+        SendErrorResponse("set_wake_word_enabled", ERROR_JSON_PARSE_FAILED, "data字段缺失");
+        return;
+    }
+    
+    cJSON* enabled_item = cJSON_GetObjectItem(data_item, "enabled");
+    if (!enabled_item || !cJSON_IsBool(enabled_item)) {
+        ESP_LOGE(TAG, "❌ enabled 字段缺失或格式错误");
+        SendErrorResponse("set_wake_word_enabled", ERROR_JSON_PARSE_FAILED, "enabled字段缺失");
+        return;
+    }
+    
+    bool enabled = cJSON_IsTrue(enabled_item);
+    ESP_LOGI(TAG, "目标状态: %s", enabled ? "开启" : "关闭");
+    
+    // 保存到 NVS（持久化，重启后生效）
+    try {
+        Settings settings("audio", true);
+        settings.SetInt("wake_word_enabled", enabled ? 1 : 0);
+        ESP_LOGI(TAG, "✓ 唤醒开关状态已保存到 NVS（重启后生效）");
+        
+        // 立即应用设置
+        auto& app = Application::GetInstance();
+        auto current_state = app.GetDeviceState();
+        
+        if (enabled) {
+            // 开启唤醒：只有在 IDLE 状态才立即启用
+            if (current_state == kDeviceStateIdle) {
+                app.GetAudioService().EnableWakeWordDetection(true);
+                ESP_LOGI(TAG, "✓ 唤醒词检测已立即启用");
+            } else {
+                ESP_LOGI(TAG, "ℹ️  当前状态非 IDLE，唤醒词将在设备进入空闲状态后启用");
+            }
+        } else {
+            // 关闭唤醒：无论什么状态都立即禁用
+            app.GetAudioService().EnableWakeWordDetection(false);
+            ESP_LOGI(TAG, "✓ 唤醒词检测已立即禁用");
+            ESP_LOGI(TAG, "ℹ️  设备将不再响应唤醒词，需要通过 App 或按钮触发对话");
+        }
+        
+        // 构建成功响应
+        cJSON* response = cJSON_CreateObject();
+        cJSON_AddStringToObject(response, "cmd", "set_wake_word_enabled");
+        cJSON_AddStringToObject(response, "status", "success");
+        
+        cJSON* response_data = cJSON_CreateObject();
+        cJSON_AddStringToObject(response_data, "message", enabled ? "语音唤醒已开启" : "语音唤醒已关闭");
+        cJSON_AddBoolToObject(response_data, "enabled", enabled);
+        cJSON_AddBoolToObject(response_data, "persistent", true);  // 表示设置已持久化
+        cJSON_AddItemToObject(response, "data", response_data);
+        
+        char* json_str = cJSON_PrintUnformatted(response);
+        SendResponse(std::string(json_str));
+        free(json_str);
+        cJSON_Delete(response);
+        
+    } catch (const std::exception& e) {
+        ESP_LOGE(TAG, "❌ 保存唤醒开关状态失败: %s", e.what());
+        SendErrorResponse("set_wake_word_enabled", ERROR_STORAGE_WRITE_FAILED, "NVS存储失败");
+    }
+    
+    ESP_LOGI(TAG, "========================================");
+}
+
+void BLEWiFiProvisioner::HandleSetVolumeCommand(cJSON* root) {
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "🔊 设置音量");
+    ESP_LOGI(TAG, "========================================");
+    
+    cJSON* data_item = cJSON_GetObjectItem(root, "data");
+    if (!data_item || !cJSON_IsObject(data_item)) {
+        ESP_LOGE(TAG, "❌ data 字段缺失或格式错误");
+        SendErrorResponse("set_volume", ERROR_JSON_PARSE_FAILED, "data字段缺失");
+        return;
+    }
+    
+    cJSON* volume_item = cJSON_GetObjectItem(data_item, "volume");
+    if (!volume_item || !cJSON_IsNumber(volume_item)) {
+        ESP_LOGE(TAG, "❌ volume 字段缺失或格式错误");
+        SendErrorResponse("set_volume", ERROR_JSON_PARSE_FAILED, "volume字段缺失");
+        return;
+    }
+    
+    int volume = volume_item->valueint;
+    
+    // 验证范围
+    if (volume < 0 || volume > 100) {
+        ESP_LOGE(TAG, "❌ 音量值超出范围: %d (有效范围: 0-100)", volume);
+        SendErrorResponse("set_volume", ERROR_JSON_PARSE_FAILED, "音量值必须在0-100之间");
+        return;
+    }
+    
+    ESP_LOGI(TAG, "目标音量: %d", volume);
+    
+    // 设置音量（AudioCodec 内部会保存到 NVS）
+    auto& board = Board::GetInstance();
+    auto codec = board.GetAudioCodec();
+    int old_volume = codec->output_volume();
+    codec->SetOutputVolume(volume);
+    
+    ESP_LOGI(TAG, "✓ 音量设置成功: %d -> %d", old_volume, volume);
+    
+    // 显示通知
+    board.GetDisplay()->ShowNotification(Lang::Strings::VOLUME + std::to_string(volume));
+    
+    // 构建成功响应
+    cJSON* response = cJSON_CreateObject();
+    cJSON_AddStringToObject(response, "cmd", "set_volume");
+    cJSON_AddStringToObject(response, "status", "success");
+    
+    cJSON* response_data = cJSON_CreateObject();
+    cJSON_AddStringToObject(response_data, "message", "音量设置成功");
+    cJSON_AddNumberToObject(response_data, "volume", volume);
+    cJSON_AddNumberToObject(response_data, "previous_volume", old_volume);
+    cJSON_AddItemToObject(response, "data", response_data);
+    
+    char* json_str = cJSON_PrintUnformatted(response);
+    SendResponse(std::string(json_str));
+    free(json_str);
+    cJSON_Delete(response);
+    
+    ESP_LOGI(TAG, "========================================");
+}
+
+void BLEWiFiProvisioner::HandleCheckFirmwareUpdateCommand() {
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "🔄 检查固件更新");
+    ESP_LOGI(TAG, "========================================");
+    
+    // 先发送响应告知正在检查
+    cJSON* checking_response = cJSON_CreateObject();
+    cJSON_AddStringToObject(checking_response, "cmd", "check_firmware_update");
+    cJSON_AddStringToObject(checking_response, "status", "checking");
+    cJSON_AddStringToObject(checking_response, "message", "正在检查固件更新...");
+    
+    char* checking_json = cJSON_PrintUnformatted(checking_response);
+    SendResponse(std::string(checking_json));
+    free(checking_json);
+    cJSON_Delete(checking_response);
+    
+    // 创建 OTA 对象并检查版本
+    Ota ota;
+    bool check_success = ota.CheckVersion();
+    
+    if (!check_success) {
+        ESP_LOGE(TAG, "❌ 检查版本失败");
+        SendErrorResponse("check_firmware_update", ERROR_UNKNOWN, "无法连接到OTA服务器");
+        ESP_LOGI(TAG, "========================================");
+        return;
+    }
+    
+    if (ota.HasNewVersion()) {
+        ESP_LOGI(TAG, "✅ 发现新版本: %s", ota.GetFirmwareVersion().c_str());
+        ESP_LOGI(TAG, "当前版本: %s", ota.GetCurrentVersion().c_str());
+        
+        // 发送发现新版本的响应
+        cJSON* found_response = cJSON_CreateObject();
+        cJSON_AddStringToObject(found_response, "cmd", "check_firmware_update");
+        cJSON_AddStringToObject(found_response, "status", "found");
+        cJSON_AddStringToObject(found_response, "message", "发现新版本，正在升级...");
+        
+        cJSON* found_data = cJSON_CreateObject();
+        cJSON_AddStringToObject(found_data, "current_version", ota.GetCurrentVersion().c_str());
+        cJSON_AddStringToObject(found_data, "new_version", ota.GetFirmwareVersion().c_str());
+        cJSON_AddItemToObject(found_response, "data", found_data);
+        
+        char* found_json = cJSON_PrintUnformatted(found_response);
+        SendResponse(std::string(found_json));
+        free(found_json);
+        cJSON_Delete(found_response);
+        
+        // 执行升级
+        ESP_LOGI(TAG, "🚀 开始固件升级...");
+        Application::GetInstance().UpgradeFirmware(ota);
+        // 注意：如果升级成功，设备会重启，不会执行到这里
+        // 如果执行到这里，说明升级失败
+        SendErrorResponse("check_firmware_update", ERROR_UNKNOWN, "固件升级失败");
+    } else {
+        ESP_LOGI(TAG, "ℹ️  当前已是最新版本: %s", ota.GetCurrentVersion().c_str());
+        
+        // 构建已是最新版本的响应
+        cJSON* response = cJSON_CreateObject();
+        cJSON_AddStringToObject(response, "cmd", "check_firmware_update");
+        cJSON_AddStringToObject(response, "status", "success");
+        cJSON_AddStringToObject(response, "message", "当前已是最新版本");
+        
+        cJSON* response_data = cJSON_CreateObject();
+        cJSON_AddStringToObject(response_data, "current_version", ota.GetCurrentVersion().c_str());
+        cJSON_AddBoolToObject(response_data, "has_update", false);
+        cJSON_AddItemToObject(response, "data", response_data);
+        
+        char* json_str = cJSON_PrintUnformatted(response);
+        SendResponse(std::string(json_str));
+        free(json_str);
+        cJSON_Delete(response);
+    }
+    
+    ESP_LOGI(TAG, "========================================");
+}
+
+void BLEWiFiProvisioner::HandleResetDeviceCommand() {
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "🔄 重置设备");
+    ESP_LOGI(TAG, "========================================");
+    
+    // 先发送响应
+    cJSON* response = cJSON_CreateObject();
+    cJSON_AddStringToObject(response, "cmd", "reset_device");
+    cJSON_AddStringToObject(response, "status", "success");
+    cJSON_AddStringToObject(response, "message", "设备将重置所有配置并重启");
+    
+    char* json_str = cJSON_PrintUnformatted(response);
+    SendResponse(std::string(json_str));
+    free(json_str);
+    cJSON_Delete(response);
+    
+    // 等待响应发送完成
+    vTaskDelay(pdMS_TO_TICKS(500));
+    
+    ESP_LOGI(TAG, "🗑️  清除所有 NVS 配置...");
+    
+    // 清除 NVS Flash（所有配置：WiFi、唤醒词、音量等）
+    esp_err_t ret = nvs_flash_erase();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "❌ 清除 NVS 失败: %s", esp_err_to_name(ret));
+    } else {
+        ESP_LOGI(TAG, "✓ NVS 已清除");
+    }
+    
+    // 重新初始化 NVS
+    ret = nvs_flash_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "❌ 重新初始化 NVS 失败: %s", esp_err_to_name(ret));
+    }
+    
+    ESP_LOGI(TAG, "🔄 设备将在 1 秒后重启...");
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    
+    // 重启设备
+    esp_restart();
+}
+
+void BLEWiFiProvisioner::HandleUnbindDeviceCommand() {
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "🔓 解绑设备");
+    ESP_LOGI(TAG, "========================================");
+    
+    auto& board = Board::GetInstance();
+    std::string device_id = board.GetDeviceId();
+    
+    ESP_LOGI(TAG, "设备 ID: %s", device_id.c_str());
+    
+    // 构建解绑 API URL
+    // API: DELETE /api/live_agent/v1/devices/{device_id}
+    std::string base_url = CONFIG_OTA_URL;
+    
+    // 从 OTA URL 提取服务器地址
+    // OTA URL 格式类似: http://server:port/ota
+    // 我们需要: http://server:port/api/live_agent/v1/devices/{device_id}
+    size_t protocol_end = base_url.find("://");
+    if (protocol_end == std::string::npos) {
+        ESP_LOGE(TAG, "❌ 无效的 OTA URL 格式");
+        SendErrorResponse("unbind_device", ERROR_UNKNOWN, "无效的服务器地址配置");
+        return;
+    }
+    
+    // 找到端口后的第一个 /
+    size_t path_start = base_url.find('/', protocol_end + 3);
+    std::string server_base;
+    if (path_start != std::string::npos) {
+        server_base = base_url.substr(0, path_start);
+    } else {
+        server_base = base_url;
+    }
+    
+    std::string unbind_url = server_base + "/api/live_agent/v1/devices/" + device_id;
+    ESP_LOGI(TAG, "解绑 URL: %s", unbind_url.c_str());
+    
+    // 创建 HTTP 客户端
+    auto network = board.GetNetwork();
+    auto http = network->CreateHttp(0);
+    
+    // 设置请求头
+    http->SetHeader("Content-Type", "application/json");
+    http->SetHeader("Device-Id", device_id);
+    http->SetHeader("Client-Id", device_id);
+    http->SetHeader("User-Agent", SystemInfo::GetUserAgent());
+    
+    // 发送 DELETE 请求
+    ESP_LOGI(TAG, "📤 发送解绑请求...");
+    if (!http->Open("DELETE", unbind_url)) {
+        ESP_LOGE(TAG, "❌ 无法连接到服务器");
+        SendErrorResponse("unbind_device", ERROR_UNKNOWN, "无法连接到服务器");
+        return;
+    }
+    
+    int status_code = http->GetStatusCode();
+    ESP_LOGI(TAG, "响应状态码: %d", status_code);
+    
+    std::string response_body = http->ReadAll();
+    ESP_LOGI(TAG, "响应内容: %s", response_body.c_str());
+    http->Close();
+    
+    if (status_code == 200 || status_code == 204 || status_code == 404) {
+        // 200/204: 解绑成功
+        // 404: 设备不存在（可能已经解绑或从未绑定），也视为成功
+        ESP_LOGI(TAG, "✅ 解绑成功");
+        
+        // 构建成功响应
+        cJSON* response = cJSON_CreateObject();
+        cJSON_AddStringToObject(response, "cmd", "unbind_device");
+        cJSON_AddStringToObject(response, "status", "success");
+        cJSON_AddStringToObject(response, "message", "设备解绑成功");
+        
+        cJSON* response_data = cJSON_CreateObject();
+        cJSON_AddStringToObject(response_data, "device_id", device_id.c_str());
+        cJSON_AddItemToObject(response, "data", response_data);
+        
+        char* json_str = cJSON_PrintUnformatted(response);
+        SendResponse(std::string(json_str));
+        free(json_str);
+        cJSON_Delete(response);
+        
+        // 解绑后进入 IDLE 状态
+        ESP_LOGI(TAG, "🔄 进入 IDLE 状态...");
+        Application::GetInstance().SetDeviceState(kDeviceStateIdle);
+        
+    } else {
+        ESP_LOGE(TAG, "❌ 解绑失败，状态码: %d", status_code);
+        
+        std::string error_msg = "解绑失败";
+        if (status_code == 401) {
+            error_msg = "认证失败";
+        } else if (status_code == 403) {
+            error_msg = "权限不足";
+        } else if (status_code >= 500) {
+            error_msg = "服务器错误";
+        }
+        
+        SendErrorResponse("unbind_device", status_code, error_msg);
     }
     
     ESP_LOGI(TAG, "========================================");

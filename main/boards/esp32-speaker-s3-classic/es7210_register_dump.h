@@ -196,3 +196,4 @@ private:
 
 #endif // _ES7210_REGISTER_DUMP_H_
 
+

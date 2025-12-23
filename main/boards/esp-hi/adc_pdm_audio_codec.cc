@@ -120,7 +120,8 @@ AdcPdmAudioCodec::AdcPdmAudioCodec(int input_sample_rate, int output_sample_rate
         .callback = &AdcPdmAudioCodec::OutputTimerCallback,
         .arg = this,
         .dispatch_method = ESP_TIMER_TASK,
-        .name = "output_timer"
+        .name = "output_timer",
+        .skip_unhandled_events = true,  // ⚠️ 防止定时器回调堆积
     };
     ESP_ERROR_CHECK(esp_timer_create(&output_timer_args, &output_timer_));
 

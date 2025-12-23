@@ -14,9 +14,20 @@ set(SOURCES "audio/audio_codec.cc"
             "led/gpio_led.cc"
             "display/display.cc"
             "display/lcd_display.cc"
+            "display/lcd_emotion_display.cc"
             "display/oled_display.cc"
             "display/lvgl_display/lvgl_display.cc"
             "display/emote_display.cc"
+            "display/lottie_animation.cc"
+            "display/animation_manager.cc"
+            "display/emotion_animation_manager.cc"
+            "display/emotion_display.cc"
+            "display/emotion_display_factory.cc"
+            "display/emotion_state_manager.cc"
+            "display/emotion_animation_mapper.cc"
+            "display/device_state_mapper.cc"
+            "display/device_animation_mapper.cc"
+            "display/emotion_coordinator.cc"
             "display/lvgl_display/emoji_collection.cc"
             "display/lvgl_display/lvgl_theme.cc"
             "display/lvgl_display/lvgl_font.cc"
@@ -25,6 +36,11 @@ set(SOURCES "audio/audio_codec.cc"
             "display/lvgl_display/gif/gifdec.c"
             "display/lvgl_display/jpg/image_to_jpeg.cpp"
             "display/lvgl_display/jpg/jpeg_encoder.cpp"
+            "display/aaf_animation_resource_manager.cc"
+            "display/animation_state_manager.cc"
+            "display/aaf_animation_player.cc"
+            "display/aaf_display_widget.cc"
+            "display/emotion_mapper.cc"
             "protocols/protocol.cc"
             "protocols/mqtt_protocol.cc"
             "protocols/websocket_protocol.cc"
@@ -39,39 +55,19 @@ set(SOURCES "audio/audio_codec.cc"
             "device_state_event.cc"
             "assets.cc"
             "main.cc"
+            "psram_allocator.cc"
+            "hardware/servo_driver.cc"
+            "hardware/nfc_driver.cc"
+            "hardware/cs_press_driver.cc"
+            "hardware/ws2812_driver.cc"
             )
 
-set(INCLUDE_DIRS "." "display" "display/lvgl_display" "display/lvgl_display/jpg" "audio" "audio/wake_words" "protocols")
+set(INCLUDE_DIRS "." "display" "display/lvgl_display" "display/lvgl_display/jpg" "audio" "audio/wake_words" "protocols" "hardware")
 
 # Add board common files
 file(GLOB BOARD_COMMON_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/boards/common/*.cc)
 list(APPEND SOURCES ${BOARD_COMMON_SOURCES})
 list(APPEND INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/boards/common)
-
-# Add doll interaction modules if enabled
-if(CONFIG_ENABLE_DOLL_INTERACTION)
-    list(APPEND SOURCES
-        "doll/doll_service.cc"
-        "doll/nfc_reader.cc"
-        "doll/pressure_sensor.cc"
-        "doll/touch_sensor.cc"
-        "doll/doll_interaction_manager.cc"
-        "doll/doll_mcp_tools.cc"
-        "motor/motor_controller.cc"
-        "motor/motor.cc"
-        "motion/motion_engine.cc"
-        "template/template_manager.cc"
-        "template/template_parser.cc"
-        "template/template_executor.cc"
-    )
-    list(APPEND INCLUDE_DIRS
-        ${CMAKE_CURRENT_SOURCE_DIR}/doll
-        ${CMAKE_CURRENT_SOURCE_DIR}/motor
-        ${CMAKE_CURRENT_SOURCE_DIR}/motion
-        ${CMAKE_CURRENT_SOURCE_DIR}/template
-    )
-    message(STATUS "Doll interaction features enabled")
-endif()
 
 idf_build_get_property(build_components BUILD_COMPONENTS)
 # Function to find component dynamically by pattern
@@ -223,6 +219,11 @@ elseif(CONFIG_BOARD_TYPE_XMINI_C3)
     set(BUILTIN_ICON_FONT font_awesome_14_1)
 elseif(CONFIG_BOARD_TYPE_ESP32S3_KORVO2_V3)
     set(BOARD_TYPE "esp32s3-korvo2-v3")
+    set(BUILTIN_TEXT_FONT font_puhui_basic_20_4)
+    set(BUILTIN_ICON_FONT font_awesome_20_4)
+    set(DEFAULT_EMOJI_COLLECTION twemoji_64)
+elseif(CONFIG_BOARD_TYPE_ESP32S3_BLEHD_V1)
+    set(BOARD_TYPE "esp32s3-blehd-v1")
     set(BUILTIN_TEXT_FONT font_puhui_basic_20_4)
     set(BUILTIN_ICON_FONT font_awesome_20_4)
     set(DEFAULT_EMOJI_COLLECTION twemoji_64)
@@ -549,6 +550,9 @@ file(GLOB BOARD_SOURCES
 )
 list(APPEND SOURCES ${BOARD_SOURCES})
 
+# Add board directory to INCLUDE_DIRS so config.h can be found by hardware drivers
+list(APPEND INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/boards/${BOARD_TYPE})
+
 # Select audio processor according to Kconfig
 if(CONFIG_USE_AUDIO_PROCESSOR)
     list(APPEND SOURCES "audio/processors/afe_audio_processor.cc")
@@ -568,8 +572,6 @@ if(CONFIG_IDF_TARGET_ESP32S3 OR CONFIG_IDF_TARGET_ESP32P4)
     if(CONFIG_USE_MICRO_WAKE_WORD)
         list(APPEND SOURCES "audio/wake_words/micro/streaming_model.cc")
         list(APPEND SOURCES "audio/wake_words/micro/micro_wake_word.cc")
-        list(APPEND SOURCES "audio/wake_words/micro/inference_test_recorder.cc")
-        list(APPEND SOURCES "audio/wake_words/micro/inference_test_uploader.cc")
         list(APPEND INCLUDE_DIRS "audio/wake_words/micro")
         message(STATUS "Micro Wake Word enabled - TFLite Micro streaming detection")
     endif()
@@ -642,7 +644,7 @@ endif()
 idf_component_register(SRCS ${SOURCES}
                     EMBED_FILES ${LANG_SOUNDS} ${COMMON_SOUNDS}
                     INCLUDE_DIRS ${INCLUDE_DIRS}
-                    REQUIRES spi_flash esp_psram esp_app_format app_update efuse bootloader_support esp-opus-encoder nvs_flash esp-wifi-connect esp_micro_speech_features esp_http_client
+                    REQUIRES spi_flash esp_psram esp_app_format app_update efuse bootloader_support esp-opus-encoder nvs_flash esp-wifi-connect esp_micro_speech_features
                     PRIV_REQUIRES bt esp-tflite-micro
                     WHOLE_ARCHIVE
                     )
@@ -723,6 +725,13 @@ endforeach()
 
 endif()
 
+# ============================================================================
+# 🎨 Lottie 动画资源配置
+# ============================================================================
+# 设置额外资源目录（包含 Lottie 动画）
+# assets_source/anim/ 目录中的动画文件会自动打包到 assets 分区
+set(DEFAULT_ASSETS_EXTRA_FILES "${PROJECT_DIR}/assets_source")
+message(STATUS "🎭 Lottie animations will be included from: ${DEFAULT_ASSETS_EXTRA_FILES}/anim/")
 
 # Function to build default assets based on configuration
 function(build_default_assets_bin)
@@ -753,6 +762,15 @@ function(build_default_assets_bin)
     list(APPEND BUILD_ARGS "--esp_sr_model_path" "${ESP_SR_MODEL_PATH}")
     list(APPEND BUILD_ARGS "--xiaozhi_fonts_path" "${XIAOZHI_FONTS_PATH}")
     
+    # Collect Lottie animation files as dependencies (JSON)
+    file(GLOB ANIMATION_FILES "${PROJECT_DIR}/assets_source/anim/*.json")
+    
+    # Ensure CMake re-runs if animation files are added/removed
+    # This forces reconfiguration when the directory content changes
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS 
+        "${PROJECT_DIR}/assets_source/anim"
+    )
+
     # Create custom command to build assets
     add_custom_command(
         OUTPUT ${GENERATED_ASSETS_BIN}
@@ -760,6 +778,7 @@ function(build_default_assets_bin)
         DEPENDS
             ${SDKCONFIG}
             ${PROJECT_DIR}/scripts/build_default_assets.py
+            ${ANIMATION_FILES}
         COMMENT "Building default assets.bin based on configuration"
         VERBATIM
     )
@@ -852,3 +871,7 @@ if ("${size}" AND "${offset}")
 else()
     message(STATUS "Assets partition not found, using v1 partition table")
 endif()
+
+# 禁用 LVGL/ThorVG 的格式警告（第三方库兼容性问题）
+idf_component_get_property(lvgl_lib lvgl__lvgl COMPONENT_LIB)
+target_compile_options(${lvgl_lib} PRIVATE -Wno-error=format)

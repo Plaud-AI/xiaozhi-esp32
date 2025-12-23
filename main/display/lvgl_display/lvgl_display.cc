@@ -17,17 +17,23 @@
 
 LvglDisplay::LvglDisplay() {
     // Notification timer
+    // ⚠️ CRITICAL: skip_unhandled_events = true 防止快速连续调用 ShowNotification 时
+    // 定时器回调队列堆积，避免潜在的定时器链表问题
     esp_timer_create_args_t notification_timer_args = {
         .callback = [](void *arg) {
             LvglDisplay *display = static_cast<LvglDisplay*>(arg);
             DisplayLockGuard lock(display);
-            lv_obj_add_flag(display->notification_label_, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_remove_flag(display->status_label_, LV_OBJ_FLAG_HIDDEN);
+            if (display->notification_label_) {
+                lv_obj_add_flag(display->notification_label_, LV_OBJ_FLAG_HIDDEN);
+            }
+            if (display->status_label_) {
+                lv_obj_remove_flag(display->status_label_, LV_OBJ_FLAG_HIDDEN);
+            }
         },
         .arg = this,
         .dispatch_method = ESP_TIMER_TASK,
         .name = "notification_timer",
-        .skip_unhandled_events = false,
+        .skip_unhandled_events = true,  // ⚠️ 跳过未处理的事件，防止回调堆积
     };
     ESP_ERROR_CHECK(esp_timer_create(&notification_timer_args, &notification_timer_));
 

@@ -11,14 +11,7 @@
 #include "settings.h"
 #include "wake_word_manager.h"
 #include "audio/wake_words/custom_wake_word.h"
-
-#include <cmath>  // For M_PI and sinf
-
-#ifdef CONFIG_ENABLE_DOLL_INTERACTION
-#include "doll/doll_interaction_manager.h"
-#include "doll/doll_mcp_tools.h"
-#include "motor/motor_controller.h"
-#endif
+#include "display/device_animation_mapper.h"
 
 #include <cstring>
 #include <esp_log.h>
@@ -254,66 +247,6 @@ void Application::ShowActivationCode(const std::string& code, const std::string&
     }
 }
 
-/**
- * @brief 播报概率数字（使用内置数字音频）
- * @param probability 概率值（0.0-1.0），例如 0.567
- * 
- * 将概率转换为数字字符串并逐个播放，例如：
- * - 0.567 → "0567" → 读作 "零五六七"
- * - 0.523 → "0523" → 读作 "零五二三"
- */
-void Application::SpeakProbability(float probability) {
-    // 确保音频输出已启用
-    auto codec = Board::GetInstance().GetAudioCodec();
-    if (!codec->output_enabled()) {
-        ESP_LOGI(TAG, "🔊 Enabling audio output for digit playback...");
-        codec->EnableOutput(true);
-        vTaskDelay(pdMS_TO_TICKS(100));  // 等待音频输出稳定
-    }
-    
-    // 定义数字到音频的映射
-    struct digit_sound {
-        char digit;
-        const std::string_view& sound;
-    };
-    static const std::array<digit_sound, 10> digit_sounds{{
-        digit_sound{'0', Lang::Sounds::OGG_0},
-        digit_sound{'1', Lang::Sounds::OGG_1}, 
-        digit_sound{'2', Lang::Sounds::OGG_2},
-        digit_sound{'3', Lang::Sounds::OGG_3},
-        digit_sound{'4', Lang::Sounds::OGG_4},
-        digit_sound{'5', Lang::Sounds::OGG_5},
-        digit_sound{'6', Lang::Sounds::OGG_6},
-        digit_sound{'7', Lang::Sounds::OGG_7},
-        digit_sound{'8', Lang::Sounds::OGG_8},
-        digit_sound{'9', Lang::Sounds::OGG_9}
-    }};
-    
-    // 将概率转换为 4 位数字字符串（去掉小数点）
-    // 例如：0.567 → "0567"，0.523 → "0523"
-    int prob_int = (int)(probability * 1000);  // 0.567 → 567
-    char prob_str[5];
-    snprintf(prob_str, sizeof(prob_str), "%04d", prob_int);  // → "0567"
-    
-    ESP_LOGI(TAG, "📢 Reading digits: %s (from probability %.3f)", prob_str, probability);
-    
-    // 逐个播放数字
-    for (size_t i = 0; i < strlen(prob_str); i++) {
-        char digit = prob_str[i];
-        auto it = std::find_if(digit_sounds.begin(), digit_sounds.end(),
-            [digit](const digit_sound& ds) { return ds.digit == digit; });
-        if (it != digit_sounds.end()) {
-            ESP_LOGI(TAG, "   Reading digit: %c", digit);
-            audio_service_.PlaySound(it->sound);
-            // 等待当前数字播放完成后再播放下一个
-            // 数字音频通常 ~500ms，加上缓冲时间，延迟 1200ms 确保播放完成
-            vTaskDelay(pdMS_TO_TICKS(1200));
-        }
-    }
-    
-    ESP_LOGI(TAG, "✅ Finished reading probability digits");
-}
-
 void Application::Alert(const char* status, const char* message, const char* emotion, const std::string_view& sound) {
     ESP_LOGW(TAG, "Alert [%s] %s: %s", emotion, status, message);
     auto display = Board::GetInstance().GetDisplay();
@@ -436,6 +369,13 @@ void Application::StopListening() {
 
 void Application::Start() {
     auto& board = Board::GetInstance();
+    
+    // AAF 动画框架：不再使用 DeviceAnimationMapper（Lottie 系统已废弃）
+    // 动画由 AafDisplayWidget::SetStatus -> AnimationStateManager 驱动
+    // display::DeviceAnimationMapper::GetInstance().Init("/spiffs/anim/");
+    // display::DeviceAnimationMapper::GetInstance().RegisterDefaultMappings();
+    // display::DeviceAnimationMapper::GetInstance().PrintMappings();
+    
     SetDeviceState(kDeviceStateStarting);
 
     /* Setup the display */
@@ -492,19 +432,16 @@ void Application::Start() {
     mcp_server.AddCommonTools();
     mcp_server.AddUserOnlyTools();
 
-#ifdef CONFIG_ENABLE_DOLL_INTERACTION
-    // Register doll interaction MCP tools
-    RegisterDollMcpTools();
-    ESP_LOGI(TAG, "Doll interaction MCP tools registered");
-#endif
-
-    if (ota.HasMqttConfig()) {
-        protocol_ = std::make_unique<MqttProtocol>();
-    } else if (ota.HasWebsocketConfig()) {
+    // WebSocket 优先于 MQTT（更轻量、低延迟）
+    if (ota.HasWebsocketConfig()) {
+        ESP_LOGI(TAG, "Using WebSocket protocol");
         protocol_ = std::make_unique<WebsocketProtocol>();
-    } else {
-        ESP_LOGW(TAG, "No protocol specified in the OTA config, using MQTT");
+    } else if (ota.HasMqttConfig()) {
+        ESP_LOGI(TAG, "Using MQTT protocol");
         protocol_ = std::make_unique<MqttProtocol>();
+    } else {
+        ESP_LOGW(TAG, "No protocol specified in the OTA config, using WebSocket");
+        protocol_ = std::make_unique<WebsocketProtocol>();
     }
 
     protocol_->OnConnected([this]() {
@@ -546,11 +483,18 @@ void Application::Start() {
             auto state = cJSON_GetObjectItem(root, "state");
             ESP_LOGI(TAG, "📢 TTS event: state=%s", state->valuestring);
             if (strcmp(state->valuestring, "start") == 0) {
+                ESP_LOGI(TAG, "📢 TTS event: state=start");
                 ESP_LOGI(TAG, "🎙️  TTS started, switching to SPEAKING state");
                 Schedule([this]() {
+                    ESP_LOGI(TAG, "🔄 Schedule callback executing for TTS start, current state: %s", 
+                             STATE_STRINGS[device_state_]);
                     aborted_ = false;
                     if (device_state_ == kDeviceStateIdle || device_state_ == kDeviceStateListening) {
+                        ESP_LOGI(TAG, "✅ Condition met, calling SetDeviceState(kDeviceStateSpeaking)");
                         SetDeviceState(kDeviceStateSpeaking);
+                    } else {
+                        ESP_LOGW(TAG, "⚠️  Cannot switch to SPEAKING: current state is %s", 
+                                 STATE_STRINGS[device_state_]);
                     }
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {
@@ -602,6 +546,16 @@ void Application::Start() {
                     Schedule([this]() {
                         Reboot();
                     });
+                } else if (strcmp(command->valuestring, "start_config") == 0) {
+                    ESP_LOGI(TAG, "Received start_config command from LLM");
+                    Schedule([this]() {
+                        StartConfigMode();
+                    });
+                } else if (strcmp(command->valuestring, "exit_config") == 0) {
+                    ESP_LOGI(TAG, "Received exit_config command from LLM");
+                    Schedule([this]() {
+                        StopConfigMode();
+                    });
                 } else {
                     ESP_LOGW(TAG, "Unknown system command: %s", command->valuestring);
                 }
@@ -636,24 +590,9 @@ void Application::Start() {
     ESP_LOGI(TAG, "📊 Pre-initialization memory check:");
     SystemInfo::PrintHeapStats();
     
-#ifdef CONFIG_ENABLE_DOLL_INTERACTION
-    // CRITICAL: Initialize Doll system BEFORE SetDeviceState(IDLE)
-    // Because IDLE state will try to Start() it if not running
-    ESP_LOGI(TAG, "🎭 Initializing doll interaction system...");
-    
-    // Initialize motor controller first
-    MotorController::GetInstance().Initialize();
-    MotorController::GetInstance().Start();
-    
-    // Initialize doll interaction manager (but don't Start yet)
-    DollInteractionManager::GetInstance().Initialize();
-    
-    ESP_LOGI(TAG, "✅ Doll interaction system initialized");
-#endif
-    
     // Set IDLE state to initialize MicroWakeWord while SRAM is still available
     ESP_LOGI(TAG, "⚠️  Initializing MicroWakeWord (requires ~320 bytes SRAM)...");
-    SetDeviceState(kDeviceStateIdle);  // This will Start() Doll system if initialized
+    SetDeviceState(kDeviceStateIdle);
     
     // Wait for initialization to complete
     vTaskDelay(pdMS_TO_TICKS(300));
@@ -668,19 +607,6 @@ void Application::Start() {
         // Play the success sound to indicate the device is ready
         audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
     }
-    
-    // 🧪 启用唤醒词测试模式
-    // 等待设备完全初始化完成
-    vTaskDelay(pdMS_TO_TICKS(2000));
-    
-    ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════╗");
-    ESP_LOGI(TAG, "║  🧪 WAKE WORD TEST MODE - READY TO START!               ║");
-    ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════╝");
-    ESP_LOGI(TAG, "");
-    
-    // 启用测试模式
-    EnableWakeWordTestMode(true);
 }
 
 // Add a async task to MainLoop
@@ -696,13 +622,18 @@ void Application::Schedule(std::function<void()> callback) {
 // If other tasks need to access the websocket or chat state,
 // they should use Schedule to call this function
 void Application::MainEventLoop() {
+    // 缓存 Board 引用，避免在循环中重复调用 GetInstance()
+    // 这可以避免 C++ 静态变量 guard 的潜在竞态问题
+    auto& board = Board::GetInstance();
+    auto led = board.GetLed();
+    auto display = board.GetDisplay();
+    
     while (true) {
         auto bits = xEventGroupWaitBits(event_group_, MAIN_EVENT_SCHEDULE |
             MAIN_EVENT_SEND_AUDIO |
             MAIN_EVENT_WAKE_WORD_DETECTED |
             MAIN_EVENT_VAD_CHANGE |
             MAIN_EVENT_CLOCK_TICK |
-            MAIN_EVENT_WAKE_WORD_TEST_CYCLE |
             MAIN_EVENT_ERROR, pdTRUE, pdFALSE, portMAX_DELAY);
 
         if (bits & MAIN_EVENT_ERROR) {
@@ -721,15 +652,9 @@ void Application::MainEventLoop() {
         if (bits & MAIN_EVENT_WAKE_WORD_DETECTED) {
             OnWakeWordDetected();
         }
-        
-        if (bits & MAIN_EVENT_WAKE_WORD_TEST_CYCLE) {
-            // 开始新一轮测试循环
-            StartWakeWordTestCycle();
-        }
 
         if (bits & MAIN_EVENT_VAD_CHANGE) {
             if (device_state_ == kDeviceStateListening) {
-                auto led = Board::GetInstance().GetLed();
                 led->OnStateChanged();
             }
         }
@@ -745,7 +670,6 @@ void Application::MainEventLoop() {
 
         if (bits & MAIN_EVENT_CLOCK_TICK) {
             clock_ticks_++;
-            auto display = Board::GetInstance().GetDisplay();
             display->UpdateStatusBar();
         
             // Print the debug info every 10 seconds
@@ -759,14 +683,8 @@ void Application::MainEventLoop() {
 }
 
 void Application::OnWakeWordDetected() {  
-    ESP_LOGI(TAG, "OnWakeWordDetected() called, device_state=%d, protocol=%p, test_mode=%d", 
-             device_state_, protocol_.get(), wake_word_test_mode_enabled_);
-    
-    // 🧪 如果处于测试模式，使用测试模式处理逻辑
-    if (wake_word_test_mode_enabled_) {
-        OnWakeWordDetectedInTestMode();
-        return;
-    }
+    ESP_LOGI(TAG, "OnWakeWordDetected() called, device_state=%d, protocol=%p", 
+             device_state_, protocol_.get());
     
     if (!protocol_) {
         ESP_LOGW(TAG, "Protocol not initialized, ignoring wake word");
@@ -775,9 +693,7 @@ void Application::OnWakeWordDetected() {
 
     if (device_state_ == kDeviceStateIdle) {
         ESP_LOGI(TAG, "Device in IDLE state, processing wake word...");
-        // ⚠️ 暂时屏蔽 OPUS 编码：排查崩溃问题
-        // audio_service_.EncodeWakeWord();
-        ESP_LOGW(TAG, "⚠️ EncodeWakeWord() DISABLED (debugging crash)");
+        audio_service_.EncodeWakeWord();
 
         if (!protocol_->IsAudioChannelOpened()) {
             ESP_LOGI(TAG, "Opening audio channel...");
@@ -795,6 +711,8 @@ void Application::OnWakeWordDetected() {
         // Encode and send the wake word data to the server
         ESP_LOGI(TAG, "📤 Sending wake word packets...");
         int packet_count = 0;
+        // Throttle the sending speed to avoid starving WiFi driver buffers
+        const int THROTTLE_DELAY_MS = 20; 
         while (auto packet = audio_service_.PopWakeWordPacket()) {
             packet_count++;
             ESP_LOGD(TAG, "  Sending packet #%d, size=%zu", packet_count, packet->payload.size());
@@ -802,6 +720,8 @@ void Application::OnWakeWordDetected() {
                 ESP_LOGE(TAG, "❌ Failed to send wake word packet #%d", packet_count);
                 break;
             }
+            // Wait a bit to let WiFi driver process the packet
+            vTaskDelay(pdMS_TO_TICKS(THROTTLE_DELAY_MS));
         }
         ESP_LOGI(TAG, "✅ Sent %d wake word packets", packet_count);
         
@@ -837,6 +757,10 @@ void Application::SetListeningMode(ListeningMode mode) {
     SetDeviceState(kDeviceStateListening);
 }
 
+#include "ble_wifi_provisioner.h"
+
+// ... existing includes ...
+
 void Application::SetDeviceState(DeviceState state) {
     if (device_state_ == state) {
         return;
@@ -847,65 +771,94 @@ void Application::SetDeviceState(DeviceState state) {
     device_state_ = state;
     ESP_LOGI(TAG, "STATE: %s", STATE_STRINGS[device_state_]);
 
-    // Send the state change event
-    DeviceStateEventManager::GetInstance().PostStateChangeEvent(previous_state, state);
+    // ⚠️ CRITICAL: Ensure BLE Provisioner is STOPPED when entering active states
+    // to prevent BLE controller from crashing due to coexistence issues with WiFi/Audio.
+    if (state == kDeviceStateConnecting || state == kDeviceStateListening || state == kDeviceStateSpeaking) {
+        BLEWiFiProvisioner::GetInstance().Stop();
+    }
 
     auto& board = Board::GetInstance();
     auto display = board.GetDisplay();
     auto led = board.GetLed();
     led->OnStateChanged();
+    // AAF 动画框架：SetStatus 会自动通过 AnimationStateManager 驱动 AAF 动画
+    // 不再需要单独调用 ShowAnimationByPath（已废弃 Lottie 动画系统）
+    
+    // ====== 调试开关：禁用 MicroWakeWord 以排查白屏问题 ======
+    // 设置为 true 可临时禁用相关服务
+    // 测试步骤：逐个启用来定位问题
+    #ifndef DEBUG_DISABLE_WAKE_WORD
+        #define DEBUG_DISABLE_WAKE_WORD false  // ✅ 启用 MicroWakeWord
+    #endif
+    
     switch (state) {
         case kDeviceStateUnknown:
-        case kDeviceStateIdle:
-            ESP_LOGI(TAG, "Entering IDLE state, enabling wake word detection...");
+        case kDeviceStateIdle: {
+            ESP_LOGI(TAG, "Entering IDLE state...");
             display->SetStatus(Lang::Strings::STANDBY);
-            display->SetEmotion("neutral");
             audio_service_.EnableVoiceProcessing(false);
-            audio_service_.EnableWakeWordDetection(true);
             
-#ifdef CONFIG_ENABLE_DOLL_INTERACTION
-            // Restore Doll system after AFE is stopped
-            if (!DollInteractionManager::GetInstance().IsRunning()) {
-                ESP_LOGI(TAG, "🎭 Restoring Doll system (AFE stopped, SRAM available)...");
-                // ⚠️ IMPORTANT: Must call Start() only, Initialize() was already called at startup
-                // The DollInteractionManager is designed to be initialized once and can be started/stopped multiple times
-                DollInteractionManager::GetInstance().Start();
-                ESP_LOGI(TAG, "✅ Doll system restored");
+            #if DEBUG_DISABLE_WAKE_WORD
+            ESP_LOGW(TAG, "⚠️  [DEBUG] MicroWakeWord 已禁用（用于排查白屏问题）");
+            audio_service_.EnableWakeWordDetection(false);
+            #else
+            // 检查语音唤醒开关状态（从 NVS 读取）
+            {
+                bool wake_word_enabled = true;  // 默认开启
+                try {
+                    Settings wake_settings("audio", false);
+                    wake_word_enabled = wake_settings.GetInt("wake_word_enabled", 1) != 0;
+                } catch (...) {
+                    // 读取失败，使用默认值
+                }
+                
+                if (wake_word_enabled) {
+                    ESP_LOGI(TAG, "🎤 Wake word enabled, starting detection...");
+                    audio_service_.EnableWakeWordDetection(true);
+                } else {
+                    ESP_LOGI(TAG, "🔇 Wake word disabled by user setting, skipping detection");
+                    audio_service_.EnableWakeWordDetection(false);
+                }
             }
-#endif
+            #endif
+            
+            // 🔵 IDLE 状态启动 BLE 广播
+            // 策略：闲时 BLE 可用，语音对话时 BLE 关闭
+            // BLE 在进入 Connecting/Listening/Speaking 状态时自动停止（见上方代码）
+            {
+                auto& ble_provisioner = BLEWiFiProvisioner::GetInstance();
+                if (!ble_provisioner.IsProvisioning()) {
+                    ESP_LOGI(TAG, "🔵 Starting BLE advertising (idle mode)...");
+                    if (ble_provisioner.Start()) {
+                        ESP_LOGI(TAG, "✅ BLE advertising started");
+                    } else {
+                        ESP_LOGW(TAG, "⚠️ Failed to start BLE advertising");
+                    }
+                }
+            }
             
             ESP_LOGI(TAG, "IDLE state setup complete");
             break;
+        }
+        case kDeviceStateStarting:
+            display->SetStatus(Lang::Strings::INITIALIZING);
+            break;
         case kDeviceStateConnecting:
             display->SetStatus(Lang::Strings::CONNECTING);
-            display->SetEmotion("neutral");
             display->SetChatMessage("system", "");
             break;
         case kDeviceStateListening:
             display->SetStatus(Lang::Strings::LISTENING);
-            display->SetEmotion("neutral");
 
             // Make sure the audio processor is running
             if (!audio_service_.IsAudioProcessorRunning()) {
-                // CRITICAL: Free SRAM before creating AFE task
-                
-#ifdef CONFIG_ENABLE_DOLL_INTERACTION
-                // Step 1: Stop Doll system to free ~4KB SRAM
-                if (DollInteractionManager::GetInstance().IsRunning()) {
-                    ESP_LOGI(TAG, "🎭 Stopping Doll system to free SRAM for AFE...");
-                    DollInteractionManager::GetInstance().Stop();
-                    ESP_LOGI(TAG, "📊 After stopping Doll: free SRAM=%zu", 
-                             heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-                }
-#endif
-                
-                // Step 2: Disable wake word to free MicroWakeWord memory
+                // Disable wake word to free MicroWakeWord memory
                 audio_service_.EnableWakeWordDetection(false);
                 
-                // Step 3: Send the start listening command
+                // Send the start listening command
                 protocol_->SendStartListening(listening_mode_);
                 
-                // Step 4: Enable AFE (should now have enough SRAM)
+                // Enable AFE
                 audio_service_.EnableVoiceProcessing(true);
             }
             break;
@@ -919,10 +872,40 @@ void Application::SetDeviceState(DeviceState state) {
             }
             audio_service_.ResetDecoder();
             break;
+        case kDeviceStateWifiConfiguring:
+            display->SetStatus(Lang::Strings::CONFIGURING);
+            break;
+        case kDeviceStateAudioTesting:
+            display->SetStatus(Lang::Strings::INITIALIZING);  // 使用初始化状态动画
+            break;
+        case kDeviceStateUpgrading:
+            display->SetStatus(Lang::Strings::UPGRADING);
+            break;
+        case kDeviceStateActivating:
+            display->SetStatus(Lang::Strings::ACTIVATION);
+            // 🔵 激活状态也启动 BLE 广播，允许用户通过 App 配置设备
+            {
+                auto& ble_provisioner = BLEWiFiProvisioner::GetInstance();
+                if (!ble_provisioner.IsProvisioning()) {
+                    ESP_LOGI(TAG, "🔵 Starting BLE advertising (activating mode)...");
+                    if (ble_provisioner.Start()) {
+                        ESP_LOGI(TAG, "✅ BLE advertising started for activation");
+                    } else {
+                        ESP_LOGW(TAG, "⚠️ Failed to start BLE advertising");
+                    }
+                }
+            }
+            break;
+        case kDeviceStateFatalError:
+            display->SetStatus(Lang::Strings::ERROR);
+            break;
         default:
             // Do nothing
             break;
     }
+
+    // 发送状态变化事件
+    DeviceStateEventManager::GetInstance().PostStateChangeEvent(previous_state, state);
 }
 
 void Application::Reboot() {
@@ -1080,6 +1063,73 @@ void Application::PlaySuccessSound() {
     audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
 }
 
+#include "ble_wifi_provisioner.h"
+
+void Application::StartConfigMode() {
+    if (device_state_ == kDeviceStateWifiConfiguring) {
+        ESP_LOGW(TAG, "Already in config mode, skipping");
+        return;
+    }
+
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "🚀 进入配置模式 (Config Mode)");
+    ESP_LOGI(TAG, "   - 停止音频服务");
+    ESP_LOGI(TAG, "   - 关闭音频连接");
+    ESP_LOGI(TAG, "   - 启动 BLE 广播");
+    ESP_LOGI(TAG, "========================================");
+
+    // 1. 切换状态，防止其他逻辑干扰
+    SetDeviceState(kDeviceStateWifiConfiguring);
+
+    // 2. 停止音频服务 (关键！释放 CPU 和 避免 WiFi 数据流)
+    // 暂时停止唤醒词检测和语音处理
+    audio_service_.EnableWakeWordDetection(false);
+    audio_service_.EnableVoiceProcessing(false);
+    
+    // 3. 关闭当前可能存在的音频连接
+    if (protocol_ && protocol_->IsAudioChannelOpened()) {
+        ESP_LOGI(TAG, "Closing audio channel...");
+        protocol_->CloseAudioChannel();
+    }
+
+    // 4. 更改显示，提示用户 (静态画面，降低渲染负载)
+    auto display = Board::GetInstance().GetDisplay();
+    display->SetStatus(Lang::Strings::CONFIGURING);
+    // 确保有一个低负载的动画或静态图，这里暂时用 neutral
+    // 理想情况下应该有一个 "bluetooth" 或 "settings" 的 lottie
+    display->SetEmotion("neutral"); 
+    display->SetChatMessage("system", "蓝牙已开启\n请通过手机连接配置");
+
+    // 5. 启动 BLE
+    // 注意：BLEWiFiProvisioner::Start 内部已经有禁用 WiFi PS 的逻辑
+    ESP_LOGI(TAG, "Starting BLE Provisioner...");
+    BLEWiFiProvisioner::GetInstance().Start();
+}
+
+void Application::StopConfigMode() {
+    if (device_state_ != kDeviceStateWifiConfiguring) {
+        ESP_LOGW(TAG, "Not in config mode, skipping exit");
+        return;
+    }
+
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "🛑 退出配置模式");
+    ESP_LOGI(TAG, "   - 停止 BLE 广播");
+    ESP_LOGI(TAG, "   - 恢复 IDLE 状态");
+    ESP_LOGI(TAG, "========================================");
+
+    // 1. 停止 BLE
+    BLEWiFiProvisioner::GetInstance().Stop();
+
+    // 2. 恢复状态到 Idle
+    // SetDeviceState(Idle) 会自动恢复唤醒词检测和默认表情
+    // 见 Application::SetDeviceState 中的 switch case
+    SetDeviceState(kDeviceStateIdle);
+    
+    auto display = Board::GetInstance().GetDisplay();
+    display->SetChatMessage("system", "");
+}
+
 bool Application::ApplyWakeWordConfig() {
     ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════╗");
     ESP_LOGI(TAG, "║  🔄 Application::ApplyWakeWordConfig                     ║");
@@ -1144,165 +1194,5 @@ bool Application::ApplyWakeWordConfig() {
         ESP_LOGE(TAG, "║  建议: 重启设备后唤醒词将自动加载                         ║");
         ESP_LOGE(TAG, "╚══════════════════════════════════════════════════════════╝");
         return false;
-    }
-}
-
-// ============================================================================
-// 唤醒词测试模式实现
-// ============================================================================
-
-/**
- * @brief 播放提示音（蜂鸣音）
- * @param frequency_hz 频率（Hz），例如：500=低音，1000=高音
- * @param duration_ms 持续时间（毫秒）
- */
-void Application::PlayBeepTone(int frequency_hz, int duration_ms) {
-    ESP_LOGI(TAG, "🔔 Playing beep tone: %d Hz, %d ms", frequency_hz, duration_ms);
-    
-    // 生成简单的正弦波提示音
-    const int sample_rate = 16000;  // 16kHz
-    const int samples = (sample_rate * duration_ms) / 1000;
-    std::vector<int16_t> pcm(samples);
-    
-    // 生成正弦波
-    const float amplitude = 8000.0f;  // 音量（0-32767）
-    const float angular_freq = 2.0f * M_PI * frequency_hz / sample_rate;
-    
-    for (int i = 0; i < samples; i++) {
-        // 添加简单的淡入淡出避免爆音
-        float envelope = 1.0f;
-        if (i < sample_rate / 100) {  // 前 10ms 淡入
-            envelope = (float)i / (sample_rate / 100);
-        } else if (i > samples - sample_rate / 100) {  // 后 10ms 淡出
-            envelope = (float)(samples - i) / (sample_rate / 100);
-        }
-        
-        pcm[i] = (int16_t)(amplitude * envelope * sinf(angular_freq * i));
-    }
-    
-    // 播放音频
-    auto codec = Board::GetInstance().GetAudioCodec();
-    if (!codec->output_enabled()) {
-        codec->EnableOutput(true);
-    }
-    codec->OutputData(pcm);
-    
-    ESP_LOGI(TAG, "✅ Beep tone played");
-}
-
-/**
- * @brief 启动一个测试循环
- */
-void Application::StartWakeWordTestCycle() {
-    if (!wake_word_test_mode_enabled_) {
-        ESP_LOGW(TAG, "Test mode not enabled, ignoring StartWakeWordTestCycle");
-        return;
-    }
-    
-    ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════╗");
-    ESP_LOGI(TAG, "║  🎯 Starting Wake Word Test Cycle                        ║");
-    ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════╝");
-    
-    // ⚠️ 关键：先停止再启动，确保 MicroWakeWord 状态从 DETECTED 重置为 DETECTING
-    ESP_LOGI(TAG, "🔄 Resetting wake word detection state...");
-    audio_service_.EnableWakeWordDetection(false);
-    vTaskDelay(pdMS_TO_TICKS(100));  // 短暂等待，确保停止完成
-    
-    // 1. 播放低音提示音（准备就绪）
-    PlayBeepTone(500, 200);  // 500Hz, 200ms
-    
-    vTaskDelay(pdMS_TO_TICKS(300));  // 等待提示音播放完成
-    
-    // 2. 启动唤醒词检测
-    ESP_LOGI(TAG, "🎤 Enabling wake word detection...");
-    SetDeviceState(kDeviceStateIdle);  // 确保进入 IDLE 状态
-    audio_service_.EnableWakeWordDetection(true);
-    
-    ESP_LOGI(TAG, "✅ Ready! Please say the wake word...");
-    ESP_LOGI(TAG, "");
-}
-
-/**
- * @brief 测试模式下的唤醒处理
- */
-void Application::OnWakeWordDetectedInTestMode() {
-    // 获取检测到的唤醒词信息
-    last_wake_word_name_ = audio_service_.GetLastWakeWord();
-    last_wake_word_probability_ = audio_service_.GetLastWakeWordProbability();
-    
-    ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════╗");
-    ESP_LOGI(TAG, "║  🎉 Wake Word Detected in Test Mode!                    ║");
-    ESP_LOGI(TAG, "║  Wake Word: %-44s ║", last_wake_word_name_.c_str());
-    ESP_LOGI(TAG, "║  Probability: %.3f                                       ║", last_wake_word_probability_);
-    ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════╝");
-    ESP_LOGI(TAG, "");
-    
-    // ⚠️ 关键：立即停止唤醒词检测，防止冷却期间的重复触发
-    audio_service_.EnableWakeWordDetection(false);
-    
-    // 播放高音提示音（检测成功）
-    PlayBeepTone(1000, 100);  // 1000Hz, 100ms
-    vTaskDelay(pdMS_TO_TICKS(150));
-    PlayBeepTone(1200, 100);  // 1200Hz, 100ms（双音表示成功）
-    
-    vTaskDelay(pdMS_TO_TICKS(500));
-    
-    // 播报概率数字（使用内置数字音频）
-    ESP_LOGI(TAG, "🔊 Speaking probability digits...");
-    SpeakProbability(last_wake_word_probability_);
-    
-    // 等待冷却时间（2秒）后自动开始下一轮
-    ESP_LOGI(TAG, "⏳ Cooling down for 2 seconds before next test cycle...");
-    vTaskDelay(pdMS_TO_TICKS(2000));
-    
-    // 直接开始下一轮测试循环（避免并发问题）
-    if (wake_word_test_mode_enabled_) {
-        ESP_LOGI(TAG, "🔄 Starting next test cycle...");
-        StartWakeWordTestCycle();  // 直接调用，不通过事件
-    }
-}
-
-/**
- * @brief 开启/关闭唤醒词测试模式
- * @param enable true=开启，false=关闭
- */
-void Application::EnableWakeWordTestMode(bool enable) {
-    if (enable == wake_word_test_mode_enabled_) {
-        ESP_LOGI(TAG, "Wake word test mode already %s", enable ? "enabled" : "disabled");
-        return;
-    }
-    
-    wake_word_test_mode_enabled_ = enable;
-    
-    if (enable) {
-        ESP_LOGI(TAG, "");
-        ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════╗");
-        ESP_LOGI(TAG, "║  🧪 Wake Word Test Mode ENABLED                         ║");
-        ESP_LOGI(TAG, "║                                                          ║");
-        ESP_LOGI(TAG, "║  Test Flow:                                              ║");
-        ESP_LOGI(TAG, "║  1. Low beep (ready)                                     ║");
-        ESP_LOGI(TAG, "║  2. Say wake word                                        ║");
-        ESP_LOGI(TAG, "║  3. High beep (detected)                                 ║");
-        ESP_LOGI(TAG, "║  4. Speak probability digits (e.g. 0567 for 0.567)       ║");
-        ESP_LOGI(TAG, "║  5. Cooldown 2 seconds                                   ║");
-        ESP_LOGI(TAG, "║  6. Auto repeat                                          ║");
-        ESP_LOGI(TAG, "║                                                          ║");
-        ESP_LOGI(TAG, "║  To stop: Call EnableWakeWordTestMode(false)             ║");
-        ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════╝");
-        ESP_LOGI(TAG, "");
-        
-        // 立即开始第一轮测试
-        StartWakeWordTestCycle();
-    } else {
-        ESP_LOGI(TAG, "");
-        ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════╗");
-        ESP_LOGI(TAG, "║  🛑 Wake Word Test Mode DISABLED                        ║");
-        ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════╝");
-        ESP_LOGI(TAG, "");
-        
-        // 停止唤醒词检测
-        audio_service_.EnableWakeWordDetection(false);
     }
 }

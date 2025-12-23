@@ -25,10 +25,13 @@ private:
     EventGroupHandle_t event_group_handle_;
     std::unique_ptr<WebSocket> websocket_;
     int version_ = 1;
+    bool is_official_server_ = true;  // 是否是官方服务器，用于兼容性处理
+    std::string current_url_;  // 当前 WebSocket URL
 
     void ParseServerHello(const cJSON* root);
     bool SendText(const std::string& text) override;
     std::string GetHelloMessage();
+    bool IsOfficialServer(const std::string& ota_url);  // 判断是否是官方服务器
 };
 
 #endif

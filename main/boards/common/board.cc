@@ -8,18 +8,41 @@
 #include <esp_log.h>
 #include <esp_ota_ops.h>
 #include <esp_chip_info.h>
+#include <esp_mac.h>
 #include <esp_random.h>
 
 #define TAG "Board"
 
 Board::Board() {
+    // 生成基于硬件的设备唯一标识（永不变化）
+    device_id_ = GenerateDeviceId();
+    
+    // 从 NVS 读取或生成标准 UUID v4（用于官方服务器兼容）
     Settings settings("board", true);
     uuid_ = settings.GetString("uuid");
     if (uuid_.empty()) {
         uuid_ = GenerateUuid();
         settings.SetString("uuid", uuid_);
     }
-    ESP_LOGI(TAG, "UUID=%s SKU=%s", uuid_.c_str(), BOARD_NAME);
+    
+    ESP_LOGI(TAG, "Device ID=%s SKU=%s", device_id_.c_str(), BOARD_NAME);
+    ESP_LOGI(TAG, "UUID=%s", uuid_.c_str());
+}
+
+std::string Board::GenerateDeviceId() {
+    // 获取 eFuse MAC 地址（出厂固化，永不变化）
+    uint8_t efuse_mac[6];
+    esp_efuse_mac_get_default(efuse_mac);
+    
+    // 生成 Device ID: XZA000-XXXXXXXXXXXX
+    // 格式：前缀 (6字符) + "-" + MAC地址 (12字符大写十六进制)
+    char device_id[20];
+    snprintf(device_id, sizeof(device_id), 
+             "XZA000-%02X%02X%02X%02X%02X%02X",
+             efuse_mac[0], efuse_mac[1], efuse_mac[2],
+             efuse_mac[3], efuse_mac[4], efuse_mac[5]);
+    
+    return std::string(device_id);
 }
 
 std::string Board::GenerateUuid() {
@@ -75,7 +98,7 @@ std::string Board::GetSystemInfoJson() {
             "psram_size": 0,
             "minimum_free_heap_size": 123456,
             "mac_address": "00:00:00:00:00:00",
-            "uuid": "00000000-0000-0000-0000-000000000000",
+            "device_id": "XZA000-XXXXXXXXXXXX",
             "chip_model_name": "esp32s3",
             "chip_info": {
                 "model": 1,
@@ -111,7 +134,11 @@ std::string Board::GetSystemInfoJson() {
     json += R"("flash_size":)" + std::to_string(SystemInfo::GetFlashSize()) + R"(,)";
     json += R"("minimum_free_heap_size":")" + std::to_string(SystemInfo::GetMinimumFreeHeapSize()) + R"(",)";
     json += R"("mac_address":")" + SystemInfo::GetMacAddress() + R"(",)";
+    // 同时发送 uuid 和 device_id 以兼容官方服务器和新服务器
+    // uuid: 标准 UUID v4 格式（官方服务器需要）
+    // device_id: XZA000-XXXX 格式（新服务器使用）
     json += R"("uuid":")" + uuid_ + R"(",)";
+    json += R"("device_id":")" + device_id_ + R"(",)";
     json += R"("chip_model_name":")" + SystemInfo::GetChipModelName() + R"(",)";
 
     esp_chip_info_t chip_info;

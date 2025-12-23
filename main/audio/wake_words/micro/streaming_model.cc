@@ -129,8 +129,7 @@ float StreamingModel::get_sliding_window_average() const {
   return sum / this->recent_streaming_probabilities_.size();
 }
 
-bool StreamingModel::perform_streaming_inference(const int8_t features[PREPROCESSOR_FEATURE_SIZE],
-                                                 InferenceTestRecorder* recorder) {
+bool StreamingModel::perform_streaming_inference(const int8_t features[PREPROCESSOR_FEATURE_SIZE]) {
   if (this->interpreter_ != nullptr) {
     TfLiteTensor *input = this->interpreter_->input(0);
     
@@ -147,23 +146,6 @@ bool StreamingModel::perform_streaming_inference(const int8_t features[PREPROCES
       logged_once = true;
     }
 
-    // 🔍 诊断：打印输入特征统计
-    static int copy_count = 0;
-    if (++copy_count % 300 == 0) {  // 每300次打印一次
-      int32_t sum = 0, count_neg128 = 0;
-      int8_t min_val = 127, max_val = -128;
-      for (int i = 0; i < PREPROCESSOR_FEATURE_SIZE; ++i) {
-        int8_t val = features[i];
-        sum += val;
-        if (val == -128) count_neg128++;
-        if (val < min_val) min_val = val;
-        if (val > max_val) max_val = val;
-      }
-      int8_t avg = sum / PREPROCESSOR_FEATURE_SIZE;
-      ESP_LOGI(TAG, "🎯 Copying features #%d (stride step %d): avg=%d, min=%d, max=%d, -128 count=%d/40",
-               copy_count, this->current_stride_step_, avg, min_val, max_val, count_neg128);
-    }
-    
     std::memmove((int8_t *)(tflite::GetTensorData<int8_t>(input)) +
                      PREPROCESSOR_FEATURE_SIZE * this->current_stride_step_,
                  features, PREPROCESSOR_FEATURE_SIZE);
@@ -174,26 +156,6 @@ bool StreamingModel::perform_streaming_inference(const int8_t features[PREPROCES
     if (this->current_stride_step_ >= stride) {
       this->current_stride_step_ = 0;
 
-      // 🔍 实验：在推理前打印完整的输入张量（每 100 次）
-      static uint32_t pre_invoke_count = 0;
-      pre_invoke_count++;
-      if (pre_invoke_count % 100 == 0) {
-        ESP_LOGI(TAG, "🔬 Pre-Invoke #%u: Dumping full input tensor [stride=%d]...", pre_invoke_count, stride);
-        int8_t *input_data = tflite::GetTensorData<int8_t>(input);
-        for (int s = 0; s < stride; ++s) {
-          int32_t sum = 0;
-          int8_t min_val = 127, max_val = -128;
-          for (int i = 0; i < PREPROCESSOR_FEATURE_SIZE; ++i) {
-            int8_t val = input_data[s * PREPROCESSOR_FEATURE_SIZE + i];
-            sum += val;
-            if (val < min_val) min_val = val;
-            if (val > max_val) max_val = val;
-          }
-          int8_t avg = sum / PREPROCESSOR_FEATURE_SIZE;
-          ESP_LOGI(TAG, "   Stride[%d]: avg=%d, min=%d, max=%d", s, avg, min_val, max_val);
-        }
-      }
-
       TfLiteStatus invoke_status = this->interpreter_->Invoke();
       if (invoke_status != kTfLiteOk) {
         ESP_LOGW(TAG, "Streaming interpreter invoke failed");
@@ -201,19 +163,7 @@ bool StreamingModel::perform_streaming_inference(const int8_t features[PREPROCES
       }
 
       TfLiteTensor *output = this->interpreter_->output(0);
-      
       uint8_t raw_output = output->data.uint8[0];
-      static uint32_t invoke_count = 0;
-      invoke_count++;
-      if (invoke_count % 100 == 0) {
-        ESP_LOGI(TAG, "🔍 Invoke #%u: raw model output = %u (%.3f)", 
-                 (unsigned int)invoke_count, raw_output, raw_output / 255.0f);
-      }
-
-      // 【测试模式】记录原始推理概率（滑动窗口平均前）
-      if (recorder) {
-        recorder->RecordProbability(raw_output);
-      }
 
       ++this->last_n_index_;
       if (this->last_n_index_ == this->sliding_window_size_)
@@ -234,13 +184,23 @@ void StreamingModel::reset_probabilities() {
 
 WakeWordModel::WakeWordModel(const uint8_t *model_start, float probability_cutoff,
                              size_t sliding_window_average_size, const std::string &wake_word,
-                             size_t tensor_arena_size) {
+                             size_t tensor_arena_size, const std::string &model_id) {
   this->model_start_ = model_start;
   this->probability_cutoff_ = probability_cutoff;
   this->sliding_window_size_ = sliding_window_average_size;
   this->recent_streaming_probabilities_.resize(sliding_window_average_size, 0);
   this->wake_word_ = wake_word;
   this->tensor_arena_size_ = tensor_arena_size;
+  // If model_id is empty, generate from wake_word (replace spaces with underscores, lowercase)
+  if (model_id.empty()) {
+    this->model_id_ = wake_word;
+    for (char &c : this->model_id_) {
+      if (c == ' ') c = '_';
+      else c = tolower(c);
+    }
+  } else {
+    this->model_id_ = model_id;
+  }
 };
 
 bool WakeWordModel::determine_detected() {

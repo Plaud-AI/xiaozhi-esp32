@@ -1,6 +1,7 @@
 #include "wifi_board.h"
 #include "codecs/box_audio_codec.h"
-#include "display/lcd_display.h"
+#include "display/aaf_display_widget.h"
+// #include "mount_assets_spiffs.h"  // 使用 mmap_assets 时不需要
 #include "application.h"
 #include "button.h"
 #include "config.h"
@@ -8,6 +9,7 @@
 #include "assets/lang_config.h"
 
 #include <esp_log.h>
+#include <esp_timer.h>
 #include <esp_lcd_panel_vendor.h>
 #include <esp_io_expander_tca9554.h>
 #include <esp_lcd_ili9341.h>
@@ -57,9 +59,10 @@ private:
     adc_oneshot_unit_handle_t bsp_adc_handle = NULL;
 #endif
     i2c_master_bus_handle_t i2c_bus_;
-    LcdDisplay* display_;
+    Display* display_;  // 使用基类指针，可指向任何 Display 实现
     esp_io_expander_handle_t io_expander_ = NULL;
-    Esp32Camera* camera_;
+    esp_timer_handle_t lcd_cs_refresh_timer_ = NULL;  // LCD CS 刷新定时器
+    // Esp32Camera* camera_;  // 禁用摄像头以节省内存
 
     void InitializeI2c() {
         // Initialize I2C peripheral
@@ -128,6 +131,47 @@ private:
     void EnableLcdCs() {
         if(io_expander_ != NULL) {
             esp_io_expander_set_level(io_expander_, IO_EXPANDER_PIN_NUM_3, 0);// 置低 LCD CS
+        }
+    }
+
+    // LCD CS 刷新定时器回调
+    static void LcdCsRefreshTimerCallback(void* arg) {
+        auto* self = static_cast<Esp32S3Korvo2V3Board*>(arg);
+        if (self && self->io_expander_ != NULL) {
+            static int refresh_count = 0;
+            refresh_count++;
+            
+            // 定期刷新 LCD CS 状态，防止 IO 扩展器状态丢失导致白屏
+            esp_err_t ret = esp_io_expander_set_level(self->io_expander_, IO_EXPANDER_PIN_NUM_3, 0);
+            
+            // 每 10 次打印一次状态（每 10 秒）
+            if (refresh_count % 10 == 0) {
+                ESP_LOGI(TAG, "LCD CS refresh #%d (ret=%d)", refresh_count, ret);
+            }
+        }
+    }
+
+    void StartLcdCsRefreshTimer() {
+        if (io_expander_ == NULL) {
+            ESP_LOGW(TAG, "IO expander is NULL, cannot start LCD CS refresh timer");
+            return;
+        }
+        
+        esp_timer_create_args_t timer_args = {
+            .callback = LcdCsRefreshTimerCallback,
+            .arg = this,
+            .dispatch_method = ESP_TIMER_TASK,
+            .name = "lcd_cs_refresh",
+            .skip_unhandled_events = true,
+        };
+        
+        esp_err_t ret = esp_timer_create(&timer_args, &lcd_cs_refresh_timer_);
+        if (ret == ESP_OK) {
+            // 每 1 秒刷新一次 LCD CS 状态（缩短间隔以提高稳定性）
+            esp_timer_start_periodic(lcd_cs_refresh_timer_, 1 * 1000 * 1000);  // 1秒 = 1000000微秒
+            ESP_LOGI(TAG, "✅ LCD CS refresh timer started (1s interval)");
+        } else {
+            ESP_LOGE(TAG, "Failed to create LCD CS refresh timer: %s", esp_err_to_name(ret));
         }
     }
 
@@ -297,8 +341,8 @@ private:
         io_config.cs_gpio_num = GPIO_NUM_NC;
         io_config.dc_gpio_num = GPIO_NUM_2;
         io_config.spi_mode = 0;
-        io_config.pclk_hz = 40 * 1000 * 1000;
-        io_config.trans_queue_depth = 10;
+        io_config.pclk_hz = 40 * 1000 * 1000;  // 恢复正常 SPI 时钟
+        io_config.trans_queue_depth = 1;       // 强制同步：确保每次只有一个 SPI 传输
         io_config.lcd_cmd_bits = 8;
         io_config.lcd_param_bits = 8;
         ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(SPI3_HOST, &io_config, &panel_io));
@@ -325,8 +369,20 @@ private:
         ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y));
         ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel, false));
         ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel, true));
-        display_ = new SpiLcdDisplay(panel_io, panel,
-                                    DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
+        
+        // 使用新的 AAF Display Widget
+        // 注意：LCD 传输完成回调在 AafDisplayWidget 构造函数中自动注册
+        ESP_LOGI(TAG, "Initializing AAF Display Framework...");
+        display_ = new xiaozhi::display::AafDisplayWidget(panel_io, panel,
+                                                           DISPLAY_WIDTH, DISPLAY_HEIGHT);
+        
+        if (display_) {
+            ESP_LOGI(TAG, "✅ AAF Display Framework ready!");
+            // 启动 LCD CS 刷新定时器，防止 IO 扩展器状态丢失导致白屏
+            StartLcdCsRefreshTimer();
+        } else {
+            ESP_LOGW(TAG, "⚠️  AAF Display Framework init failed");
+        }
     }
 
     void InitializeSt7789Display() {
@@ -358,16 +414,27 @@ private:
         ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y));
         ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel, true));
 
-        display_ = new SpiLcdDisplay(panel_io, panel,
-                                     DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
+        // 使用新的 AAF Display Widget
+        ESP_LOGI(TAG, "Initializing AAF Display Framework...");
+        display_ = new xiaozhi::display::AafDisplayWidget(panel_io, panel,
+                                                           DISPLAY_WIDTH, DISPLAY_HEIGHT);
+        
+        if (display_) {
+            ESP_LOGI(TAG, "✅ AAF Display Framework ready!");
+            // 启动 LCD CS 刷新定时器，防止 IO 扩展器状态丢失导致白屏
+            StartLcdCsRefreshTimer();
+        } else {
+            ESP_LOGW(TAG, "⚠️  AAF Display Framework init failed");
+        }
     }
 
     void InitializeCamera() {
-        // Open camera power
-
+        // 摄像头已禁用以节省内存（DMA通道、内部RAM）
+        // 如需启用，取消下面的注释
+        /*
         camera_config_t config = {};
-        config.ledc_channel = LEDC_CHANNEL_2;  // LEDC通道选择  用于生成XCLK时钟 但是S3不用
-        config.ledc_timer = LEDC_TIMER_2; // LEDC timer选择  用于生成XCLK时钟 但是S3不用
+        config.ledc_channel = LEDC_CHANNEL_2;
+        config.ledc_timer = LEDC_TIMER_2;
         config.pin_d0 = CAMERA_PIN_D0;
         config.pin_d1 = CAMERA_PIN_D1;
         config.pin_d2 = CAMERA_PIN_D2;
@@ -380,7 +447,7 @@ private:
         config.pin_pclk = CAMERA_PIN_PCLK;
         config.pin_vsync = CAMERA_PIN_VSYNC;
         config.pin_href = CAMERA_PIN_HREF;
-        config.pin_sccb_sda = -1;   // 这里写-1 表示使用已经初始化的I2C接口
+        config.pin_sccb_sda = -1;
         config.pin_sccb_scl = CAMERA_PIN_SIOC;
         config.sccb_i2c_port = 1;
         config.pin_pwdn = CAMERA_PIN_PWDN;
@@ -392,8 +459,8 @@ private:
         config.fb_count = 1;
         config.fb_location = CAMERA_FB_IN_PSRAM;
         config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
-
         camera_ = new Esp32Camera(config);
+        */
     }
 
 public:
@@ -402,9 +469,19 @@ public:
         InitializeI2c();
         I2cDetect();
         InitializeTca9554();
-        InitializeCamera();
+        // InitializeCamera();  // 禁用摄像头以节省内存（DMA通道、内部RAM）
         InitializeSpi();
         InitializeButtons();
+        
+        // 注意：如果使用 mmap_assets 格式，不需要挂载 SPIFFS
+        // assets 分区将通过 mmap 直接映射，零拷贝访问
+        // 
+        // 如果需要使用 SPIFFS 作为回退方案，取消下面的注释：
+        // ESP_LOGI(TAG, "Mounting assets SPIFFS partition...");
+        // if (!assets_mount::MountAssetsAsSPIFFS()) {
+        //     ESP_LOGW(TAG, "Failed to mount assets SPIFFS (continuing without animations)");
+        // }
+        
         #ifdef LCD_TYPE_ILI9341_SERIAL
         InitializeIli9341Display(); 
         #else
@@ -433,7 +510,7 @@ public:
         return display_;
     }
     virtual Camera* GetCamera() override {
-        return camera_;
+        return nullptr;  // 摄像头已禁用
     }
 };
 

@@ -1,8 +1,0 @@
-# 禁用 WebRTC NS（因为要用 NSNet2）
-CONFIG_SR_NSN_WEBRTC=n
-
-# 启用 NSNet2（神经网络降噪）
-CONFIG_SR_NSN_NSNET2=y
-
-# 禁用 WakeNet（CustomWakeWord 不需要）
-CONFIG_SR_WN_WN9_NIHAOXIAOZHI_TTS=n

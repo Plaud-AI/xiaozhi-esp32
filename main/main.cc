@@ -5,13 +5,10 @@
 #include <driver/gpio.h>
 #include <esp_event.h>
 #include <esp_bt.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
 #include <nimble/nimble_port.h>
 
 #include "application.h"
 #include "system_info.h"
-#include "ble_wifi_provisioner.h"
 
 #define TAG "main"
 
@@ -29,32 +26,32 @@ extern "C" void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    // ====== 提前初始化蓝牙控制器（WiFi/BLE 共存要求）======
-    // ESP32-S3 要求蓝牙控制器必须在 WiFi 之前初始化
-    // 关键：必须在控制器初始化前释放 Classic BT 内存
+    // ====== BLE/WiFi 共存：提前初始化 BLE 控制器 ======
+    // ⚠️ 重要：BLE 控制器必须在 WiFi 之前初始化！
+    // 原因：BLE 控制器需要固定地址范围的内部 SRAM（EMI 内存区域）
+    //       WiFi 启动后会占用这部分内存，导致 BLE 初始化失败
+    // 策略：先初始化 BLE 控制器占用所需内存，WiFi 使用剩余内存
     ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "🔧 初始化蓝牙控制器（WiFi/BLE共存）");
+    ESP_LOGI(TAG, "🔧 BLE/WiFi 共存初始化");
     ESP_LOGI(TAG, "========================================");
     
-    // 步骤1：在控制器初始化前释放 Classic BT 内存
-    // 这样控制器只会为 BLE 分配内存，节省 30-40KB
+    // 步骤1: 释放 Classic BT 内存（节省 30-40KB）
     ret = esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
     if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "✅ 已释放 Classic BT 内存（约 30-40KB）");
-    } else {
-        ESP_LOGW(TAG, "⚠️  释放 Classic BT 内存失败: %d (可能已释放)", ret);
+        ESP_LOGI(TAG, "✅ 已释放 Classic BT 内存");
     }
     
-    // 步骤2：初始化 BLE 控制器（只为 BLE 分配内存）
+    // 步骤2: 提前初始化 NimBLE（包括 BLE 控制器）
+    // 这会为 BLE 控制器分配所需的内部 SRAM
+    ESP_LOGI(TAG, "🔵 初始化 BLE 控制器（WiFi 启动前）...");
     ret = nimble_port_init();
     if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "✅ 蓝牙控制器初始化成功（BLE-only 模式）");
-        ESP_LOGI(TAG, "   - WiFi 和 BLE 现在可以共存");
-        ESP_LOGI(TAG, "   - 内存优化：仅分配 BLE 所需内存");
-        ESP_LOGI(TAG, "   - BLE 服务将在需要时启动");
+        ESP_LOGI(TAG, "✅ BLE 控制器初始化成功");
+    } else if (ret == ESP_ERR_INVALID_STATE) {
+        ESP_LOGI(TAG, "✓ BLE 控制器已初始化");
     } else {
-        ESP_LOGE(TAG, "❌ 蓝牙控制器初始化失败: %d", ret);
-        ESP_LOGW(TAG, "   - 将继续启动，但 BLE 功能将不可用");
+        ESP_LOGW(TAG, "⚠️ BLE 控制器初始化失败: %s", esp_err_to_name(ret));
+        ESP_LOGW(TAG, "   BLE 功能将不可用，但设备可正常工作");
     }
     ESP_LOGI(TAG, "========================================");
 

@@ -17,6 +17,11 @@
 void* create_board();
 class AudioCodec;
 class Display;
+class CsPressDriver;
+class NfcDriver;
+class DualServoController;
+class Ws2812Driver;
+
 class Board {
 private:
     Board(const Board&) = delete; // 禁用拷贝构造函数
@@ -24,9 +29,23 @@ private:
 
 protected:
     Board();
+    
+    /**
+     * @brief 生成设备唯一标识（基于 eFuse MAC）
+     * @return 格式: "XZA000-XXXXXXXXXXXX"
+     */
+    std::string GenerateDeviceId();
+    
+    /**
+     * @brief 生成标准 UUID v4（用于官方服务器兼容）
+     * @return 格式: "xxxxxxxx-xxxx-4xxx-xxxx-xxxxxxxxxxxx"
+     */
     std::string GenerateUuid();
 
-    // 软件生成的设备唯一标识
+    // 基于硬件的设备唯一标识（永不变化）
+    std::string device_id_;
+    
+    // 标准 UUID v4（用于官方服务器兼容，存储在 NVS）
     std::string uuid_;
 
 public:
@@ -37,6 +56,17 @@ public:
 
     virtual ~Board() = default;
     virtual std::string GetBoardType() = 0;
+    
+    /**
+     * @brief 获取设备唯一标识
+     * @return 格式: "XZA000-XXXXXXXXXXXX"（基于 eFuse MAC，永不变化）
+     */
+    virtual std::string GetDeviceId() { return device_id_; }
+    
+    /**
+     * @brief 获取标准 UUID v4（用于官方服务器兼容）
+     * @return 格式: "xxxxxxxx-xxxx-4xxx-xxxx-xxxxxxxxxxxx"
+     */
     virtual std::string GetUuid() { return uuid_; }
     virtual Backlight* GetBacklight() { return nullptr; }
     virtual Led* GetLed();
@@ -52,6 +82,10 @@ public:
     virtual void SetPowerSaveMode(bool enabled) = 0;
     virtual std::string GetBoardJson() = 0;
     virtual std::string GetDeviceStatusJson() = 0;
+    virtual CsPressDriver* GetPressureDriver() { return nullptr; }
+    virtual NfcDriver* GetNfcDriver() { return nullptr; }
+    virtual DualServoController* GetDualServoController() { return nullptr; }
+    virtual Ws2812Driver* GetWs2812Driver() { return nullptr; }
 };
 
 #define DECLARE_BOARD(BOARD_CLASS_NAME) \

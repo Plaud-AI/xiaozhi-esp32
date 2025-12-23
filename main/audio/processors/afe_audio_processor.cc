@@ -11,6 +11,12 @@ AfeAudioProcessor::AfeAudioProcessor()
 }
 
 void AfeAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms, srmodel_list_t* models_list) {
+    // 防止重复初始化
+    if (afe_data_ != nullptr) {
+        ESP_LOGW(TAG, "AfeAudioProcessor already initialized, skipping");
+        return;
+    }
+
     codec_ = codec;
     frame_samples_ = frame_duration_ms * 16000 / 1000;
 
@@ -41,16 +47,23 @@ void AfeAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms, srm
     afe_config->aec_mode = AEC_MODE_VOIP_HIGH_PERF;
     afe_config->vad_mode = VAD_MODE_0;
     afe_config->vad_min_noise_ms = 100;
+    
+    // ⚠️ CRITICAL: 只有在找到有效的 VAD 模型时才设置模型名称
     if (vad_model_name != nullptr) {
         afe_config->vad_model_name = vad_model_name;
+        ESP_LOGI(TAG, "✅ VAD model found: %s", vad_model_name);
+    } else {
+        ESP_LOGW(TAG, "⚠️ No VAD model found in partition table");
     }
 
     if (ns_model_name != nullptr) {
         afe_config->ns_init = true;
         afe_config->ns_model_name = ns_model_name;
         afe_config->afe_ns_mode = AFE_NS_MODE_NET;
+        ESP_LOGI(TAG, "✅ NS model found: %s", ns_model_name);
     } else {
         afe_config->ns_init = false;
+        ESP_LOGW(TAG, "⚠️ No NS model found, noise suppression disabled");
     }
 
     afe_config->agc_init = false;
@@ -59,32 +72,41 @@ void AfeAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms, srm
 #ifdef CONFIG_USE_DEVICE_AEC
     afe_config->aec_init = true;
     afe_config->vad_init = false;
+    ESP_LOGI(TAG, "Device AEC enabled, VAD disabled");
 #else
     afe_config->aec_init = false;
-    afe_config->vad_init = true;
+    // ⚠️ CRITICAL: 只有在有有效 VAD 模型时才启用 VAD
+    // 如果没有模型但 vad_init = true，会导致 vad_trigger_detect 崩溃 (LoadProhibited)
+    if (vad_model_name != nullptr) {
+        afe_config->vad_init = true;
+        ESP_LOGI(TAG, "✅ VAD enabled with model");
+    } else {
+        afe_config->vad_init = false;
+        ESP_LOGW(TAG, "⚠️ VAD disabled (no model available)");
+    }
 #endif
 
     afe_iface_ = esp_afe_handle_from_config(afe_config);
     afe_data_ = afe_iface_->create_from_config(afe_config);
     
-    ESP_LOGI(TAG, "Creating AFE processor task (stack: 2560 bytes)...");
-    ESP_LOGI(TAG, "📊 Before AFE task creation: Free SRAM=%zu, Min SRAM ever=%zu", 
-             heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
-             heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    ESP_LOGI(TAG, "Creating AFE processor task (stack: 8192 bytes)...");
     
-    BaseType_t task_created = xTaskCreatePinnedToCore([](void* arg) {
-        auto this_ = (AfeAudioProcessor*)arg;
-        ESP_LOGI("AfeAudioProcessor", "🚀 AFE task started on core %d!", xPortGetCoreID());
-        this_->AudioProcessorTask();
-        vTaskDelete(NULL);
-    }, "afe_proc", 2560, this, 4, NULL, 0);  // 栈 2.5KB，优先级 4，固定到 Core 0
-    
-    if (task_created != pdPASS) {
-        ESP_LOGE(TAG, "❌ CRITICAL: Failed to create AFE task!");
-        ESP_LOGE(TAG, "   Free SRAM: %zu bytes", heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-        ESP_LOGE(TAG, "   Free PSRAM: %zu bytes", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    // Allocate task stack in PSRAM to save SRAM
+    if (!task_stack_) task_stack_ = (StackType_t*)heap_caps_malloc(8192, MALLOC_CAP_SPIRAM);
+    if (!task_buffer_) task_buffer_ = (StaticTask_t*)heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+
+    if (task_stack_ && task_buffer_) {
+        // Move AFE task to Core 1 to offload Core 0
+        task_handle_ = xTaskCreateStaticPinnedToCore([](void* arg) {
+            auto this_ = (AfeAudioProcessor*)arg;
+            ESP_LOGI("AfeAudioProcessor", "🚀 AFE task started on core %d!", xPortGetCoreID());
+            this_->AudioProcessorTask();
+            vTaskDelete(NULL);
+        }, "afe_proc", 8192, this, 4, task_stack_, task_buffer_, 1);
+        
+        ESP_LOGI(TAG, "✅ AFE task created (stack: 8192, core: 1, prio: 4, PSRAM)");
     } else {
-        ESP_LOGI(TAG, "✅ AFE task created (stack: 2560, core: 0, prio: 4)");
+        ESP_LOGE(TAG, "❌ Failed to allocate AFE task stack in PSRAM!");
     }
 }
 
@@ -93,6 +115,15 @@ AfeAudioProcessor::~AfeAudioProcessor() {
         afe_iface_->destroy(afe_data_);
     }
     vEventGroupDelete(event_group_);
+    
+    if (task_stack_) {
+        heap_caps_free(task_stack_);
+        task_stack_ = nullptr;
+    }
+    if (task_buffer_) {
+        heap_caps_free(task_buffer_);
+        task_buffer_ = nullptr;
+    }
 }
 
 size_t AfeAudioProcessor::GetFeedSize() {

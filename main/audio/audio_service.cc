@@ -1,6 +1,7 @@
 #include "audio_service.h"
 #include "wake_word_manager.h"
 #include <esp_log.h>
+#include <esp_heap_caps.h>
 #include <cstring>
 
 #if CONFIG_USE_AUDIO_PROCESSOR
@@ -15,12 +16,26 @@
 #include "wake_words/tf_custom_wake_word.h"
 #include "wake_words/micro/micro_wake_word.h"
 #if CONFIG_USE_MICRO_WAKE_WORD
-// ✅ Using ESPHome official v2 model "Okay Nabu" for testing
-// Downloaded from: https://github.com/esphome/micro-wake-word-models
+// Micro Wake Word Models - All models are compiled in, enabled/disabled at runtime via BLE
+
+// ESPHome official v2 model "Okay Nabu" (always enabled)
 #include "wake_words/micro/okay_nabu.h"
-// ✅ Using custom Plaud AI model "Hey Ploud" V3 (20251212 训练)
-#include "wake_words/micro/hey_ploudv3.h"
-#endif
+
+// Note: hey_ploud model is hidden/disabled
+
+// Custom "Hey HelloKitty" model
+#include "wake_words/micro/hey_hellokitty.h"
+
+// Custom "Hey IronMan" model
+#include "wake_words/micro/hey_ironman.h"
+
+// Custom "Hey Luigi" model
+#include "wake_words/micro/hey_luigi.h"
+
+// Custom "Hey Stitch" model
+#include "wake_words/micro/hey_stitch.h"
+
+#endif  // CONFIG_USE_MICRO_WAKE_WORD
 #else
 #include "wake_words/esp_wake_word.h"
 #endif
@@ -30,12 +45,35 @@
 
 AudioService::AudioService() {
     event_group_ = xEventGroupCreate();
+    if (!event_group_) {
+        ESP_LOGE(TAG, "❌ Failed to create event group!");
+    } else {
+        ESP_LOGI(TAG, "✅ AudioService event_group_ created at %p", event_group_);
+    }
 }
 
 AudioService::~AudioService() {
+    ESP_LOGW(TAG, "⚠️  AudioService destructor called! This should NOT happen during normal operation!");
+    
+    // 先停止服务，确保所有任务退出
+    Stop();
+    
+    // 等待任务真正退出
+    vTaskDelay(pdMS_TO_TICKS(100));
+    
     if (event_group_ != nullptr) {
+        ESP_LOGI(TAG, "Deleting event_group_ at %p", event_group_);
         vEventGroupDelete(event_group_);
+        event_group_ = nullptr;
     }
+
+    // Free task stacks
+    if (audio_input_task_stack_) { heap_caps_free(audio_input_task_stack_); audio_input_task_stack_ = nullptr; }
+    if (audio_input_task_buffer_) { heap_caps_free(audio_input_task_buffer_); audio_input_task_buffer_ = nullptr; }
+    if (audio_output_task_stack_) { heap_caps_free(audio_output_task_stack_); audio_output_task_stack_ = nullptr; }
+    if (audio_output_task_buffer_) { heap_caps_free(audio_output_task_buffer_); audio_output_task_buffer_ = nullptr; }
+    if (opus_codec_task_stack_) { heap_caps_free(opus_codec_task_stack_); opus_codec_task_stack_ = nullptr; }
+    if (opus_codec_task_buffer_) { heap_caps_free(opus_codec_task_buffer_); opus_codec_task_buffer_ = nullptr; }
 }
 
 
@@ -70,65 +108,96 @@ void AudioService::Initialize(AudioCodec* codec) {
         }
     });
 
-    esp_timer_create_args_t audio_power_timer_args = {
-        .callback = [](void* arg) {
-            AudioService* audio_service = (AudioService*)arg;
-            audio_service->CheckAndUpdateAudioPowerState();
-        },
-        .arg = this,
-        .dispatch_method = ESP_TIMER_TASK,
-        .name = "audio_power_timer",
-        .skip_unhandled_events = true,
-    };
-    esp_timer_create(&audio_power_timer_args, &audio_power_timer_);
+    // esp_timer_create_args_t audio_power_timer_args = {
+    //     .callback = [](void* arg) {
+    //         AudioService* audio_service = (AudioService*)arg;
+    //         audio_service->CheckAndUpdateAudioPowerState();
+    //     },
+    //     .arg = this,
+    //     .dispatch_method = ESP_TIMER_TASK,
+    //     .name = "audio_power_timer",
+    //     .skip_unhandled_events = true,
+    // };
+    // esp_timer_create(&audio_power_timer_args, &audio_power_timer_);
 }
 
 void AudioService::Start() {
     service_stopped_ = false;
     xEventGroupClearBits(event_group_, AS_EVENT_AUDIO_TESTING_RUNNING | AS_EVENT_WAKE_WORD_RUNNING | AS_EVENT_AUDIO_PROCESSOR_RUNNING);
 
-    esp_timer_start_periodic(audio_power_timer_, 1000000);
+    // esp_timer_start_periodic(audio_power_timer_, 1000000);
+
+    // Allocate stacks
+    // AudioInputTask: 16KB (Move back to SRAM for stability/speed, we have enough SRAM now)
+    // PSRAM stack caused IWDT crashes during high bus load (ThorVG + WiFi)
+    if (!audio_input_task_stack_) audio_input_task_stack_ = (StackType_t*)heap_caps_malloc(16384, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!audio_input_task_buffer_) audio_input_task_buffer_ = (StaticTask_t*)heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    
+    // AudioOutputTask: 8KB (Keep in PSRAM, less critical)
+    if (!audio_output_task_stack_) audio_output_task_stack_ = (StackType_t*)heap_caps_malloc(8192, MALLOC_CAP_SPIRAM);
+    if (!audio_output_task_buffer_) audio_output_task_buffer_ = (StaticTask_t*)heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+
+    // OpusCodecTask: 32KB (was 26KB SRAM/PSRAM?)
+    if (!opus_codec_task_stack_) opus_codec_task_stack_ = (StackType_t*)heap_caps_malloc(32768, MALLOC_CAP_SPIRAM);
+    if (!opus_codec_task_buffer_) opus_codec_task_buffer_ = (StaticTask_t*)heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    
+    if (!audio_input_task_stack_ || !audio_input_task_buffer_ || 
+        !audio_output_task_stack_ || !audio_output_task_buffer_ ||
+        !opus_codec_task_stack_ || !opus_codec_task_buffer_) {
+        ESP_LOGE(TAG, "Failed to allocate task stacks in PSRAM! Attempting to continue but crash likely.");
+    }
 
 #if CONFIG_USE_AUDIO_PROCESSOR
     /* Start the audio input task */
-    xTaskCreatePinnedToCore([](void* arg) {
-        AudioService* audio_service = (AudioService*)arg;
-        audio_service->AudioInputTask();
-        vTaskDelete(NULL);
-    }, "audio_input", 2048 * 3, this, 8, &audio_input_task_handle_, 0);
+    if (audio_input_task_stack_ && audio_input_task_buffer_) {
+        // Move AudioInputTask to Core 1 to offload Core 0 (WiFi/BLE/System Timers)
+        audio_input_task_handle_ = xTaskCreateStaticPinnedToCore([](void* arg) {
+            AudioService* audio_service = (AudioService*)arg;
+            audio_service->AudioInputTask();
+            vTaskDelete(NULL);
+        }, "audio_input", 16384, this, 8, audio_input_task_stack_, audio_input_task_buffer_, 1);
+    }
 
     /* Start the audio output task */
-    xTaskCreate([](void* arg) {
-        AudioService* audio_service = (AudioService*)arg;
-        audio_service->AudioOutputTask();
-        vTaskDelete(NULL);
-    }, "audio_output", 2048 * 2, this, 4, &audio_output_task_handle_);
+    if (audio_output_task_stack_ && audio_output_task_buffer_) {
+        audio_output_task_handle_ = xTaskCreateStatic([](void* arg) {
+            AudioService* audio_service = (AudioService*)arg;
+            audio_service->AudioOutputTask();
+            vTaskDelete(NULL);
+        }, "audio_output", 8192, this, 4, audio_output_task_stack_, audio_output_task_buffer_);
+    }
 #else
     /* Start the audio input task */
-    xTaskCreate([](void* arg) {
-        AudioService* audio_service = (AudioService*)arg;
-        audio_service->AudioInputTask();
-        vTaskDelete(NULL);
-    }, "audio_input", 2048 * 2, this, 8, &audio_input_task_handle_);
+    if (audio_input_task_stack_ && audio_input_task_buffer_) {
+        audio_input_task_handle_ = xTaskCreateStatic([](void* arg) {
+            AudioService* audio_service = (AudioService*)arg;
+            audio_service->AudioInputTask();
+            vTaskDelete(NULL);
+        }, "audio_input", 16384, this, 8, audio_input_task_stack_, audio_input_task_buffer_);
+    }
 
     /* Start the audio output task */
-    xTaskCreate([](void* arg) {
-        AudioService* audio_service = (AudioService*)arg;
-        audio_service->AudioOutputTask();
-        vTaskDelete(NULL);
-    }, "audio_output", 2048, this, 4, &audio_output_task_handle_);
+    if (audio_output_task_stack_ && audio_output_task_buffer_) {
+        audio_output_task_handle_ = xTaskCreateStatic([](void* arg) {
+            AudioService* audio_service = (AudioService*)arg;
+            audio_service->AudioOutputTask();
+            vTaskDelete(NULL);
+        }, "audio_output", 8192, this, 4, audio_output_task_stack_, audio_output_task_buffer_);
+    }
 #endif
 
     /* Start the opus codec task */
-    xTaskCreate([](void* arg) {
-        AudioService* audio_service = (AudioService*)arg;
-        audio_service->OpusCodecTask();
-        vTaskDelete(NULL);
-    }, "opus_codec", 2048 * 13, this, 2, &opus_codec_task_handle_);
+    if (opus_codec_task_stack_ && opus_codec_task_buffer_) {
+        opus_codec_task_handle_ = xTaskCreateStatic([](void* arg) {
+            AudioService* audio_service = (AudioService*)arg;
+            audio_service->OpusCodecTask();
+            vTaskDelete(NULL);
+        }, "opus_codec", 32768, this, 2, opus_codec_task_stack_, opus_codec_task_buffer_);
+    }
 }
 
 void AudioService::Stop() {
-    esp_timer_stop(audio_power_timer_);
+    // esp_timer_stop(audio_power_timer_);
     service_stopped_ = true;
     xEventGroupSetBits(event_group_, AS_EVENT_AUDIO_TESTING_RUNNING |
         AS_EVENT_WAKE_WORD_RUNNING |
@@ -144,8 +213,8 @@ void AudioService::Stop() {
 
 bool AudioService::ReadAudioData(std::vector<int16_t>& data, int sample_rate, int samples) {
     if (!codec_->input_enabled()) {
-        esp_timer_stop(audio_power_timer_);
-        esp_timer_start_periodic(audio_power_timer_, AUDIO_POWER_CHECK_INTERVAL_MS * 1000);
+        // esp_timer_stop(audio_power_timer_);
+        // esp_timer_start_periodic(audio_power_timer_, AUDIO_POWER_CHECK_INTERVAL_MS * 1000);
         codec_->EnableInput(true);
     }
 
@@ -188,20 +257,6 @@ bool AudioService::ReadAudioData(std::vector<int16_t>& data, int sample_rate, in
     last_input_time_ = std::chrono::steady_clock::now();
     debug_statistics_.input_count++;
     
-    // 🔍 调试：ReadAudioData 返回前的数据统计
-    static int read_count = 0;
-    if (++read_count % 100 == 0 && sample_rate == 16000) {
-        int64_t sum = 0;
-        int max_val = 0;
-        for (const auto& val : data) {
-            sum += abs(val);
-            if (abs(val) > max_val) max_val = abs(val);
-        }
-        int avg = data.empty() ? 0 : sum / data.size();
-        const char* format_desc = (codec_->input_channels() == 2) ? "2-ch交织" : "单通道";
-        ESP_LOGI(TAG, "🔎 ReadAudioData返回前 (count #%d, 16kHz %s): size=%u, avg=%d, max=%d", 
-                 read_count, format_desc, (unsigned int)data.size(), avg, max_val);
-    }
 
 #if CONFIG_USE_AUDIO_DEBUGGER
     // 音频调试：发送原始音频数据
@@ -216,6 +271,12 @@ bool AudioService::ReadAudioData(std::vector<int16_t>& data, int sample_rate, in
 
 void AudioService::AudioInputTask() {    
     while (true) {
+        // 关键修复：检查 event_group_ 有效性，防止内存损坏导致崩溃
+        if (!event_group_) {
+            ESP_LOGE(TAG, "❌ event_group_ is NULL! Memory corruption detected!");
+            break;
+        }
+        
         EventBits_t bits = xEventGroupWaitBits(event_group_, AS_EVENT_AUDIO_TESTING_RUNNING |
             AS_EVENT_WAKE_WORD_RUNNING | AS_EVENT_AUDIO_PROCESSOR_RUNNING,
             pdFALSE, pdFALSE, portMAX_DELAY);
@@ -309,8 +370,8 @@ void AudioService::AudioOutputTask() {
         lock.unlock();
 
         if (!codec_->output_enabled()) {
-            esp_timer_stop(audio_power_timer_);
-            esp_timer_start_periodic(audio_power_timer_, AUDIO_POWER_CHECK_INTERVAL_MS * 1000);
+            // esp_timer_stop(audio_power_timer_);
+            // esp_timer_start_periodic(audio_power_timer_, AUDIO_POWER_CHECK_INTERVAL_MS * 1000);
             codec_->EnableOutput(true);
         }
         codec_->OutputData(task->pcm);
@@ -483,15 +544,6 @@ const std::string& AudioService::GetLastWakeWord() const {
     return wake_word_->GetLastDetectedWakeWord();
 }
 
-float AudioService::GetLastWakeWordProbability() const {
-    // MicroWakeWord 支持获取概率，其他类型的 wake word 返回 0.0
-    auto micro_ww = dynamic_cast<micro_wake_word::MicroWakeWord*>(wake_word_.get());
-    if (micro_ww) {
-        return micro_ww->GetLastDetectedProbability();
-    }
-    return 0.0f;
-}
-
 std::unique_ptr<AudioStreamPacket> AudioService::PopWakeWordPacket() {
     auto packet = std::make_unique<AudioStreamPacket>();
     if (wake_word_->GetWakeWordOpus(packet->payload)) {
@@ -624,8 +676,8 @@ void AudioService::PlaySound(const std::string_view& ogg) {
     
     if (!codec_->output_enabled()) {
         ESP_LOGI(TAG, "🔊 音频输出未启用，正在启用...");
-        esp_timer_stop(audio_power_timer_);
-        esp_timer_start_periodic(audio_power_timer_, AUDIO_POWER_CHECK_INTERVAL_MS * 1000);
+        // esp_timer_stop(audio_power_timer_);
+        // esp_timer_start_periodic(audio_power_timer_, AUDIO_POWER_CHECK_INTERVAL_MS * 1000);
         codec_->EnableOutput(true);
     }
 
@@ -746,9 +798,9 @@ void AudioService::CheckAndUpdateAudioPowerState() {
     if (output_elapsed > AUDIO_POWER_TIMEOUT_MS && codec_->output_enabled()) {
         codec_->EnableOutput(false);
     }
-    if (!codec_->input_enabled() && !codec_->output_enabled()) {
-        esp_timer_stop(audio_power_timer_);
-    }
+    // if (!codec_->input_enabled() && !codec_->output_enabled()) {
+    //     esp_timer_stop(audio_power_timer_);
+    // }
 }
 
 void AudioService::SetModelsList(srmodel_list_t* models_list) {
@@ -784,56 +836,121 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
     } else {
         ESP_LOGI(TAG, "✅ MicroWakeWord initialized successfully");
         
-        // ✅ 修复参考通道混音错误后的新配置
-        // 
-        // 🔥 **根本问题**：之前把主麦克风和扬声器回放混在一起！
-        //    - 错误做法：(SLOT0 + SLOT1) / 2 ❌
-        //    - 正确做法：只用 SLOT0（主麦克风）✅
-        // 
         // ✅ 配置参数：根据实际测试调整
         // 由于使用 24kHz->16kHz 重采样，阈值需要相应调整
-        float threshold_okay_nabu = 0.90;  // 调整后的阈值
-        float threshold_hey_ploud = 0.90;  // Hey Ploud 阈值（测试中）
-        size_t sliding_window = 5;  // 官方推荐滑动窗口
-        size_t tensor_arena_okay_nabu = 26080;  // Okay Nabu 的 tensor arena
-        size_t tensor_arena_hey_ploud = 26080;  // Hey Ploud 的 tensor arena（初始估计，可能需要调整）
+        const float default_threshold = 0.70;  // 默认阈值
+        const size_t sliding_window = 5;       // 官方推荐滑动窗口
+        const size_t default_tensor_arena = 26080;  // 默认 tensor arena 大小
         
-        ESP_LOGI(TAG, "🎯 Loading Multiple Wake Word Models:");
+        int model_count = 0;
+        
+        ESP_LOGI(TAG, "🎯 Loading Wake Word Models (runtime configurable via BLE):");
         ESP_LOGI(TAG, "   - Sample Rate: 24kHz (ES7210 原生)");
         ESP_LOGI(TAG, "   - Resampling: 24kHz → 16kHz (SILK Resampler)");
         ESP_LOGI(TAG, "   - Frontend: ESPHome-aligned (min_signal=0.05)");
         ESP_LOGI(TAG, "   - MIC Input: SLOT0 only (主麦克风) ✅");
         ESP_LOGI(TAG, "   - Sliding Window: %u", (unsigned int)sliding_window);
         
-        // Model 1: Plaud AI 定制 Hey Ploud V3 模型 (20251212 训练)
-        // 【测试模式】放在第一个，以便记录其推理概率
-        ESP_LOGI(TAG, "📦 Model 1: Hey Ploud V3 (Plaud AI Custom, 20251212) ⭐ 测试中");
-        ESP_LOGI(TAG, "   - Threshold: %.2f (initial, needs testing)", threshold_hey_ploud);
-        ESP_LOGI(TAG, "   - Tensor Arena: %u bytes (initial estimate)", (unsigned int)tensor_arena_hey_ploud);
-        ESP_LOGI(TAG, "   - Wake Phrase: 'Hey Ploud'");
-        micro_ww->add_wake_word_model(
-            hey_ploud_v3_tflite,
-            threshold_hey_ploud,
-            sliding_window,
-            "hey ploud",
-            tensor_arena_hey_ploud
-        );
-        
-        // Model 2: ESPHome 官方 Okay Nabu 模型
-        ESP_LOGI(TAG, "📦 Model 2: Okay Nabu (ESPHome Official v2)");
-        ESP_LOGI(TAG, "   - Threshold: %.2f (adjusted for resampling)", threshold_okay_nabu);
-        ESP_LOGI(TAG, "   - Tensor Arena: %u bytes", (unsigned int)tensor_arena_okay_nabu);
-        ESP_LOGI(TAG, "   - Wake Phrase: 'Okay Nabu'");
+        // ═══════════════════════════════════════════════════════════════
+        // Model: Okay Nabu (ESPHome Official v2) - ALWAYS ENABLED
+        // ═══════════════════════════════════════════════════════════════
+        ESP_LOGI(TAG, "📦 Loading: Okay Nabu (ESPHome Official v2) [ALWAYS ENABLED]");
+        ESP_LOGI(TAG, "   - Threshold: %.2f, Tensor Arena: %u bytes", default_threshold, (unsigned int)default_tensor_arena);
         micro_ww->add_wake_word_model(
             okay_nabu_tflite,
-            threshold_okay_nabu,
+            default_threshold,
             sliding_window,
             "okay nabu",
-            tensor_arena_okay_nabu
+            default_tensor_arena,
+            "okay_nabu",      // model_id
+            true,             // always_enabled = true (cannot be disabled)
+            true              // initial_enabled = true
         );
+        model_count++;
+
+        // ═══════════════════════════════════════════════════════════════
+        // Model: Hey HelloKitty - Default disabled
+        // ═══════════════════════════════════════════════════════════════
+        ESP_LOGI(TAG, "📦 Loading: Hey HelloKitty [default: disabled]");
+        ESP_LOGI(TAG, "   - Threshold: %.2f, Tensor Arena: %u bytes", default_threshold, (unsigned int)default_tensor_arena);
+        micro_ww->add_wake_word_model(
+            hey_hellokitty_tflite,
+            default_threshold,
+            sliding_window,
+            "hey hellokitty",
+            default_tensor_arena,
+            "hey_hellokitty",  // model_id
+            false,             // always_enabled = false
+            false              // initial_enabled = false
+        );
+        model_count++;
+
+        // ═══════════════════════════════════════════════════════════════
+        // Model: Hey IronMan - Default disabled
+        // ═══════════════════════════════════════════════════════════════
+        ESP_LOGI(TAG, "📦 Loading: Hey IronMan [default: disabled]");
+        ESP_LOGI(TAG, "   - Threshold: %.2f, Tensor Arena: %u bytes", default_threshold, (unsigned int)default_tensor_arena);
+        micro_ww->add_wake_word_model(
+            hey_ironman_tflite,
+            default_threshold,
+            sliding_window,
+            "hey iron man",
+            default_tensor_arena,
+            "hey_ironman",     // model_id
+            false,             // always_enabled = false
+            false              // initial_enabled = false
+        );
+        model_count++;
+
+        // ═══════════════════════════════════════════════════════════════
+        // Model: Hey Luigi - Default disabled
+        // ═══════════════════════════════════════════════════════════════
+        ESP_LOGI(TAG, "📦 Loading: Hey Luigi [default: disabled]");
+        ESP_LOGI(TAG, "   - Threshold: %.2f, Tensor Arena: %u bytes", default_threshold, (unsigned int)default_tensor_arena);
+        micro_ww->add_wake_word_model(
+            hey_luigi_tflite,
+            default_threshold,
+            sliding_window,
+            "hey luigi",
+            default_tensor_arena,
+            "hey_luigi",       // model_id
+            false,             // always_enabled = false
+            false              // initial_enabled = false
+        );
+        model_count++;
+
+        // ═══════════════════════════════════════════════════════════════
+        // Model: Hey Stitch - Default disabled
+        // ═══════════════════════════════════════════════════════════════
+        ESP_LOGI(TAG, "📦 Loading: Hey Stitch [default: disabled]");
+        ESP_LOGI(TAG, "   - Threshold: %.2f, Tensor Arena: %u bytes", default_threshold, (unsigned int)default_tensor_arena);
+        micro_ww->add_wake_word_model(
+            hey_stich_tflite,
+            default_threshold,
+            sliding_window,
+            "hey stitch",
+            default_tensor_arena,
+            "hey_stitch",      // model_id
+            false,             // always_enabled = false
+            false              // initial_enabled = false
+        );
+        model_count++;
+
+        // Note: hey_ploud model is intentionally hidden/not loaded
         
-        ESP_LOGI(TAG, "✅ All wake word models loaded successfully");
-        ESP_LOGI(TAG, "🎤 You can now say either 'Okay Nabu' or 'Hey Ploud' to wake up the device!");
+        ESP_LOGI(TAG, "✅ Registered %d wake word model(s)", model_count);
+        
+        // 从 NVS 加载保存的模型启用状态
+        ESP_LOGI(TAG, "📖 Loading saved model states from NVS...");
+        if (micro_ww->load_model_states_from_nvs()) {
+            ESP_LOGI(TAG, "✅ Model states restored from NVS");
+        } else {
+            ESP_LOGI(TAG, "ℹ️  Using default model states (first boot or no saved states)");
+        }
+        
+        ESP_LOGI(TAG, "🎤 Multi wake word models enabled");
+        ESP_LOGI(TAG, "   - 'okay_nabu' is always enabled");
+        ESP_LOGI(TAG, "   - Model states are automatically saved to NVS");
         
         wake_word_ = std::move(micro_ww);
     }

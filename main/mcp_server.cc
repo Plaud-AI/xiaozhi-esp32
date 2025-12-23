@@ -17,6 +17,7 @@
 #include "settings.h"
 #include "lvgl_theme.h"
 #include "lvgl_display.h"
+#include "boards/common/wifi_board.h"  // 添加 WifiBoard 头文件
 
 #define TAG "MCP"
 
@@ -120,6 +121,26 @@ void McpServer::AddCommonTools() {
             });
     }
 #endif
+
+    // BLE 配置模式（仅 WifiBoard）- AI 可见工具
+    auto wifi_board = dynamic_cast<WifiBoard*>(&board);
+    if (wifi_board) {
+        AddTool("self.enter_ble_config_mode",
+            "Enter BLE (Bluetooth Low Energy) configuration mode to reconfigure WiFi and device settings. "
+            "This will stop WiFi temporarily and start BLE service. "
+            "Use this tool when user explicitly asks to: enter BLE mode, enter Bluetooth mode, configure via Bluetooth, or enter configuration mode. "
+            "After entering BLE mode, the device will be discoverable as 'ESP32-OKAY-NABU' via Bluetooth. "
+            "The user can then use a Bluetooth app to reconfigure the device.",
+            PropertyList(),
+            [wifi_board](const PropertyList& properties) -> ReturnValue {
+                auto& app = Application::GetInstance();
+                app.Schedule([wifi_board]() {
+                    ESP_LOGI(TAG, "🔧 User requested to enter BLE configuration mode via voice command");
+                    wifi_board->EnterBleConfigMode();
+                });
+                return true;
+            });
+    }
 
     // Restore the original tools list to the end of the tools list
     tools_.insert(tools_.end(), original_tools.begin(), original_tools.end());

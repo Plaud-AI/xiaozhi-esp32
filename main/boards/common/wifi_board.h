@@ -17,6 +17,7 @@ public:
     virtual const char* GetNetworkStateIcon() override;
     virtual void SetPowerSaveMode(bool enabled) override;
     virtual void ResetWifiConfiguration();
+    virtual void EnterBleConfigMode();  // 新增：进入 BLE 配置模式
     virtual AudioCodec* GetAudioCodec() override { return nullptr; }
     virtual std::string GetDeviceStatusJson() override;
 };

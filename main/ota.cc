@@ -21,6 +21,10 @@
 
 #define TAG "Ota"
 
+// 官方 OTA 服务器域名
+#define OFFICIAL_OTA_DOMAIN "api.tenclass.net"
+#define OFFICIAL_OTA_DOMAIN_2 "2662r3426b.vicp.fun"
+
 
 Ota::Ota() {
 #ifdef ESP_EFUSE_BLOCK_USR_DATA
@@ -41,9 +45,34 @@ Ota::~Ota() {
 }
 
 std::string Ota::GetCheckVersionUrl() {
-    // 强制使用新的配置，忽略 NVS 中的旧配置
+    // 优先读取 NVS 中的自定义地址
+    // 先尝试从 "system" namespace 读取（新逻辑）
+    try {
+        Settings settings("system", false);
+        std::string custom_url = settings.GetString("ota_url", "");
+        if (!custom_url.empty()) {
+            ESP_LOGI(TAG, "Using custom OTA URL from NVS (system): %s", custom_url.c_str());
+            return custom_url;
+        }
+    } catch (const std::exception& e) {
+        ESP_LOGW(TAG, "Failed to read custom OTA URL from system: %s", e.what());
+    }
+    
+    // 然后尝试从 "wifi" namespace 读取（兼容原项目）
+    try {
+        Settings settings("wifi", false);
+        std::string custom_url = settings.GetString("ota_url", "");
+        if (!custom_url.empty()) {
+            ESP_LOGI(TAG, "Using custom OTA URL from NVS (wifi): %s", custom_url.c_str());
+            return custom_url;
+        }
+    } catch (const std::exception& e) {
+        ESP_LOGW(TAG, "Failed to read custom OTA URL from wifi: %s", e.what());
+    }
+    
+    // 回退到默认配置
     std::string url = CONFIG_OTA_URL;
-    ESP_LOGI(TAG, "Using OTA URL (forced): %s", url.c_str());
+    ESP_LOGI(TAG, "Using default OTA URL: %s", url.c_str());
     return url;
 }
 
@@ -52,9 +81,27 @@ std::unique_ptr<Http> Ota::SetupHttp() {
     auto network = board.GetNetwork();
     auto http = network->CreateHttp(0);
     auto user_agent = SystemInfo::GetUserAgent();
+    
+    // 判断是否是官方服务器（支持多个官方域名）
+    std::string ota_url = GetCheckVersionUrl();
+    bool is_official_server = (ota_url.find(OFFICIAL_OTA_DOMAIN) != std::string::npos) ||
+                              (ota_url.find(OFFICIAL_OTA_DOMAIN_2) != std::string::npos);
+    
     http->SetHeader("Activation-Version", has_serial_number_ ? "2" : "1");
-    http->SetHeader("Device-Id", SystemInfo::GetMacAddress().c_str());
-    http->SetHeader("Client-Id", board.GetUuid());
+    
+    // 根据服务器类型设置不同的 Header
+    // 官方服务器：使用 MAC 地址作为 Device-Id，UUID 作为 Client-Id（兼容原项目）
+    // 非官方服务器：都使用 DeviceId（当前项目逻辑）
+    if (is_official_server) {
+        http->SetHeader("Device-Id", SystemInfo::GetMacAddress().c_str());
+        http->SetHeader("Client-Id", board.GetUuid().c_str());
+        ESP_LOGI(TAG, "Using official server headers: Device-Id=MAC, Client-Id=UUID");
+    } else {
+        http->SetHeader("Device-Id", board.GetDeviceId().c_str());
+        http->SetHeader("Client-Id", board.GetDeviceId().c_str());
+        ESP_LOGI(TAG, "Using custom server headers: Device-Id=DeviceId, Client-Id=DeviceId");
+    }
+    
     if (has_serial_number_) {
         http->SetHeader("Serial-Number", serial_number_.c_str());
         ESP_LOGI(TAG, "Setup HTTP, User-Agent: %s, Serial-Number: %s", user_agent.c_str(), serial_number_.c_str());
@@ -83,17 +130,44 @@ bool Ota::CheckVersion() {
         return false;
     }
 
+    // 判断是否是官方服务器（用于日志显示，支持多个官方域名）
+    bool is_official_server = (url.find(OFFICIAL_OTA_DOMAIN) != std::string::npos) ||
+                              (url.find(OFFICIAL_OTA_DOMAIN_2) != std::string::npos);
+    std::string device_id_header = is_official_server ? SystemInfo::GetMacAddress() : board.GetDeviceId();
+    std::string client_id_header = is_official_server ? board.GetUuid() : board.GetDeviceId();
+
     auto http = SetupHttp();
 
     std::string data = board.GetSystemInfoJson();
     std::string method = data.length() > 0 ? "POST" : "GET";
+    
+    ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════════╗");
+    ESP_LOGI(TAG, "║   📤 OTA 请求详情                                              ║");
+    ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════════╣");
+    ESP_LOGI(TAG, "║   URL: %s", url.c_str());
+    ESP_LOGI(TAG, "║   方法: %s", method.c_str());
+    ESP_LOGI(TAG, "║   官方服务器: %s", is_official_server ? "是" : "否");
+    ESP_LOGI(TAG, "║   Device-Id Header: %s", device_id_header.c_str());
+    ESP_LOGI(TAG, "║   Client-Id Header: %s", client_id_header.c_str());
+    ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════════╣");
+    ESP_LOGI(TAG, "║   📋 请求 Body (POST data):                                    ║");
+    ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════════╝");
+    
+    // 分段打印请求 body（ESP_LOG 有长度限制）
+    if (data.length() > 0) {
+        const size_t chunk_size = 200;
+        for (size_t i = 0; i < data.length(); i += chunk_size) {
+            std::string chunk = data.substr(i, chunk_size);
+            ESP_LOGI(TAG, "%s", chunk.c_str());
+        }
+    } else {
+        ESP_LOGI(TAG, "(空)");
+    }
+    ESP_LOGI(TAG, "════════════════════════════════════════════════════════════════");
+
     http->SetContent(std::move(data));
 
-    ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "正在连接 OTA 服务器...");
-    ESP_LOGI(TAG, "URL: %s", url.c_str());
-    ESP_LOGI(TAG, "方法: %s", method.c_str());
-    ESP_LOGI(TAG, "========================================");
 
     if (!http->Open(method, url)) {
         ESP_LOGE(TAG, "❌ 无法连接到 OTA 服务器");
@@ -102,8 +176,7 @@ bool Ota::CheckVersion() {
     }
 
     auto status_code = http->GetStatusCode();
-    ESP_LOGI(TAG, "✅ OTA 服务器连接成功");
-    ESP_LOGI(TAG, "HTTP 状态码: %d", status_code);
+    ESP_LOGI(TAG, "✅ OTA 服务器连接成功, HTTP 状态码: %d", status_code);
     
     if (status_code != 200) {
         ESP_LOGE(TAG, "❌ 服务器返回错误状态码: %d", status_code);
@@ -111,10 +184,20 @@ bool Ota::CheckVersion() {
     }
 
     data = http->ReadAll();
-    ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "服务器响应内容:");
-    ESP_LOGI(TAG, "%s", data.c_str());
-    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════════╗");
+    ESP_LOGI(TAG, "║   📥 OTA 服务器响应                                            ║");
+    ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════════╝");
+    // 分段打印响应内容
+    if (data.length() > 0) {
+        const size_t chunk_size = 200;
+        for (size_t i = 0; i < data.length(); i += chunk_size) {
+            std::string chunk = data.substr(i, chunk_size);
+            ESP_LOGI(TAG, "%s", chunk.c_str());
+        }
+    } else {
+        ESP_LOGI(TAG, "(空)");
+    }
+    ESP_LOGI(TAG, "════════════════════════════════════════════════════════════════");
     http->Close();
 
     // Response: { "firmware": { "version": "1.0.0", "url": "http://" } }
@@ -183,6 +266,28 @@ bool Ota::CheckVersion() {
             }
         }
         has_mqtt_config_ = true;
+        
+        // 打印从 OTA 服务器获取到的 MQTT 配置
+        ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════════╗");
+        ESP_LOGI(TAG, "║   📡 OTA 返回的 MQTT 配置                                      ║");
+        ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════════╣");
+        cJSON *mqtt_endpoint = cJSON_GetObjectItem(mqtt, "endpoint");
+        cJSON *mqtt_client_id = cJSON_GetObjectItem(mqtt, "client_id");
+        cJSON *mqtt_username = cJSON_GetObjectItem(mqtt, "username");
+        cJSON *mqtt_topic = cJSON_GetObjectItem(mqtt, "publish_topic");
+        if (cJSON_IsString(mqtt_endpoint)) {
+            ESP_LOGI(TAG, "║   Endpoint: %s", mqtt_endpoint->valuestring);
+        }
+        if (cJSON_IsString(mqtt_client_id)) {
+            ESP_LOGI(TAG, "║   Client ID: %s", mqtt_client_id->valuestring);
+        }
+        if (cJSON_IsString(mqtt_username)) {
+            ESP_LOGI(TAG, "║   Username: %s", mqtt_username->valuestring);
+        }
+        if (cJSON_IsString(mqtt_topic)) {
+            ESP_LOGI(TAG, "║   Publish Topic: %s", mqtt_topic->valuestring);
+        }
+        ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════════╝");
     } else {
         ESP_LOGI(TAG, "No mqtt section found !");
     }
@@ -190,6 +295,23 @@ bool Ota::CheckVersion() {
     has_websocket_config_ = false;
     cJSON *websocket = cJSON_GetObjectItem(root, "websocket");
     if (cJSON_IsObject(websocket)) {
+        // 先打印原始 WebSocket JSON 内容
+        char *ws_json_str = cJSON_Print(websocket);
+        ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════════╗");
+        ESP_LOGI(TAG, "║   📡 OTA 返回的 WebSocket 配置（原始 JSON）                    ║");
+        ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════════╝");
+        if (ws_json_str) {
+            // 分段打印完整 JSON
+            std::string ws_json(ws_json_str);
+            const size_t chunk_size = 200;
+            for (size_t i = 0; i < ws_json.length(); i += chunk_size) {
+                std::string chunk = ws_json.substr(i, chunk_size);
+                ESP_LOGI(TAG, "%s", chunk.c_str());
+            }
+            cJSON_free(ws_json_str);
+        }
+        ESP_LOGI(TAG, "════════════════════════════════════════════════════════════════");
+        
         Settings settings("websocket", true);
         cJSON *item = NULL;
         cJSON_ArrayForEach(item, websocket) {
@@ -197,15 +319,42 @@ bool Ota::CheckVersion() {
                 if (settings.GetString(item->string) != item->valuestring) {
                     settings.SetString(item->string, item->valuestring);
                 }
+                ESP_LOGI(TAG, "  💾 保存到 NVS: %s = %s", item->string, item->valuestring);
             } else if (cJSON_IsNumber(item)) {
                 if (settings.GetInt(item->string) != item->valueint) {
                     settings.SetInt(item->string, item->valueint);
                 }
+                ESP_LOGI(TAG, "  💾 保存到 NVS: %s = %d", item->string, item->valueint);
             }
         }
         has_websocket_config_ = true;
+        
+        // 打印解析后的关键配置
+        ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════════╗");
+        ESP_LOGI(TAG, "║   ✅ WebSocket 配置已保存                                      ║");
+        ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════════╣");
+        cJSON *ws_url = cJSON_GetObjectItem(websocket, "url");
+        cJSON *ws_token = cJSON_GetObjectItem(websocket, "token");
+        cJSON *ws_version = cJSON_GetObjectItem(websocket, "version");
+        if (cJSON_IsString(ws_url)) {
+            ESP_LOGI(TAG, "║   URL: %s", ws_url->valuestring);
+        }
+        if (cJSON_IsString(ws_token)) {
+            // Token 可能很长，只显示前 50 个字符
+            size_t token_len = strlen(ws_token->valuestring);
+            if (token_len > 50) {
+                ESP_LOGI(TAG, "║   Token: %.50s... (共 %zu 字符)", ws_token->valuestring, token_len);
+            } else {
+                ESP_LOGI(TAG, "║   Token: %s", ws_token->valuestring);
+            }
+        }
+        if (cJSON_IsNumber(ws_version)) {
+            ESP_LOGI(TAG, "║   Version: %d", ws_version->valueint);
+        }
+        ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════════╝");
     } else {
-        ESP_LOGI(TAG, "No websocket section found!");
+        ESP_LOGW(TAG, "⚠️  OTA 响应中没有 websocket 配置！");
+        ESP_LOGW(TAG, "    如需使用 WebSocket，请确保服务器返回 websocket 字段");
     }
 
     has_server_time_ = false;
