@@ -21,7 +21,8 @@
 // ESPHome official v2 model "Okay Nabu" (always enabled)
 #include "wake_words/micro/okay_nabu.h"
 
-// Note: hey_ploud model is hidden/disabled
+// Custom "Hey Ploud" model (default enabled)
+#include "wake_words/micro/hey_ploud.h"
 
 // Custom "Hey HelloKitty" model
 #include "wake_words/micro/hey_hellokitty.h"
@@ -869,6 +870,23 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
         model_count++;
 
         // ═══════════════════════════════════════════════════════════════
+        // Model: Hey Ploud - Default enabled
+        // ═══════════════════════════════════════════════════════════════
+        ESP_LOGI(TAG, "📦 Loading: Hey Ploud [default: enabled]");
+        ESP_LOGI(TAG, "   - Threshold: %.2f, Tensor Arena: %u bytes", default_threshold, (unsigned int)default_tensor_arena);
+        micro_ww->add_wake_word_model(
+            hey_ploud_tflite,
+            default_threshold,
+            sliding_window,
+            "hey ploud",
+            default_tensor_arena,
+            "hey_ploud",      // model_id
+            false,            // always_enabled = false (can be disabled)
+            true              // initial_enabled = true (default enabled)
+        );
+        model_count++;
+
+        // ═══════════════════════════════════════════════════════════════
         // Model: Hey HelloKitty - Default disabled
         // ═══════════════════════════════════════════════════════════════
         ESP_LOGI(TAG, "📦 Loading: Hey HelloKitty [default: disabled]");
@@ -935,8 +953,6 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
             false              // initial_enabled = false
         );
         model_count++;
-
-        // Note: hey_ploud model is intentionally hidden/not loaded
         
         ESP_LOGI(TAG, "✅ Registered %d wake word model(s)", model_count);
         
