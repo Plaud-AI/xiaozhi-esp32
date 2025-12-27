@@ -106,8 +106,8 @@ void AudioService::Initialize(AudioCodec* codec) {
         if (output_count % 50 == 1) {
             // Check queue sizes for debugging
             std::lock_guard<std::mutex> lock(audio_queue_mutex_);
-            ESP_LOGI(TAG, "🎙️ AFE output #%d: %zu samples → encode_q=%zu, send_q=%zu", 
-                     output_count, data.size(), audio_encode_queue_.size(), audio_send_queue_.size());
+            ESP_LOGI(TAG, "🎙️ AFE output #%d: %d samples → encode_q=%d, send_q=%d", 
+                     output_count, (int)data.size(), (int)audio_encode_queue_.size(), (int)audio_send_queue_.size());
         }
         
         PushTaskToEncodeQueue(kAudioTaskTypeEncodeToSendQueue, std::move(data));
@@ -400,8 +400,8 @@ void AudioService::AudioOutputTask() {
 
         // 每 10 个包或第一个包打印日志
         if (playback_count % 10 == 1) {
-            ESP_LOGI(TAG, "🔊 Playing #%d: pcm_size=%zu samples, playback_q=%zu", 
-                     playback_count, task->pcm.size(), playback_q_size);
+            ESP_LOGI(TAG, "🔊 Playing #%d: pcm_size=%d samples, playback_q=%d", 
+                     playback_count, (int)task->pcm.size(), (int)playback_q_size);
         }
 
         if (!codec_->output_enabled()) {
