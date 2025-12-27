@@ -164,14 +164,14 @@ bool WebsocketProtocol::OpenAudioChannel() {
             int64_t now = esp_timer_get_time() / 1000; // ms
             if (audio_packet_count == 1) {
                 first_packet_time = now;
-                ESP_LOGI(TAG, "🎵 First audio packet: %zu bytes, type=0x%02x", len, (uint8_t)data[0]);
+                ESP_LOGI(TAG, "🎵 First audio packet: %u bytes, type=0x%02x", (unsigned int)len, (uint8_t)data[0]);
             }
             
             // 每 10 个包打印一次日志
             if (audio_packet_count % 10 == 1) {
                 int64_t elapsed = now - first_packet_time;
-                ESP_LOGI(TAG, "🎵 Audio #%d: %zu bytes, elapsed=%lldms, type=0x%02x, official=%d", 
-                         audio_packet_count, len, elapsed, (uint8_t)data[0], is_official_server_);
+                ESP_LOGI(TAG, "🎵 Audio #%d: %u bytes, elapsed=%ldms, type=0x%02x, official=%d", 
+                         audio_packet_count, (unsigned int)len, (long)elapsed, (uint8_t)data[0], is_official_server_);
             }
             if (on_incoming_audio_ != nullptr) {
                 if (version_ == 2) {
