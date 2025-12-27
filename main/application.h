@@ -44,6 +44,7 @@ public:
 
     void Start();
     void MainEventLoop();
+    void AudioSendTask();  // New: dedicated audio sending task
     DeviceState GetDeviceState() const { return device_state_; }
     bool IsVoiceDetected() const { return audio_service_.IsVoiceDetected(); }
     void Schedule(std::function<void()> callback);

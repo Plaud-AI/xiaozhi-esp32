@@ -199,12 +199,14 @@ void AudioService::Start() {
 #endif
 
     /* Start the opus codec task */
+    // Priority raised from 2 to 6 to keep up with AFE (prio 4) output
+    // This prevents encode_queue from backing up in AEC mode
     if (opus_codec_task_stack_ && opus_codec_task_buffer_) {
         opus_codec_task_handle_ = xTaskCreateStatic([](void* arg) {
             AudioService* audio_service = (AudioService*)arg;
             audio_service->OpusCodecTask();
             vTaskDelete(NULL);
-        }, "opus_codec", 32768, this, 2, opus_codec_task_stack_, opus_codec_task_buffer_);
+        }, "opus_codec", 32768, this, 6, opus_codec_task_stack_, opus_codec_task_buffer_);
     }
 }
 
@@ -444,9 +446,10 @@ void AudioService::OpusCodecTask() {
         std::unique_lock<std::mutex> lock(audio_queue_mutex_);
         
         // Use timeout to detect blocking issues
+        // Note: We no longer block on send_queue being full - we'll drop old packets instead
         bool notified = audio_queue_cv_.wait_for(lock, std::chrono::seconds(5), [this]() {
             return service_stopped_ ||
-                (!audio_encode_queue_.empty() && audio_send_queue_.size() < MAX_SEND_PACKETS_IN_QUEUE) ||
+                !audio_encode_queue_.empty() ||  // Always process encode if available
                 (!audio_decode_queue_.empty() && audio_playback_queue_.size() < MAX_PLAYBACK_TASKS_IN_QUEUE);
         });
         
@@ -519,9 +522,10 @@ void AudioService::OpusCodecTask() {
             debug_statistics_.decode_count++;
         }
         
-        /* Encode the audio to send queue */
-        if (!audio_encode_queue_.empty() && audio_send_queue_.size() < MAX_SEND_PACKETS_IN_QUEUE) {
+        /* Encode the audio to send queue - always process, drop old if queue full */
+        if (!audio_encode_queue_.empty()) {
             static int encode_count = 0;
+            static int drop_count = 0;
             encode_count++;
             
             auto task = std::move(audio_encode_queue_.front());
@@ -537,15 +541,31 @@ void AudioService::OpusCodecTask() {
                 ESP_LOGE(TAG, "Failed to encode audio");
                 continue;
             }
+            
+            // Warn if encoded payload is suspiciously small
+            if (packet->payload.size() < 10) {
+                ESP_LOGW(TAG, "⚠️ Encoded payload unusually small: %d bytes", (int)packet->payload.size());
+            }
 
             if (task->type == kAudioTaskTypeEncodeToSendQueue) {
                 {
                     std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+                    
+                    // If send_queue is full, drop oldest packets to make room (realtime audio priority)
+                    while (audio_send_queue_.size() >= MAX_SEND_PACKETS_IN_QUEUE) {
+                        audio_send_queue_.pop_front();  // Drop oldest
+                        drop_count++;
+                        if (drop_count % 10 == 1) {
+                            ESP_LOGW(TAG, "⚠️ send_queue full, dropped old packet #%d", drop_count);
+                        }
+                    }
+                    
                     audio_send_queue_.push_back(std::move(packet));
                     
                     // Log every 50 encodes
                     if (encode_count % 50 == 1) {
-                        ESP_LOGI(TAG, "📤 Encoded #%d → send_queue (size=%zu)", encode_count, audio_send_queue_.size());
+                        ESP_LOGI(TAG, "📤 Encoded #%d → send_queue (size=%d, dropped=%d)", 
+                                 encode_count, (int)audio_send_queue_.size(), drop_count);
                     }
                 }
                 if (callbacks_.on_send_queue_available) {
@@ -596,16 +616,16 @@ void AudioService::PushTaskToEncodeQueue(AudioTaskType type, std::vector<int16_t
         timestamp_queue_.pop_front();
     }
 
-    // Non-blocking: drop frame if queue is full to avoid blocking AFE task
-    // This is critical for realtime AEC mode where AFE must not be blocked
-    if (audio_encode_queue_.size() >= MAX_ENCODE_TASKS_IN_QUEUE) {
-        static int drop_count = 0;
+    // Non-blocking: drop OLDEST frames if queue is full (realtime priority)
+    // Keep newest audio for better conversation continuity
+    static int drop_count = 0;
+    while (audio_encode_queue_.size() >= MAX_ENCODE_TASKS_IN_QUEUE) {
+        audio_encode_queue_.pop_front();  // Drop oldest frame
         drop_count++;
         if (drop_count % 10 == 1) {
-            ESP_LOGW(TAG, "⚠️  Encode queue full (%zu/%d), dropping frame #%d", 
-                     audio_encode_queue_.size(), MAX_ENCODE_TASKS_IN_QUEUE, drop_count);
+            ESP_LOGW(TAG, "⚠️  Encode queue full, dropped oldest frame #%d (queue=%zu/%d)", 
+                     drop_count, audio_encode_queue_.size(), MAX_ENCODE_TASKS_IN_QUEUE);
         }
-        return;  // Drop this frame instead of blocking
     }
     
     audio_encode_queue_.push_back(std::move(task));
@@ -895,6 +915,16 @@ void AudioService::PlaySound(const std::string_view& ogg) {
 bool AudioService::IsIdle() {
     std::lock_guard<std::mutex> lock(audio_queue_mutex_);
     return audio_encode_queue_.empty() && audio_decode_queue_.empty() && audio_playback_queue_.empty() && audio_testing_queue_.empty();
+}
+
+AudioService::QueueStats AudioService::GetQueueStats() {
+    std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+    return QueueStats{
+        .encode_queue_size = audio_encode_queue_.size(),
+        .send_queue_size = audio_send_queue_.size(),
+        .decode_queue_size = audio_decode_queue_.size(),
+        .playback_queue_size = audio_playback_queue_.size()
+    };
 }
 
 void AudioService::ResetDecoder() {

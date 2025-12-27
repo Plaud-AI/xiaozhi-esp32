@@ -401,12 +401,14 @@ void Application::Start() {
     };
     audio_service_.SetCallbacks(callbacks);
 
-    // Start the main event loop task with priority 3
+    // Start the main event loop task with priority 5
+    // Raised from 3 to 5 to keep up with audio production in AEC realtime mode
+    // Priority hierarchy: audio_input(8) > opus_codec(6) > main_event_loop(5) > afe_proc(4) > audio_output(4)
     // Stack size: 14KB (balanced for OPUS resampler + WebSocket operations)
     xTaskCreate([](void* arg) {
         ((Application*)arg)->MainEventLoop();
         vTaskDelete(NULL);
-    }, "main_event_loop", 2048 * 7, this, 3, &main_event_loop_task_handle_);
+    }, "main_event_loop", 2048 * 7, this, 5, &main_event_loop_task_handle_);
 
     /* Start the clock timer to update the status bar */
     esp_timer_start_periodic(clock_timer_handle_, 1000000);
@@ -660,18 +662,65 @@ void Application::MainEventLoop() {
 
         if (bits & MAIN_EVENT_SEND_AUDIO) {
             static int send_count = 0;
+            static int fail_count = 0;
+            static int total_dropped = 0;
             int packets_sent = 0;
+            int packets_dropped = 0;
+            
+            // Limit sends per loop to give other tasks execution time
+            // This prevents network operations from starving other event handlers
+            const int MAX_SEND_PER_LOOP = 5;
+            
             while (auto packet = audio_service_.PopPacketFromSendQueue()) {
                 send_count++;
-                packets_sent++;
-                if (protocol_ && !protocol_->SendAudio(std::move(packet))) {
-                    ESP_LOGW(TAG, "⚠️ SendAudio failed at packet #%d", send_count);
+                
+                if (protocol_ && protocol_->SendAudio(std::move(packet))) {
+                    packets_sent++;
+                    fail_count = 0;  // Reset consecutive fail count
+                } else {
+                    // Send failed - network congestion, drop and continue
+                    fail_count++;
+                    packets_dropped++;
+                    total_dropped++;
+                    
+                    if (fail_count == 1 || fail_count % 5 == 0) {
+                        ESP_LOGW(TAG, "⚠️ SendAudio failed (consecutive: %d, total_dropped: %d)", 
+                                 fail_count, total_dropped);
+                    }
+                    
+                    // If multiple consecutive failures, network is congested
+                    // Pause briefly and clear stale packets
+                    if (fail_count >= 3) {
+                        ESP_LOGW(TAG, "🔥 Network congested! Pausing 20ms, clearing stale packets");
+                        vTaskDelay(pdMS_TO_TICKS(20));
+                        
+                        // Clear old packets to maintain realtime (keep only newest)
+                        int cleared = 0;
+                        while (audio_service_.PopPacketFromSendQueue()) {
+                            cleared++;
+                            if (cleared >= 10) break;  // Keep some newest packets
+                        }
+                        if (cleared > 0) {
+                            ESP_LOGW(TAG, "🗑️ Cleared %d stale packets", cleared);
+                            total_dropped += cleared;
+                        }
+                        fail_count = 0;
+                        break;  // Exit loop, let network recover
+                    }
+                }
+                
+                // Limit sends per loop iteration
+                if (packets_sent >= MAX_SEND_PER_LOOP) {
+                    // Re-trigger event if more packets remain
+                    xEventGroupSetBits(event_group_, MAIN_EVENT_SEND_AUDIO);
                     break;
                 }
             }
-            // Log every 50 sends
+            
+            // Log periodically
             if (send_count % 50 < packets_sent && packets_sent > 0) {
-                ESP_LOGI(TAG, "📡 Sent %d packets (total: #%d)", packets_sent, send_count);
+                ESP_LOGI(TAG, "📡 Sent %d packets (total: #%d, dropped: %d)", 
+                         packets_sent, send_count, total_dropped);
             }
         }
 
@@ -703,6 +752,15 @@ void Application::MainEventLoop() {
                 // SystemInfo::PrintTaskCpuUsage(pdMS_TO_TICKS(1000));
                 // SystemInfo::PrintTaskList();
                 SystemInfo::PrintHeapStats();
+                
+                // Print queue stats in realtime mode for debugging
+                if (listening_mode_ == kListeningModeRealtime && 
+                    (device_state_ == kDeviceStateListening || device_state_ == kDeviceStateSpeaking)) {
+                    auto stats = audio_service_.GetQueueStats();
+                    ESP_LOGI(TAG, "📊 Queue stats: encode=%zu, send=%zu, decode=%zu, playback=%zu",
+                             stats.encode_queue_size, stats.send_queue_size,
+                             stats.decode_queue_size, stats.playback_queue_size);
+                }
             }
         }
     }
