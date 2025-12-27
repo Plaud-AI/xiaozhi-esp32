@@ -542,9 +542,28 @@ void AudioService::OpusCodecTask() {
                 continue;
             }
             
-            // Warn if encoded payload is suspiciously small
-            if (packet->payload.size() < 10) {
-                ESP_LOGW(TAG, "⚠️ Encoded payload unusually small: %d bytes", (int)packet->payload.size());
+            // Opus DTX (Discontinuous Transmission) optimization:
+            // - DTX packets (1-2 bytes) represent silence
+            // - Skip sending most DTX packets to save bandwidth
+            // - Send one DTX packet every ~3 seconds to keep connection alive
+            static int dtx_skip_count = 0;
+            const int DTX_KEEPALIVE_INTERVAL = 50;  // Send 1 DTX every 50 silent frames (~3 sec at 60ms/frame)
+            
+            bool is_dtx_packet = (packet->payload.size() <= 2);
+            bool should_skip_dtx = is_dtx_packet && (dtx_skip_count % DTX_KEEPALIVE_INTERVAL != 0);
+            
+            if (is_dtx_packet) {
+                dtx_skip_count++;
+                if (should_skip_dtx) {
+                    // Skip this DTX packet, don't add to send queue
+                    ESP_LOGD(TAG, "Skipping DTX silence packet #%d", dtx_skip_count);
+                    continue;
+                } else {
+                    ESP_LOGD(TAG, "Sending DTX keepalive #%d", dtx_skip_count);
+                }
+            } else {
+                // Reset DTX counter when we have real audio
+                dtx_skip_count = 0;
             }
 
             if (task->type == kAudioTaskTypeEncodeToSendQueue) {
