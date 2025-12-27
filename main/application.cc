@@ -659,10 +659,19 @@ void Application::MainEventLoop() {
         }
 
         if (bits & MAIN_EVENT_SEND_AUDIO) {
+            static int send_count = 0;
+            int packets_sent = 0;
             while (auto packet = audio_service_.PopPacketFromSendQueue()) {
+                send_count++;
+                packets_sent++;
                 if (protocol_ && !protocol_->SendAudio(std::move(packet))) {
+                    ESP_LOGW(TAG, "⚠️ SendAudio failed at packet #%d", send_count);
                     break;
                 }
+            }
+            // Log every 50 sends
+            if (send_count % 50 < packets_sent && packets_sent > 0) {
+                ESP_LOGI(TAG, "📡 Sent %d packets (total: #%d)", packets_sent, send_count);
             }
         }
 
