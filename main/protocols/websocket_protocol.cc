@@ -7,6 +7,7 @@
 #include <cstring>
 #include <cJSON.h>
 #include <esp_log.h>
+#include <esp_timer.h>
 #include <arpa/inet.h>
 #include "assets/lang_config.h"
 
@@ -156,7 +157,22 @@ bool WebsocketProtocol::OpenAudioChannel() {
 
     websocket_->OnData([this](const char* data, size_t len, bool binary) {
         if (binary) {
-            ESP_LOGD(TAG, "🎵 Received binary data: %zu bytes, first byte: 0x%02x", len, (uint8_t)data[0]);
+            static int audio_packet_count = 0;
+            static int64_t first_packet_time = 0;
+            audio_packet_count++;
+            
+            int64_t now = esp_timer_get_time() / 1000; // ms
+            if (audio_packet_count == 1) {
+                first_packet_time = now;
+                ESP_LOGI(TAG, "🎵 First audio packet: %zu bytes, type=0x%02x", len, (uint8_t)data[0]);
+            }
+            
+            // 每 10 个包打印一次日志
+            if (audio_packet_count % 10 == 1) {
+                int64_t elapsed = now - first_packet_time;
+                ESP_LOGI(TAG, "🎵 Audio #%d: %zu bytes, elapsed=%lldms, type=0x%02x, official=%d", 
+                         audio_packet_count, len, elapsed, (uint8_t)data[0], is_official_server_);
+            }
             if (on_incoming_audio_ != nullptr) {
                 if (version_ == 2) {
                     BinaryProtocol2* bp2 = (BinaryProtocol2*)data;
