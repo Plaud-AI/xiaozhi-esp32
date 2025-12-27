@@ -228,8 +228,8 @@ bool WebsocketProtocol::OpenAudioChannel() {
                                         .payload = std::vector<uint8_t>(payload, payload + payload_size)
                                     }));
                                 } else {
-                                    ESP_LOGE(TAG, "Audio packet size mismatch: len=%zu, header_size=%zu, payload_size=%lu", 
-                                             len, sizeof(AudioPacketHeader), payload_size);
+                                    ESP_LOGE(TAG, "Audio packet size mismatch: len=%u, header_size=%u, payload_size=%lu", 
+                                             (unsigned int)len, (unsigned int)sizeof(AudioPacketHeader), payload_size);
                                 }
                             } else {
                                 // 非音频消息类型，按原始数据处理
