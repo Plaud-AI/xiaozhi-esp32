@@ -104,7 +104,10 @@ void AudioService::Initialize(AudioCodec* codec) {
         
         // Log every 50 outputs
         if (output_count % 50 == 1) {
-            ESP_LOGI(TAG, "🎙️ AFE output #%d: %zu samples → encode queue", output_count, data.size());
+            // Check queue sizes for debugging
+            std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+            ESP_LOGI(TAG, "🎙️ AFE output #%d: %zu samples → encode_q=%zu, send_q=%zu", 
+                     output_count, data.size(), audio_encode_queue_.size(), audio_send_queue_.size());
         }
         
         PushTaskToEncodeQueue(kAudioTaskTypeEncodeToSendQueue, std::move(data));
@@ -434,15 +437,36 @@ void AudioService::AudioOutputTask() {
 }
 
 void AudioService::OpusCodecTask() {
+    ESP_LOGI(TAG, "🔧 OpusCodecTask started");
+    int loop_count = 0;
+    
     while (true) {
         std::unique_lock<std::mutex> lock(audio_queue_mutex_);
-        audio_queue_cv_.wait(lock, [this]() {
+        
+        // Use timeout to detect blocking issues
+        bool notified = audio_queue_cv_.wait_for(lock, std::chrono::seconds(5), [this]() {
             return service_stopped_ ||
                 (!audio_encode_queue_.empty() && audio_send_queue_.size() < MAX_SEND_PACKETS_IN_QUEUE) ||
                 (!audio_decode_queue_.empty() && audio_playback_queue_.size() < MAX_PLAYBACK_TASKS_IN_QUEUE);
         });
+        
+        if (!notified) {
+            // Timeout - log queue status
+            ESP_LOGW(TAG, "⏰ OpusCodecTask timeout! encode_q=%zu, send_q=%zu/%d, decode_q=%zu, playback_q=%zu",
+                     audio_encode_queue_.size(), audio_send_queue_.size(), MAX_SEND_PACKETS_IN_QUEUE,
+                     audio_decode_queue_.size(), audio_playback_queue_.size());
+            continue;
+        }
+        
         if (service_stopped_) {
             break;
+        }
+        
+        loop_count++;
+        if (loop_count % 100 == 1) {
+            ESP_LOGI(TAG, "🔄 OpusCodecTask loop #%d: encode_q=%zu, send_q=%zu, decode_q=%zu, playback_q=%zu",
+                     loop_count, audio_encode_queue_.size(), audio_send_queue_.size(),
+                     audio_decode_queue_.size(), audio_playback_queue_.size());
         }
 
         /* Decode the audio from decode queue */
@@ -497,6 +521,9 @@ void AudioService::OpusCodecTask() {
         
         /* Encode the audio to send queue */
         if (!audio_encode_queue_.empty() && audio_send_queue_.size() < MAX_SEND_PACKETS_IN_QUEUE) {
+            static int encode_count = 0;
+            encode_count++;
+            
             auto task = std::move(audio_encode_queue_.front());
             audio_encode_queue_.pop_front();
             audio_queue_cv_.notify_all();
@@ -515,6 +542,11 @@ void AudioService::OpusCodecTask() {
                 {
                     std::lock_guard<std::mutex> lock(audio_queue_mutex_);
                     audio_send_queue_.push_back(std::move(packet));
+                    
+                    // Log every 50 encodes
+                    if (encode_count % 50 == 1) {
+                        ESP_LOGI(TAG, "📤 Encoded #%d → send_queue (size=%zu)", encode_count, audio_send_queue_.size());
+                    }
                 }
                 if (callbacks_.on_send_queue_available) {
                     callbacks_.on_send_queue_available();
