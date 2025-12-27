@@ -32,8 +32,15 @@ bool WebsocketProtocol::Start() {
 
 bool WebsocketProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
     if (websocket_ == nullptr || !websocket_->IsConnected()) {
+        ESP_LOGW(TAG, "⚠️ SendAudio: WebSocket not connected");
         return false;
     }
+
+    static int audio_send_count = 0;
+    audio_send_count++;
+    
+    bool result = false;
+    size_t payload_size = packet->payload.size();
 
     if (version_ == 2) {
         std::string serialized;
@@ -46,7 +53,7 @@ bool WebsocketProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
         bp2->payload_size = htonl(packet->payload.size());
         memcpy(bp2->payload, packet->payload.data(), packet->payload.size());
 
-        return websocket_->Send(serialized.data(), serialized.size(), true);
+        result = websocket_->Send(serialized.data(), serialized.size(), true);
     } else if (version_ == 3) {
         std::string serialized;
         serialized.resize(sizeof(BinaryProtocol3) + packet->payload.size());
@@ -56,10 +63,22 @@ bool WebsocketProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
         bp3->payload_size = htons(packet->payload.size());
         memcpy(bp3->payload, packet->payload.data(), packet->payload.size());
 
-        return websocket_->Send(serialized.data(), serialized.size(), true);
+        result = websocket_->Send(serialized.data(), serialized.size(), true);
     } else {
-        return websocket_->Send(packet->payload.data(), packet->payload.size(), true);
+        result = websocket_->Send(packet->payload.data(), packet->payload.size(), true);
     }
+    
+    // Log every 50 sends
+    if (audio_send_count % 50 == 1) {
+        ESP_LOGI(TAG, "🔊 WS SendAudio #%d: %zu bytes, version=%d, result=%d", 
+                 audio_send_count, payload_size, version_, result);
+    }
+    
+    if (!result) {
+        ESP_LOGW(TAG, "⚠️ WS SendAudio #%d failed!", audio_send_count);
+    }
+    
+    return result;
 }
 
 bool WebsocketProtocol::SendText(const std::string& text) {
