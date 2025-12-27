@@ -3,6 +3,7 @@
 #include <esp_log.h>
 #include <esp_heap_caps.h>
 #include <cstring>
+#include <cmath>
 
 #if CONFIG_USE_AUDIO_PROCESSOR
 #include "processors/afe_audio_processor.h"
@@ -526,7 +527,8 @@ void AudioService::OpusCodecTask() {
         if (!audio_encode_queue_.empty()) {
             static int encode_count = 0;
             static int drop_count = 0;
-            static int playback_frame_count = 0;  // Moved here for visibility across the block
+            static int silence_skip_count = 0;
+            static int playback_frame_count = 0;
             encode_count++;
             
             auto task = std::move(audio_encode_queue_.front());
@@ -535,41 +537,63 @@ void AudioService::OpusCodecTask() {
             lock.unlock();
             
             // ============================================================
-            // PLAYBACK MODE OPTIMIZATION: Skip encoding for most frames
+            // PLAYBACK MODE: Yield CPU for TCP receive task
             // ============================================================
-            // In playback mode (Speaking + AEC), we only need occasional audio
-            // for interrupt detection. SKIP ENCODING for most frames to:
-            // 1. Reduce CPU load (Opus encoding is CPU intensive)
-            // 2. Free up CPU for TCP receive task (critical for receiving TTS audio)
-            // 3. Reduce network bandwidth
-            //
-            // CRITICAL: We yield CPU on EVERY frame to let TCP receive task run,
-            // even for frames we skip encoding.
+            // In playback mode (Speaking + AEC), the device runs AFE + encode + 
+            // decode + playback simultaneously. This can starve TCP receive task.
+            // Yield CPU on every frame to ensure TTS audio can be received.
             if (playback_mode_) {
                 playback_frame_count++;
-                
-                // In playback mode, only encode every 2nd frame (~120ms interval)
-                const int PLAYBACK_SEND_INTERVAL = 2;
-                
-                // CRITICAL: Yield CPU time to let TCP receive task process incoming data!
-                // Without this, TCP receive gets starved and cannot receive TTS audio.
                 vTaskDelay(pdMS_TO_TICKS(2));  // 2ms delay to yield CPU
-                
-                if (playback_frame_count % PLAYBACK_SEND_INTERVAL != 0) {
-                    // Skip this frame entirely - no encoding, no sending
-                    // This saves significant CPU compared to encode-then-skip
-                    continue;
-                }
                 
                 // Log periodically
                 if (playback_frame_count % 100 == 0) {
-                    ESP_LOGI(TAG, "🎤 Playback mode: encoded %d/%d frames for interrupt detection", 
-                             playback_frame_count / PLAYBACK_SEND_INTERVAL, playback_frame_count);
+                    ESP_LOGI(TAG, "🎤 Playback mode: processed %d frames", playback_frame_count);
                 }
             }
             
             // ============================================================
-            // OPUS ENCODING
+            // SILENCE DETECTION: Skip encoding for silent frames
+            // ============================================================
+            // Calculate RMS energy of PCM data to detect silence.
+            // Silent frames don't need encoding - saves CPU significantly!
+            // This is much cheaper than Opus encoding.
+            const int16_t SILENCE_THRESHOLD = 200;  // RMS threshold for silence detection
+            int64_t sum_squares = 0;
+            const auto& pcm = task->pcm;
+            for (size_t i = 0; i < pcm.size(); i += 4) {  // Sample every 4th for speed
+                int32_t sample = pcm[i];
+                sum_squares += sample * sample;
+            }
+            int32_t rms = (int32_t)sqrt((double)sum_squares / (pcm.size() / 4));
+            bool is_silent = (rms < SILENCE_THRESHOLD);
+            
+            // In playback mode, we can be more aggressive with silence skipping
+            // since we only need audio for interrupt detection
+            static int silence_keepalive_count = 0;
+            const int SILENCE_KEEPALIVE_INTERVAL = playback_mode_ ? 25 : 50;  // More frequent in playback mode
+            
+            if (is_silent) {
+                silence_skip_count++;
+                silence_keepalive_count++;
+                
+                // Still send occasional silence to keep connection alive
+                if (silence_keepalive_count < SILENCE_KEEPALIVE_INTERVAL) {
+                    if (silence_skip_count % 50 == 1) {
+                        ESP_LOGD(TAG, "🔇 Skipping silent frame #%d (RMS=%d < %d)", 
+                                 silence_skip_count, rms, SILENCE_THRESHOLD);
+                    }
+                    continue;  // Skip encoding entirely - save CPU!
+                }
+                silence_keepalive_count = 0;  // Reset for next keepalive
+                ESP_LOGD(TAG, "🔇 Sending silence keepalive (RMS=%d)", rms);
+            } else {
+                // Reset silence counter when we have real audio
+                silence_keepalive_count = 0;
+            }
+            
+            // ============================================================
+            // OPUS ENCODING (only for non-silent or keepalive frames)
             // ============================================================
             auto packet = std::make_unique<AudioStreamPacket>();
             packet->frame_duration = OPUS_FRAME_DURATION_MS;
@@ -581,13 +605,12 @@ void AudioService::OpusCodecTask() {
             }
             
             // ============================================================
-            // DTX (Discontinuous Transmission) OPTIMIZATION
+            // DTX (Discontinuous Transmission) - Additional bandwidth saving
             // ============================================================
-            // Opus DTX packets (1-2 bytes) represent silence.
-            // Skip most DTX packets to save bandwidth, but send one every ~3 sec
-            // to keep the connection alive.
+            // Even after our silence detection, Opus may produce DTX packets.
+            // Skip most of them but keep some for connection keepalive.
             static int dtx_skip_count = 0;
-            const int DTX_KEEPALIVE_INTERVAL = 50;  // Send 1 DTX every 50 silent frames (~3 sec)
+            const int DTX_KEEPALIVE_INTERVAL = 50;
             
             bool is_dtx_packet = (packet->payload.size() <= 2);
             bool should_skip_dtx = is_dtx_packet && (dtx_skip_count % DTX_KEEPALIVE_INTERVAL != 0);
@@ -595,13 +618,10 @@ void AudioService::OpusCodecTask() {
             if (is_dtx_packet) {
                 dtx_skip_count++;
                 if (should_skip_dtx) {
-                    ESP_LOGD(TAG, "Skipping DTX silence packet #%d", dtx_skip_count);
+                    ESP_LOGD(TAG, "Skipping DTX packet #%d", dtx_skip_count);
                     continue;
-                } else {
-                    ESP_LOGD(TAG, "Sending DTX keepalive #%d", dtx_skip_count);
                 }
             } else {
-                // Reset DTX counter when we have real audio
                 dtx_skip_count = 0;
             }
 
