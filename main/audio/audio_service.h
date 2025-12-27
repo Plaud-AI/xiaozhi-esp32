@@ -36,8 +36,9 @@
  */
 
 #define OPUS_FRAME_DURATION_MS 60
-#define MAX_ENCODE_TASKS_IN_QUEUE 2
-#define MAX_PLAYBACK_TASKS_IN_QUEUE 2
+// Increased queue sizes for realtime AEC mode (simultaneous encode + decode)
+#define MAX_ENCODE_TASKS_IN_QUEUE 8    // Was 2, increased for realtime mode
+#define MAX_PLAYBACK_TASKS_IN_QUEUE 4  // Was 2, increased for smoother playback
 #define MAX_DECODE_PACKETS_IN_QUEUE (2400 / OPUS_FRAME_DURATION_MS)
 #define MAX_SEND_PACKETS_IN_QUEUE (2400 / OPUS_FRAME_DURATION_MS)
 #define AUDIO_TESTING_MAX_DURATION_MS 10000

@@ -516,6 +516,12 @@ void Application::Start() {
                             SetDeviceState(kDeviceStateIdle);
                         } else {
                             SetDeviceState(kDeviceStateListening);
+                            // In realtime mode, AFE keeps running during speaking,
+                            // so we need to explicitly notify server to start STT again
+                            if (listening_mode_ == kListeningModeRealtime) {
+                                ESP_LOGI(TAG, "🎤 Realtime mode: sending listen.start to server");
+                                protocol_->SendStartListening(listening_mode_);
+                            }
                         }
                     }
                 });
@@ -876,13 +882,21 @@ void Application::SetDeviceState(DeviceState state) {
         case kDeviceStateSpeaking:
             display->SetStatus(Lang::Strings::SPEAKING);
 
-            if (listening_mode_ != kListeningModeRealtime) {
-                ESP_LOGI(TAG, "🎤 Speaking state: mic OFF (listening_mode=%d, not realtime)", listening_mode_);
+            if (listening_mode_ == kListeningModeRealtime) {
+                // Realtime mode (AEC enabled):
+                // - Keep mic ON, AFE continues running
+                // - AEC removes speaker echo from mic input
+                // - Continue sending AEC-processed audio to server
+                // - Server handles VAD and conversation management
+                ESP_LOGI(TAG, "🎤 Speaking state: mic ON (realtime mode, AEC active)");
+                // Don't call EnableVoiceProcessing(false) - keep AFE running
+                // Don't enable wake word detection - server manages conversation
+            } else {
+                // Non-realtime mode: disable mic during speaking
+                ESP_LOGI(TAG, "🎤 Speaking state: mic OFF (listening_mode=%d)", listening_mode_);
                 audio_service_.EnableVoiceProcessing(false);
                 // Only AFE wake word can be detected in speaking mode
                 audio_service_.EnableWakeWordDetection(audio_service_.IsAfeWakeWord());
-            } else {
-                ESP_LOGI(TAG, "🎤 Speaking state: mic ON (listening_mode=%d, realtime mode)", listening_mode_);
             }
             audio_service_.ResetDecoder();
             break;
