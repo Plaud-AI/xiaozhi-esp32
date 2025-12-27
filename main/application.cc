@@ -459,8 +459,8 @@ void Application::Start() {
         
         // 每 10 个包打印一次详细日志
         if (total_audio_packets % 10 == 1) {
-            ESP_LOGI(TAG, "🎵 Audio packet #%d: size=%zu, state=%s, dropped=%d", 
-                     total_audio_packets, packet->payload.size(), 
+            ESP_LOGI(TAG, "🎵 Audio packet #%d: size=%u, state=%s, dropped=%d", 
+                     total_audio_packets, (unsigned int)packet->payload.size(), 
                      STATE_STRINGS[device_state_], dropped_audio_packets);
         }
         
@@ -726,7 +726,7 @@ void Application::OnWakeWordDetected() {
         const int THROTTLE_DELAY_MS = 20; 
         while (auto packet = audio_service_.PopWakeWordPacket()) {
             packet_count++;
-            ESP_LOGD(TAG, "  Sending packet #%d, size=%zu", packet_count, packet->payload.size());
+            ESP_LOGD(TAG, "  Sending packet #%d, size=%u", packet_count, (unsigned int)packet->payload.size());
             if (!protocol_->SendAudio(std::move(packet))) {
                 ESP_LOGE(TAG, "❌ Failed to send wake word packet #%d", packet_count);
                 break;
