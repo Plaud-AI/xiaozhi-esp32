@@ -70,8 +70,8 @@ bool WebsocketProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
     
     // Log every 50 sends
     if (audio_send_count % 50 == 1) {
-        ESP_LOGI(TAG, "🔊 WS SendAudio #%d: %zu bytes, version=%d, result=%d", 
-                 audio_send_count, payload_size, version_, result);
+        ESP_LOGI(TAG, "🔊 WS SendAudio #%d: %u bytes, version=%d, result=%d", 
+                 audio_send_count, (unsigned int)payload_size, version_, result);
     }
     
     if (!result) {
