@@ -91,13 +91,15 @@ BoxAudioCodec::BoxAudioCodec(void* i2c_master_handle, int input_sample_rate, int
     
     // 双工模式优化：在初始化时就打开输入设备，保持打开状态
     // 避免频繁 close/open 导致的 I2S 状态问题
+    // ⚠️ 关键：ES7210 + I2S TDM 必须使用 4 通道匹配 TDM slot 配置
+    // 通过 channel_mask 选择实际使用的通道（Ch0=麦克风, Ch1=参考）
     uint16_t input_channel_mask = ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0);
     if (input_reference_) {
         input_channel_mask |= ESP_CODEC_DEV_MAKE_CHANNEL_MASK(1);
     }
     esp_codec_dev_sample_info_t input_fs = {
         .bits_per_sample = 16,
-        .channel = (uint8_t)input_channels_,
+        .channel = 4,  // 必须为 4 以匹配 I2S TDM 4-slot 配置
         .channel_mask = input_channel_mask,
         .sample_rate = (uint32_t)input_sample_rate_,
         .mclk_multiple = 0,
@@ -289,9 +291,10 @@ void BoxAudioCodec::EnableInput(bool enable) {
         // 在双工模式下，给硬件一些时间稳定（避免快速 close/open）
         vTaskDelay(pdMS_TO_TICKS(10));  // 10ms 延迟
         
+        // ⚠️ 关键：ES7210 + I2S TDM 必须使用 4 通道匹配 TDM slot 配置
         esp_codec_dev_sample_info_t fs = {
             .bits_per_sample = 16,
-            .channel = (uint8_t)input_channels_,
+            .channel = 4,  // 必须为 4 以匹配 I2S TDM 4-slot 配置
             .channel_mask = ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0),
             .sample_rate = (uint32_t)input_sample_rate_,
             .mclk_multiple = 0,

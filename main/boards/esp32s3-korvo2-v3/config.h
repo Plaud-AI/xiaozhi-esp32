@@ -8,6 +8,8 @@
 #define AUDIO_OUTPUT_SAMPLE_RATE 16000  // 双工模式要求一致
 #define AUDIO_DEFAULT_OUTPUT_VOLUME 80  // 默认音量 80%
 
+// ESP32-S3-Korvo2-V3 使用 ES7210 4通道 ADC + I2S TDM
+// Ch0: 麦克风 1, Ch1: 参考通道（用于 AEC）
 #define AUDIO_INPUT_REFERENCE    true
 
 #define AUDIO_I2S_GPIO_MCLK GPIO_NUM_16
