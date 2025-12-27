@@ -881,6 +881,7 @@ void Application::SetDeviceState(DeviceState state) {
             ESP_LOGI(TAG, "Entering IDLE state...");
             display->SetStatus(Lang::Strings::STANDBY);
             audio_service_.EnableVoiceProcessing(false);
+            audio_service_.SetPlaybackMode(false);  // Ensure playback mode is off
             
             #if DEBUG_DISABLE_WAKE_WORD
             ESP_LOGW(TAG, "⚠️  [DEBUG] MicroWakeWord 已禁用（用于排查白屏问题）");
@@ -933,6 +934,9 @@ void Application::SetDeviceState(DeviceState state) {
             break;
         case kDeviceStateListening:
             display->SetStatus(Lang::Strings::LISTENING);
+            
+            // Disable playback mode - we need full audio quality for ASR
+            audio_service_.SetPlaybackMode(false);
 
             // Make sure the audio processor is running
             if (!audio_service_.IsAudioProcessorRunning()) {
@@ -958,6 +962,10 @@ void Application::SetDeviceState(DeviceState state) {
                 ESP_LOGI(TAG, "🎤 Speaking state: mic ON (realtime mode, AEC active)");
                 // Don't call EnableVoiceProcessing(false) - keep AFE running
                 // Don't enable wake word detection - server manages conversation
+                
+                // Enable playback mode to allow audio send throttling
+                // This reduces send rate during TTS playback while keeping interrupt detection
+                audio_service_.SetPlaybackMode(true);
             } else {
                 // Non-realtime mode: disable mic during speaking
                 ESP_LOGI(TAG, "🎤 Speaking state: mic OFF (listening_mode=%d)", listening_mode_);

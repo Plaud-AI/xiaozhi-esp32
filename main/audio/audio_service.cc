@@ -565,6 +565,34 @@ void AudioService::OpusCodecTask() {
                 // Reset DTX counter when we have real audio
                 dtx_skip_count = 0;
             }
+            
+            // Proactive rate limiting in playback mode (Speaking state with AEC)
+            // Audio during TTS playback is mainly used for interrupt detection,
+            // so we can reduce send rate to prevent queue overflow.
+            // IMPORTANT: Only throttle in playback mode to avoid affecting ASR accuracy!
+            // NOTE: Server needs regular audio input to keep session alive and do VAD,
+            //       so we use interval=2 (~120ms) instead of 5 (~300ms) which was too slow.
+            if (playback_mode_) {
+                static int playback_frame_count = 0;
+                playback_frame_count++;
+                
+                // In playback mode, only send every 2nd frame (~120ms interval)
+                // This reduces send rate by 50% while keeping server session alive
+                // for interrupt detection. Interval of 5 was too slow and caused
+                // server to stop sending TTS data.
+                const int PLAYBACK_SEND_INTERVAL = 2;  // Send 1 every 2 frames (~120ms)
+                
+                if (playback_frame_count % PLAYBACK_SEND_INTERVAL != 0) {
+                    // Skip this packet - not needed for interrupt detection
+                    continue;
+                }
+                
+                // Log periodically when we do send
+                if (playback_frame_count % 100 == 0) {
+                    ESP_LOGI(TAG, "🎤 Playback mode: sent %d frames for interrupt detection", 
+                             playback_frame_count / PLAYBACK_SEND_INTERVAL);
+                }
+            }
 
             if (task->type == kAudioTaskTypeEncodeToSendQueue) {
                 {

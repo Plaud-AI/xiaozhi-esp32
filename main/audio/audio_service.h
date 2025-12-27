@@ -102,6 +102,11 @@ public:
     void EnableVoiceProcessing(bool enable);
     void EnableAudioTesting(bool enable);
     void EnableDeviceAec(bool enable);
+    
+    // Set playback mode to enable audio send throttling during TTS playback
+    // When true, audio send rate will be reduced to prevent queue overflow
+    // while still allowing interrupt detection
+    void SetPlaybackMode(bool playback_mode) { playback_mode_ = playback_mode; }
 
     void SetCallbacks(AudioServiceCallbacks& callbacks);
 
@@ -156,6 +161,7 @@ private:
     bool voice_detected_ = false;
     bool service_stopped_ = true;
     bool audio_input_need_warmup_ = false;
+    bool playback_mode_ = false;  // True when device is in Speaking state (TTS playback)
 
     esp_timer_handle_t audio_power_timer_ = nullptr;
     std::chrono::steady_clock::time_point last_input_time_;
