@@ -452,9 +452,9 @@ void AudioService::OpusCodecTask() {
         
         if (!notified) {
             // Timeout - log queue status
-            ESP_LOGW(TAG, "⏰ OpusCodecTask timeout! encode_q=%zu, send_q=%zu/%d, decode_q=%zu, playback_q=%zu",
-                     audio_encode_queue_.size(), audio_send_queue_.size(), MAX_SEND_PACKETS_IN_QUEUE,
-                     audio_decode_queue_.size(), audio_playback_queue_.size());
+            ESP_LOGW(TAG, "⏰ OpusCodecTask timeout! encode_q=%d, send_q=%d/%d, decode_q=%d, playback_q=%d",
+                     (int)audio_encode_queue_.size(), (int)audio_send_queue_.size(), MAX_SEND_PACKETS_IN_QUEUE,
+                     (int)audio_decode_queue_.size(), (int)audio_playback_queue_.size());
             continue;
         }
         
@@ -464,9 +464,9 @@ void AudioService::OpusCodecTask() {
         
         loop_count++;
         if (loop_count % 100 == 1) {
-            ESP_LOGI(TAG, "🔄 OpusCodecTask loop #%d: encode_q=%zu, send_q=%zu, decode_q=%zu, playback_q=%zu",
-                     loop_count, audio_encode_queue_.size(), audio_send_queue_.size(),
-                     audio_decode_queue_.size(), audio_playback_queue_.size());
+            ESP_LOGI(TAG, "🔄 OpusCodecTask loop #%d: encode_q=%d, send_q=%d, decode_q=%d, playback_q=%d",
+                     loop_count, (int)audio_encode_queue_.size(), (int)audio_send_queue_.size(),
+                     (int)audio_decode_queue_.size(), (int)audio_playback_queue_.size());
         }
 
         /* Decode the audio from decode queue */
@@ -509,8 +509,8 @@ void AudioService::OpusCodecTask() {
                 audio_queue_cv_.notify_all();
                 
                 if (decode_count % 10 == 1) {
-                    ESP_LOGI(TAG, "✅ Decoded #%d: pcm_size=%zu samples, playback_q now=%zu", 
-                             decode_count, pcm_size, audio_playback_queue_.size());
+                    ESP_LOGI(TAG, "✅ Decoded #%d: pcm_size=%d samples, playback_q now=%d", 
+                             decode_count, (int)pcm_size, (int)audio_playback_queue_.size());
                 }
             } else {
                 ESP_LOGE(TAG, "Failed to decode audio");
