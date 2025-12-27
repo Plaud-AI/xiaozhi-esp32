@@ -453,12 +453,23 @@ void Application::Start() {
         xEventGroupSetBits(event_group_, MAIN_EVENT_ERROR);
     });
     protocol_->OnIncomingAudio([this](std::unique_ptr<AudioStreamPacket> packet) {
-        ESP_LOGD(TAG, "🎵 OnIncomingAudio: packet size=%zu, device_state=%d (%s)", 
-                 packet->payload.size(), device_state_, STATE_STRINGS[device_state_]);
+        static int total_audio_packets = 0;
+        static int dropped_audio_packets = 0;
+        total_audio_packets++;
+        
+        // 每 10 个包打印一次详细日志
+        if (total_audio_packets % 10 == 1) {
+            ESP_LOGI(TAG, "🎵 Audio packet #%d: size=%zu, state=%s, dropped=%d", 
+                     total_audio_packets, packet->payload.size(), 
+                     STATE_STRINGS[device_state_], dropped_audio_packets);
+        }
+        
         if (device_state_ == kDeviceStateSpeaking) {
             audio_service_.PushPacketToDecodeQueue(std::move(packet));
         } else {
-            ESP_LOGW(TAG, "⚠️  Received audio but not in SPEAKING state, dropping packet");
+            dropped_audio_packets++;
+            ESP_LOGW(TAG, "⚠️  Dropped audio #%d: state=%s (not SPEAKING), total_dropped=%d", 
+                     total_audio_packets, STATE_STRINGS[device_state_], dropped_audio_packets);
         }
     });
     protocol_->OnAudioChannelOpened([this, codec, &board]() {
