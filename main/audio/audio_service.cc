@@ -526,13 +526,51 @@ void AudioService::OpusCodecTask() {
         if (!audio_encode_queue_.empty()) {
             static int encode_count = 0;
             static int drop_count = 0;
+            static int playback_frame_count = 0;  // Moved here for visibility across the block
             encode_count++;
             
             auto task = std::move(audio_encode_queue_.front());
             audio_encode_queue_.pop_front();
             audio_queue_cv_.notify_all();
             lock.unlock();
-
+            
+            // ============================================================
+            // PLAYBACK MODE OPTIMIZATION: Skip encoding for most frames
+            // ============================================================
+            // In playback mode (Speaking + AEC), we only need occasional audio
+            // for interrupt detection. SKIP ENCODING for most frames to:
+            // 1. Reduce CPU load (Opus encoding is CPU intensive)
+            // 2. Free up CPU for TCP receive task (critical for receiving TTS audio)
+            // 3. Reduce network bandwidth
+            //
+            // CRITICAL: We yield CPU on EVERY frame to let TCP receive task run,
+            // even for frames we skip encoding.
+            if (playback_mode_) {
+                playback_frame_count++;
+                
+                // In playback mode, only encode every 2nd frame (~120ms interval)
+                const int PLAYBACK_SEND_INTERVAL = 2;
+                
+                // CRITICAL: Yield CPU time to let TCP receive task process incoming data!
+                // Without this, TCP receive gets starved and cannot receive TTS audio.
+                vTaskDelay(pdMS_TO_TICKS(2));  // 2ms delay to yield CPU
+                
+                if (playback_frame_count % PLAYBACK_SEND_INTERVAL != 0) {
+                    // Skip this frame entirely - no encoding, no sending
+                    // This saves significant CPU compared to encode-then-skip
+                    continue;
+                }
+                
+                // Log periodically
+                if (playback_frame_count % 100 == 0) {
+                    ESP_LOGI(TAG, "🎤 Playback mode: encoded %d/%d frames for interrupt detection", 
+                             playback_frame_count / PLAYBACK_SEND_INTERVAL, playback_frame_count);
+                }
+            }
+            
+            // ============================================================
+            // OPUS ENCODING
+            // ============================================================
             auto packet = std::make_unique<AudioStreamPacket>();
             packet->frame_duration = OPUS_FRAME_DURATION_MS;
             packet->sample_rate = 16000;
@@ -542,12 +580,14 @@ void AudioService::OpusCodecTask() {
                 continue;
             }
             
-            // Opus DTX (Discontinuous Transmission) optimization:
-            // - DTX packets (1-2 bytes) represent silence
-            // - Skip sending most DTX packets to save bandwidth
-            // - Send one DTX packet every ~3 seconds to keep connection alive
+            // ============================================================
+            // DTX (Discontinuous Transmission) OPTIMIZATION
+            // ============================================================
+            // Opus DTX packets (1-2 bytes) represent silence.
+            // Skip most DTX packets to save bandwidth, but send one every ~3 sec
+            // to keep the connection alive.
             static int dtx_skip_count = 0;
-            const int DTX_KEEPALIVE_INTERVAL = 50;  // Send 1 DTX every 50 silent frames (~3 sec at 60ms/frame)
+            const int DTX_KEEPALIVE_INTERVAL = 50;  // Send 1 DTX every 50 silent frames (~3 sec)
             
             bool is_dtx_packet = (packet->payload.size() <= 2);
             bool should_skip_dtx = is_dtx_packet && (dtx_skip_count % DTX_KEEPALIVE_INTERVAL != 0);
@@ -555,7 +595,6 @@ void AudioService::OpusCodecTask() {
             if (is_dtx_packet) {
                 dtx_skip_count++;
                 if (should_skip_dtx) {
-                    // Skip this DTX packet, don't add to send queue
                     ESP_LOGD(TAG, "Skipping DTX silence packet #%d", dtx_skip_count);
                     continue;
                 } else {
@@ -564,43 +603,6 @@ void AudioService::OpusCodecTask() {
             } else {
                 // Reset DTX counter when we have real audio
                 dtx_skip_count = 0;
-            }
-            
-            // Proactive rate limiting in playback mode (Speaking state with AEC)
-            // Audio during TTS playback is mainly used for interrupt detection,
-            // so we can reduce send rate to prevent queue overflow.
-            // IMPORTANT: Only throttle in playback mode to avoid affecting ASR accuracy!
-            // 
-            // CRITICAL FIX: In playback mode, the device runs AFE + encode + decode + playback
-            // simultaneously, which causes high CPU load. This starves the TCP receive task,
-            // preventing it from receiving TTS audio from server. We must yield CPU time
-            // regularly to let TCP receive task run.
-            if (playback_mode_) {
-                static int playback_frame_count = 0;
-                playback_frame_count++;
-                
-                // In playback mode, only send every 2nd frame (~120ms interval)
-                // This reduces send rate by 50% while keeping server session alive
-                // for interrupt detection.
-                const int PLAYBACK_SEND_INTERVAL = 2;  // Send 1 every 2 frames (~120ms)
-                
-                // CRITICAL: Yield CPU time to let TCP receive task process incoming data!
-                // Without this, TCP receive gets starved and cannot receive TTS audio from server.
-                // We yield on EVERY frame (not just skipped ones) to ensure consistent CPU sharing.
-                vTaskDelay(pdMS_TO_TICKS(2));  // 2ms delay to yield CPU
-                
-                if (playback_frame_count % PLAYBACK_SEND_INTERVAL != 0) {
-                    // Skip this packet - not needed for interrupt detection
-                    // Note: We already yielded CPU above, so this skip reduces both
-                    // network traffic AND encoding CPU load
-                    continue;
-                }
-                
-                // Log periodically when we do send
-                if (playback_frame_count % 100 == 0) {
-                    ESP_LOGI(TAG, "🎤 Playback mode: sent %d frames for interrupt detection", 
-                             playback_frame_count / PLAYBACK_SEND_INTERVAL);
-                }
             }
 
             if (task->type == kAudioTaskTypeEncodeToSendQueue) {
