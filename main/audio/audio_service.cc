@@ -99,6 +99,14 @@ void AudioService::Initialize(AudioCodec* codec) {
 #endif
 
     audio_processor_->OnOutput([this](std::vector<int16_t>&& data) {
+        static int output_count = 0;
+        output_count++;
+        
+        // Log every 50 outputs
+        if (output_count % 50 == 1) {
+            ESP_LOGI(TAG, "🎙️ AFE output #%d: %zu samples → encode queue", output_count, data.size());
+        }
+        
         PushTaskToEncodeQueue(kAudioTaskTypeEncodeToSendQueue, std::move(data));
     });
 
@@ -340,13 +348,25 @@ void AudioService::AudioInputTask() {
 
         /* Feed the audio processor */
         if (bits & AS_EVENT_AUDIO_PROCESSOR_RUNNING) {
+            static int afe_feed_count = 0;
+            afe_feed_count++;
+            
             std::vector<int16_t> data;
             int samples = audio_processor_->GetFeedSize();
             if (samples > 0) {
                 if (ReadAudioData(data, 16000, samples)) {
                     audio_processor_->Feed(std::move(data));
+                    
+                    // Log every 100 feeds
+                    if (afe_feed_count % 100 == 1) {
+                        ESP_LOGI(TAG, "🎤 AFE feed #%d: %d samples", afe_feed_count, samples);
+                    }
                     continue;
+                } else {
+                    ESP_LOGW(TAG, "⚠️  ReadAudioData failed for AFE feed #%d", afe_feed_count);
                 }
+            } else {
+                ESP_LOGW(TAG, "⚠️  AFE GetFeedSize returned 0");
             }
         }
 
