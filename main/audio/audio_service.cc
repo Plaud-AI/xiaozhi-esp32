@@ -570,20 +570,29 @@ void AudioService::OpusCodecTask() {
             // Audio during TTS playback is mainly used for interrupt detection,
             // so we can reduce send rate to prevent queue overflow.
             // IMPORTANT: Only throttle in playback mode to avoid affecting ASR accuracy!
-            // NOTE: Server needs regular audio input to keep session alive and do VAD,
-            //       so we use interval=2 (~120ms) instead of 5 (~300ms) which was too slow.
+            // 
+            // CRITICAL FIX: In playback mode, the device runs AFE + encode + decode + playback
+            // simultaneously, which causes high CPU load. This starves the TCP receive task,
+            // preventing it from receiving TTS audio from server. We must yield CPU time
+            // regularly to let TCP receive task run.
             if (playback_mode_) {
                 static int playback_frame_count = 0;
                 playback_frame_count++;
                 
                 // In playback mode, only send every 2nd frame (~120ms interval)
                 // This reduces send rate by 50% while keeping server session alive
-                // for interrupt detection. Interval of 5 was too slow and caused
-                // server to stop sending TTS data.
+                // for interrupt detection.
                 const int PLAYBACK_SEND_INTERVAL = 2;  // Send 1 every 2 frames (~120ms)
+                
+                // CRITICAL: Yield CPU time to let TCP receive task process incoming data!
+                // Without this, TCP receive gets starved and cannot receive TTS audio from server.
+                // We yield on EVERY frame (not just skipped ones) to ensure consistent CPU sharing.
+                vTaskDelay(pdMS_TO_TICKS(2));  // 2ms delay to yield CPU
                 
                 if (playback_frame_count % PLAYBACK_SEND_INTERVAL != 0) {
                     // Skip this packet - not needed for interrupt detection
+                    // Note: We already yielded CPU above, so this skip reduces both
+                    // network traffic AND encoding CPU load
                     continue;
                 }
                 
