@@ -466,10 +466,23 @@ void AudioService::AudioInputTask() {
                     // ═══════════════════════════════════════════════════════════════════════════
                     
 #if CONFIG_USE_DEVICE_AEC
+                    // Speaking 模式的累积缓冲区（需要在这里声明以便模式切换时清空）
+                    static std::vector<int16_t> afe_accumulator;
+                    static int afe_feed_throttle = 0;
+                    static int afe_actual_feed_count = 0;
+                    
                     if (!playback_mode_) {
                         // ═══════════════════════════════════════════════════════════════════════
                         // 【Listening 模式】旁路 AFE，直接输出麦克风数据，节省 CPU
                         // ═══════════════════════════════════════════════════════════════════════
+                        
+                        // 清空 Speaking 模式的累积缓冲区（模式切换时）
+                        if (!afe_accumulator.empty()) {
+                            ESP_LOGI(TAG, "🔄 Mode switch: clearing AFE accumulator (%d samples)", 
+                                     (int)afe_accumulator.size());
+                            afe_accumulator.clear();
+                            afe_feed_throttle = 0;
+                        }
                         
                         // 提取麦克风通道数据（Ch0）
                         std::vector<int16_t> mic_data;
@@ -524,34 +537,66 @@ void AudioService::AudioInputTask() {
                     // ═══════════════════════════════════════════════════════════════════════════
                     // 【Speaking 模式】通过 AFE + AEC 处理
                     // ═══════════════════════════════════════════════════════════════════════════
+                    // 
+                    // 优化策略：
+                    // 1. 每 4 次读取只 feed 一次 AFE（累积 1024 samples = 64ms）
+                    // 2. 减少 AFE 处理频率，给网络任务更多 CPU 时间
+                    // 3. 打断检测响应时间 ~100ms 仍然足够快
+                    // 
+                    // ═══════════════════════════════════════════════════════════════════════════
                     
-                    // 输入音频能量监控（每 100 帧打印一次）
-                    if (feed_count % 100 == 1) {
+                    // 累积音频数据，减少 AFE 调用频率
+                    // (static 变量已在上面声明)
+                    const int AFE_FEED_EVERY_N = 4;  // 每 4 次读取 feed 一次 AFE
+                    
+                    afe_accumulator.insert(afe_accumulator.end(), data.begin(), data.end());
+                    afe_feed_throttle++;
+                    
+                    if (afe_feed_throttle < AFE_FEED_EVERY_N) {
+                        // 还没累积够，等待更多数据
+                        // 但要 yield 给其他任务
+                        vTaskDelay(pdMS_TO_TICKS(2));
+                        continue;
+                    }
+                    
+                    // 累积够了，feed AFE
+                    afe_feed_throttle = 0;
+                    
+                    // 输入音频能量监控（每 25 次 feed，约 1.6 秒）
+                    // (static 变量已在上面声明)
+                    afe_actual_feed_count++;
+                    if (afe_actual_feed_count % 25 == 1) {
                         // 计算麦克风通道的 RMS 能量
                         int64_t sum_sq = 0;
-                        int mic_samples = codec_->input_channels() == 2 ? data.size() / 2 : data.size();
+                        size_t data_size = afe_accumulator.size();
+                        int mic_samples = codec_->input_channels() == 2 ? data_size / 2 : data_size;
                         for (int i = 0; i < mic_samples; i++) {
                             int idx = codec_->input_channels() == 2 ? i * 2 : i;
-                            sum_sq += (int64_t)data[idx] * data[idx];
+                            sum_sq += (int64_t)afe_accumulator[idx] * afe_accumulator[idx];
                         }
                         int32_t input_rms = (int32_t)sqrt((double)sum_sq / mic_samples);
-                        
-                        // 统计平均输入能量
-                        input_rms_sum += input_rms;
-                        input_rms_count++;
-                        int32_t avg_input_rms = input_rms_sum / input_rms_count;
                         
                         const char* input_status = (input_rms < 50) ? "🔇 VERY_LOW" : 
                                                    (input_rms < 200) ? "🔉 LOW" : 
                                                    (input_rms < 1000) ? "🔊 NORMAL" : "📢 LOUD";
                         
-                        ESP_LOGI(TAG, "🎤 [AFE+AEC] feed #%d: %d samples, INPUT_RMS=%d %s (avg=%d)", 
-                                 feed_count, samples, input_rms, input_status, avg_input_rms);
+                        ESP_LOGI(TAG, "🎤 [AFE+AEC] feed #%d: %d samples, INPUT_RMS=%d %s", 
+                                 afe_actual_feed_count, (int)afe_accumulator.size(), input_rms, input_status);
                     }
                     
-                    // Speaking 模式：通过 AFE 处理（AEC 消除回声）
-                    audio_processor_->Feed(std::move(data));
-                    portYIELD();
+                    // Feed 累积的数据给 AFE（分批 feed）
+                    while (afe_accumulator.size() >= (size_t)samples) {
+                        std::vector<int16_t> chunk(afe_accumulator.begin(), 
+                                                   afe_accumulator.begin() + samples);
+                        afe_accumulator.erase(afe_accumulator.begin(), 
+                                              afe_accumulator.begin() + samples);
+                        audio_processor_->Feed(std::move(chunk));
+                    }
+                    
+                    // ⚠️ CRITICAL: 给网络任务足够的 CPU 时间
+                    // Speaking 模式下 AFE + 音频播放 + 网络接收 都在竞争 CPU
+                    // 每次 feed 后等待 5ms 让 TCP receive 有机会运行
+                    vTaskDelay(pdMS_TO_TICKS(5));
                     
                     continue;
                 } else {
