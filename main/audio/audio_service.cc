@@ -554,8 +554,8 @@ void AudioService::AudioInputTask() {
                     
                     if (afe_feed_throttle < AFE_FEED_EVERY_N) {
                         // 还没累积够，等待更多数据
-                        // 但要 yield 给其他任务
-                        vTaskDelay(pdMS_TO_TICKS(2));
+                        // 只 yield，不 delay（避免过度延迟）
+                        portYIELD();
                         continue;
                     }
                     
@@ -593,10 +593,8 @@ void AudioService::AudioInputTask() {
                         audio_processor_->Feed(std::move(chunk));
                     }
                     
-                    // ⚠️ CRITICAL: 给网络任务足够的 CPU 时间
-                    // Speaking 模式下 AFE + 音频播放 + 网络接收 都在竞争 CPU
-                    // 每次 feed 后等待 5ms 让 TCP receive 有机会运行
-                    vTaskDelay(pdMS_TO_TICKS(5));
+                    // 每次批量 feed 后 yield，让其他任务有机会运行
+                    portYIELD();
                     
                     continue;
                 } else {
