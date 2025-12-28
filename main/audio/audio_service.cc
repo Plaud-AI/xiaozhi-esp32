@@ -100,40 +100,65 @@ void AudioService::Initialize(AudioCodec* codec) {
 #endif
 
     audio_processor_->OnOutput([this](std::vector<int16_t>&& data) {
+        // ═══════════════════════════════════════════════════════════════════════════
+        // 【Speaking 模式】AFE + AEC 输出回调
+        // ═══════════════════════════════════════════════════════════════════════════
+        // 
+        // 注意：这个回调只在 Speaking 模式下被调用！
+        // 
+        // Listening 模式下：
+        //   - AFE 处于 bypass 模式（休眠）
+        //   - 音频直接从 AudioInputTask 输出到编码队列
+        //   - 不经过这个回调
+        // 
+        // Speaking 模式下：
+        //   - AFE + AEC 处理音频
+        //   - 通过这个回调输出
+        //   - 静音检测 + 降频发送（只用于打断检测）
+        // 
+        // ═══════════════════════════════════════════════════════════════════════════
+        
         static int output_count = 0;
-        static int low_energy_count = 0;
+        static int sent_count = 0;
+        static int skipped_silent = 0;
+        static int skipped_freq = 0;
         output_count++;
         
-        // ═══════════════════════════════════════════════════════════════════════════
-        // 音频能量监控：诊断 AEC 是否过度消除用户语音
-        // ═══════════════════════════════════════════════════════════════════════════
-        // 计算 RMS 能量（每 50 帧采样一次）
-        if (output_count % 50 == 1) {
-            int64_t sum_sq = 0;
-            for (size_t i = 0; i < data.size(); i++) {
-                sum_sq += (int64_t)data[i] * data[i];
-            }
-            int32_t rms = (int32_t)sqrt((double)sum_sq / data.size());
-            
-            // RMS < 100 表示几乎静音（AEC 可能过度消除）
-            // RMS > 500 表示有明显的语音信号
-            const char* energy_status = (rms < 100) ? "⚠️ SILENT" : (rms < 500) ? "🔇 LOW" : "✅ OK";
-            
-            if (rms < 100) {
-                low_energy_count++;
-            }
-            
-            // Check queue sizes for debugging
+        // 计算 RMS 能量
+        int64_t sum_sq = 0;
+        for (size_t i = 0; i < data.size(); i++) {
+            sum_sq += (int64_t)data[i] * data[i];
+        }
+        int32_t rms = (int32_t)sqrt((double)sum_sq / data.size());
+        
+        // 优化 1：激进静音检测
+        // RMS < 300 认为是静音帧，不发送（节省带宽）
+        const int SILENCE_THRESHOLD = 300;
+        if (rms < SILENCE_THRESHOLD) {
+            skipped_silent++;
+            return;  // 静音帧不发送
+        }
+        
+        // 优化 2：降低发送频率（每 2 帧发送 1 帧）
+        // 60ms * 2 = 120ms 间隔，对于打断检测足够快
+        const int SEND_EVERY_N_FRAMES = 2;
+        static int non_silent_count = 0;
+        non_silent_count++;
+        
+        if (non_silent_count % SEND_EVERY_N_FRAMES != 1) {
+            skipped_freq++;
+            return;  // 跳过该帧（降低频率）
+        }
+        
+        // 发送该帧
+        sent_count++;
+        
+        // 定期输出统计信息
+        if (sent_count % 20 == 1) {
             std::lock_guard<std::mutex> lock(audio_queue_mutex_);
-            ESP_LOGI(TAG, "🎙️ AFE output #%d: %d samples, RMS=%d %s → encode_q=%d, send_q=%d", 
-                     output_count, (int)data.size(), rms, energy_status,
-                     (int)audio_encode_queue_.size(), (int)audio_send_queue_.size());
-            
-            // 如果连续多帧静音，警告 AEC 可能有问题
-            if (low_energy_count > 10 && output_count > 100) {
-                ESP_LOGW(TAG, "⚠️  AEC may be over-cancelling! %d/%d frames are silent (RMS<100)", 
-                         low_energy_count, output_count / 50);
-            }
+            ESP_LOGI(TAG, "🎙️ [AFE+AEC] output #%d: RMS=%d, sent=%d, skip_silent=%d, skip_freq=%d → encode_q=%d", 
+                     output_count, rms, sent_count, skipped_silent, skipped_freq,
+                     (int)audio_encode_queue_.size());
         }
         
         PushTaskToEncodeQueue(kAudioTaskTypeEncodeToSendQueue, std::move(data));
@@ -414,19 +439,94 @@ void AudioService::AudioInputTask() {
 
         /* Feed the audio processor */
         if (bits & AS_EVENT_AUDIO_PROCESSOR_RUNNING) {
-            static int afe_feed_count = 0;
+            static int feed_count = 0;
             static int64_t input_rms_sum = 0;
             static int input_rms_count = 0;
-            afe_feed_count++;
+            static std::vector<int16_t> direct_output_buffer;  // 直接输出累积缓冲区
+            feed_count++;
             
             std::vector<int16_t> data;
             int samples = audio_processor_->GetFeedSize();
             if (samples > 0) {
                 if (ReadAudioData(data, 16000, samples)) {
                     // ═══════════════════════════════════════════════════════════════════════════
-                    // 输入音频能量监控：诊断麦克风是否正常采集
+                    // 双模式音频处理：
                     // ═══════════════════════════════════════════════════════════════════════════
-                    if (afe_feed_count % 100 == 1) {
+                    // 
+                    // 【Listening 模式】playback_mode_ = false
+                    //   - 完全旁路 AFE，节省 CPU
+                    //   - 直接提取麦克风数据
+                    //   - 每帧都发送，用于语音识别
+                    // 
+                    // 【Speaking 模式】playback_mode_ = true
+                    //   - 通过 AFE + AEC 处理
+                    //   - 消除扬声器回声
+                    //   - 用于打断检测
+                    // 
+                    // ═══════════════════════════════════════════════════════════════════════════
+                    
+#if CONFIG_USE_DEVICE_AEC
+                    if (!playback_mode_) {
+                        // ═══════════════════════════════════════════════════════════════════════
+                        // 【Listening 模式】旁路 AFE，直接输出麦克风数据，节省 CPU
+                        // ═══════════════════════════════════════════════════════════════════════
+                        
+                        // 提取麦克风通道数据（Ch0）
+                        std::vector<int16_t> mic_data;
+                        if (codec_->input_channels() == 2) {
+                            // 双通道交错格式：[Mic0, Ref0, Mic1, Ref1, ...]
+                            mic_data.resize(data.size() / 2);
+                            for (size_t i = 0; i < mic_data.size(); i++) {
+                                mic_data[i] = data[i * 2];  // 提取麦克风通道
+                            }
+                        } else {
+                            mic_data = std::move(data);
+                        }
+                        
+                        // 累积到 960 samples（OPUS 帧大小）
+                        direct_output_buffer.insert(direct_output_buffer.end(), 
+                                                    mic_data.begin(), mic_data.end());
+                        
+                        // 当累积够 960 samples 时，直接送入编码队列
+                        while (direct_output_buffer.size() >= 960) {
+                            // 提取 960 samples
+                            std::vector<int16_t> frame(direct_output_buffer.begin(), 
+                                                       direct_output_buffer.begin() + 960);
+                            direct_output_buffer.erase(direct_output_buffer.begin(), 
+                                                       direct_output_buffer.begin() + 960);
+                            
+                            // 计算 RMS 用于日志（每 50 帧）
+                            static int direct_output_count = 0;
+                            direct_output_count++;
+                            if (direct_output_count % 50 == 1) {
+                                int64_t sum_sq = 0;
+                                for (int16_t sample : frame) {
+                                    sum_sq += (int64_t)sample * sample;
+                                }
+                                int32_t rms = (int32_t)sqrt((double)sum_sq / frame.size());
+                                
+                                const char* status = (rms < 100) ? "⚠️ SILENT" : 
+                                                     (rms < 500) ? "🔇 LOW" : "✅ OK";
+                                
+                                ESP_LOGI(TAG, "🎤 [DIRECT] output #%d: 960 samples, RMS=%d %s (bypass AFE, save CPU)", 
+                                         direct_output_count, rms, status);
+                            }
+                            
+                            // 直接送入编码队列
+                            PushTaskToEncodeQueue(kAudioTaskTypeEncodeToSendQueue, std::move(frame));
+                        }
+                        
+                        portYIELD();
+                        continue;
+                    }
+#endif
+                    
+                    // ═══════════════════════════════════════════════════════════════════════════
+                    // 【Speaking 模式】通过 AFE + AEC 处理
+                    // ═══════════════════════════════════════════════════════════════════════════
+                    
+                    // 输入音频能量监控（每 100 帧打印一次）
+                    if (feed_count % 100 == 1) {
                         // 计算麦克风通道的 RMS 能量
                         int64_t sum_sq = 0;
                         int mic_samples = codec_->input_channels() == 2 ? data.size() / 2 : data.size();
@@ -445,30 +545,20 @@ void AudioService::AudioInputTask() {
                                                    (input_rms < 200) ? "🔉 LOW" : 
                                                    (input_rms < 1000) ? "🔊 NORMAL" : "📢 LOUD";
                         
-                        ESP_LOGI(TAG, "🎤 AFE feed #%d: %d samples, INPUT_RMS=%d %s (avg=%d)", 
-                                 afe_feed_count, samples, input_rms, input_status, avg_input_rms);
+                        ESP_LOGI(TAG, "🎤 [AFE+AEC] feed #%d: %d samples, INPUT_RMS=%d %s (avg=%d)", 
+                                 feed_count, samples, input_rms, input_status, avg_input_rms);
                     }
                     
+                    // Speaking 模式：通过 AFE 处理（AEC 消除回声）
                     audio_processor_->Feed(std::move(data));
-                    
-                    // ⚠️ CRITICAL: Give WiFi/TCP tasks time to receive WebSocket data
-                    // 
-                    // Problem: Even with priority 23, WiFi task cannot preempt when I2S DMA
-                    // is actively transferring data. The AudioInputTask loop is too tight.
-                    // 
-                    // Solution: Use portYIELD() every feed (no delay, just yield)
-                    // This is a cooperative yield that lets higher-priority tasks run
-                    // without adding 10ms delay like vTaskDelay(1).
-                    // 
-                    // If WiFi still starves, fall back to vTaskDelay every N feeds
                     portYIELD();
                     
                     continue;
                 } else {
-                    ESP_LOGW(TAG, "⚠️  ReadAudioData failed for AFE feed #%d", afe_feed_count);
+                    ESP_LOGW(TAG, "⚠️  ReadAudioData failed for feed #%d", feed_count);
                 }
             } else {
-                ESP_LOGW(TAG, "⚠️  AFE GetFeedSize returned 0");
+                ESP_LOGW(TAG, "⚠️  GetFeedSize returned 0");
             }
         }
 
@@ -498,8 +588,8 @@ void AudioService::AudioOutputTask() {
         lock.unlock();
 
         // 每个包都打印日志（调试 TTS 播放问题）
-        ESP_LOGI(TAG, "🔊 Playing #%d: pcm_size=%d samples, playback_q=%d", 
-                 playback_count, (int)task->pcm.size(), (int)playback_q_size);
+            ESP_LOGI(TAG, "🔊 Playing #%d: pcm_size=%d samples, playback_q=%d", 
+                     playback_count, (int)task->pcm.size(), (int)playback_q_size);
 
         if (!codec_->output_enabled()) {
             ESP_LOGI(TAG, "🔊 Enabling audio output...");
@@ -647,9 +737,13 @@ void AudioService::OpusCodecTask() {
             // ============================================================
             // SILENCE DETECTION: Skip encoding for silent frames
             // ============================================================
-            // Calculate RMS energy of PCM data to detect silence.
-            // Silent frames don't need encoding - saves CPU significantly!
-            // This is much cheaper than Opus encoding.
+            // 
+            // 【重要】只在 Speaking 模式下启用静音跳过！
+            // 
+            // Listening 模式：发送所有帧（服务端 VAD 更准确）
+            // Speaking 模式：跳过静音帧（只需要打断检测）
+            // 
+            // ============================================================
             const int16_t SILENCE_THRESHOLD = 200;  // RMS threshold for silence detection
             int64_t sum_squares = 0;
             const auto& pcm = task->pcm;
@@ -660,10 +754,15 @@ void AudioService::OpusCodecTask() {
             int32_t rms = (int32_t)sqrt((double)sum_squares / (pcm.size() / 4));
             bool is_silent = (rms < SILENCE_THRESHOLD);
             
-            // In playback mode, we can be more aggressive with silence skipping
-            // since we only need audio for interrupt detection
+            // 【Listening 模式】不跳过静音帧，全部发送给服务器
+            // 服务端的 VAD 更准确，能更好地检测语音边界
+            if (!playback_mode_) {
+                // Listening mode: encode and send ALL frames
+                // No silence skipping - let server-side VAD handle it
+            } else {
+                // 【Speaking 模式】跳过静音帧，只发送有语音的帧用于打断检测
             static int silence_keepalive_count = 0;
-            const int SILENCE_KEEPALIVE_INTERVAL = playback_mode_ ? 25 : 50;  // More frequent in playback mode
+                const int SILENCE_KEEPALIVE_INTERVAL = 25;  // Send keepalive every 25 silent frames
             
             if (is_silent) {
                 silence_skip_count++;
@@ -682,6 +781,7 @@ void AudioService::OpusCodecTask() {
             } else {
                 // Reset silence counter when we have real audio
                 silence_keepalive_count = 0;
+                }
             }
             
             // ============================================================
@@ -978,22 +1078,33 @@ void AudioService::EnableDeviceAec(bool enable) {
 
 void AudioService::SetPlaybackMode(bool playback_mode) {
     // ═══════════════════════════════════════════════════════════════════════════
-    // 动态 AEC 控制：
-    // - playback_mode = true (Speaking 状态): 启用 AEC 消除扬声器回声
-    // - playback_mode = false (Listening 状态): 禁用 AEC 避免消除用户语音
+    // 双模式控制：
     // 
-    // 这解决了 AEC 在没有播放时错误消除用户语音的问题！
+    // playback_mode = true (Speaking 状态):
+    //   - 启用 AFE + AEC 处理
+    //   - 消除扬声器回声
+    //   - 用于打断检测
+    // 
+    // playback_mode = false (Listening 状态):
+    //   - 旁路 AFE，直接输出麦克风数据
+    //   - 节省大量 CPU（AFE 处理是 CPU 密集型的）
+    //   - 用于语音识别
+    // 
     // ═══════════════════════════════════════════════════════════════════════════
     if (playback_mode_ != playback_mode) {
         playback_mode_ = playback_mode;
         
 #if CONFIG_USE_DEVICE_AEC
         if (audio_processor_initialized_) {
-            // 只在 AEC 模式下动态控制
-            audio_processor_->EnableDeviceAec(playback_mode);
-            ESP_LOGI(TAG, "🎛️ SetPlaybackMode(%s) → AEC %s", 
+            // 设置 AFE 旁路模式：Listening = bypass, Speaking = AEC active
+            auto afe_processor = static_cast<AfeAudioProcessor*>(audio_processor_.get());
+            if (afe_processor) {
+                afe_processor->SetBypassMode(!playback_mode);
+            }
+            
+            ESP_LOGI(TAG, "🎛️ SetPlaybackMode(%s) → %s", 
                      playback_mode ? "true" : "false",
-                     playback_mode ? "ENABLED" : "DISABLED");
+                     playback_mode ? "AFE+AEC ACTIVE" : "AFE BYPASS (save CPU)");
         }
 #endif
     }
