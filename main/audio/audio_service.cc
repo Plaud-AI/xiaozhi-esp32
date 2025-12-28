@@ -147,20 +147,28 @@ void AudioService::Initialize(AudioCodec* codec) {
         int32_t amplified_rms = (int32_t)sqrt((double)sum_sq / data.size());
         
         // ═══════════════════════════════════════════════════════════════════════════
-        // 动态降级：根据队列大小调整发送率
+        // 动态降级：根据 SEND 队列大小调整发送率
         // ═══════════════════════════════════════════════════════════════════════════
-        int queue_size = 0;
+        // 
+        // ⚠️ 关键：检查 send_queue 而不是 encode_queue！
+        // 
+        // 数据流程：OnOutput → encode_queue → OpusCodecTask → send_queue → TCP
+        // TCP 拥塞会导致 send_queue 增长，而不是 encode_queue
+        // 
+        // ═══════════════════════════════════════════════════════════════════════════
+        int send_queue_size = 0;
         {
             std::lock_guard<std::mutex> lock(audio_queue_mutex_);
-            queue_size = (int)audio_encode_queue_.size();
+            send_queue_size = (int)audio_send_queue_.size();
         }
         
-        // 确定拥塞级别
+        // 确定拥塞级别（基于 send_queue 大小）
+        // send_queue 最大是 40，所以阈值要相应调整
         enum CongestionLevel { NORMAL, LIGHT, HEAVY };
         CongestionLevel congestion = NORMAL;
-        if (queue_size > 20) {
+        if (send_queue_size > 30) {
             congestion = HEAVY;
-        } else if (queue_size > 10) {
+        } else if (send_queue_size > 15) {
             congestion = LIGHT;
         }
         
@@ -206,14 +214,14 @@ void AudioService::Initialize(AudioCodec* codec) {
         
         sent_count++;
         
-        // 定期输出统计信息（包含拥塞级别）
+        // 定期输出统计信息（包含拥塞级别和 send_queue 大小）
         if (sent_count % 50 == 1) {
             const char* mode = is_voice ? "🗣️ VOICE" : "🔇 SILENCE";
             const char* cong = (congestion == HEAVY) ? "🔴 HEAVY" : 
                                (congestion == LIGHT) ? "🟡 LIGHT" : "🟢 NORMAL";
             int send_rate = (output_count > 0) ? (sent_count * 100 / output_count) : 0;
-            ESP_LOGI(TAG, "🎙️ [AEC] #%d: RMS=%d %s, %s, sent=%d (%d%%), q=%d", 
-                     output_count, amplified_rms, mode, cong, sent_count, send_rate, queue_size);
+            ESP_LOGI(TAG, "🎙️ [AEC] #%d: RMS=%d %s, %s, sent=%d (%d%%), send_q=%d", 
+                     output_count, amplified_rms, mode, cong, sent_count, send_rate, send_queue_size);
         }
         
         PushTaskToEncodeQueue(kAudioTaskTypeEncodeToSendQueue, std::move(data));
