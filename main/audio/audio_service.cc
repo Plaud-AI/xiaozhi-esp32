@@ -425,11 +425,9 @@ void AudioService::AudioOutputTask() {
         audio_queue_cv_.notify_all();
         lock.unlock();
 
-        // 每 10 个包或第一个包打印日志
-        if (playback_count % 10 == 1) {
-            ESP_LOGI(TAG, "🔊 Playing #%d: pcm_size=%d samples, playback_q=%d", 
-                     playback_count, (int)task->pcm.size(), (int)playback_q_size);
-        }
+        // 每个包都打印日志（调试 TTS 播放问题）
+        ESP_LOGI(TAG, "🔊 Playing #%d: pcm_size=%d samples, playback_q=%d", 
+                 playback_count, (int)task->pcm.size(), (int)playback_q_size);
 
         if (!codec_->output_enabled()) {
             ESP_LOGI(TAG, "🔊 Enabling audio output...");
@@ -509,11 +507,9 @@ void AudioService::OpusCodecTask() {
             audio_queue_cv_.notify_all();
             lock.unlock();
 
-            // 每 10 个包打印日志
-            if (decode_count % 10 == 1) {
-                ESP_LOGI(TAG, "🎵 Decoding #%d: decode_q=%d, playback_q=%d, payload=%d bytes", 
-                         decode_count, (int)decode_q_size, (int)playback_q_size, (int)packet->payload.size());
-            }
+            // 每个包都打印日志（调试 TTS 播放问题）
+            ESP_LOGI(TAG, "🎵 Decoding #%d: decode_q=%d, playback_q=%d, payload=%d bytes", 
+                     decode_count, (int)decode_q_size, (int)playback_q_size, (int)packet->payload.size());
 
             auto task = std::make_unique<AudioTask>();
             task->type = kAudioTaskTypeDecodeToPlaybackQueue;
