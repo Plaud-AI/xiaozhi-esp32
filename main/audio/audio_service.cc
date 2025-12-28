@@ -245,8 +245,9 @@ void AudioService::Initialize(AudioCodec* codec) {
         // 定期输出统计信息（包含拥塞级别和 send_queue 大小）
         if (sent_count % 50 == 1) {
             const char* mode = is_voice ? "🗣️ VOICE" : "🔇 SILENCE";
-            const char* cong = (congestion == HEAVY) ? "🔴 HEAVY" : 
-                               (congestion == LIGHT) ? "🟡 LIGHT" : "🟢 NORMAL";
+            const char* cong = (send_queue_size >= 25) ? "🔴 DANGER" : 
+                               (send_queue_size >= 15) ? "🟡 WARNING" :
+                               (send_queue_size >= 10) ? "🟠 LIGHT" : "🟢 NORMAL";
             int send_rate = (output_count > 0) ? (sent_count * 100 / output_count) : 0;
             ESP_LOGI(TAG, "🎙️ [AEC] #%d: RMS=%d %s, %s, sent=%d (%d%%), send_q=%d", 
                      output_count, amplified_rms, mode, cong, sent_count, send_rate, send_queue_size);
