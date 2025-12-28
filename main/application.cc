@@ -757,9 +757,9 @@ void Application::MainEventLoop() {
                 if (listening_mode_ == kListeningModeRealtime && 
                     (device_state_ == kDeviceStateListening || device_state_ == kDeviceStateSpeaking)) {
                     auto stats = audio_service_.GetQueueStats();
-                    ESP_LOGI(TAG, "📊 Queue stats: encode=%zu, send=%zu, decode=%zu, playback=%zu",
-                             stats.encode_queue_size, stats.send_queue_size,
-                             stats.decode_queue_size, stats.playback_queue_size);
+                    ESP_LOGI(TAG, "📊 Queue stats: encode=%d, send=%d, decode=%d, playback=%d",
+                             (int)stats.encode_queue_size, (int)stats.send_queue_size,
+                             (int)stats.decode_queue_size, (int)stats.playback_queue_size);
                 }
             }
         }
