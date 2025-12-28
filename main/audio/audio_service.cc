@@ -128,32 +128,60 @@ void AudioService::Initialize(AudioCodec* codec) {
         static int output_count = 0;
         static int sent_count = 0;
         static int skipped_count = 0;
+        static int clip_count = 0;  // 削波统计
         output_count++;
         
         // ═══════════════════════════════════════════════════════════════════════════
-        // 计算 AEC 输出的原始 RMS 能量（诊断用）
+        // 计算 AEC 输出的原始 RMS 能量
         // ═══════════════════════════════════════════════════════════════════════════
         int64_t sum_sq = 0;
+        int16_t peak = 0;  // 峰值用于动态增益计算
         for (size_t i = 0; i < data.size(); i++) {
             sum_sq += (int64_t)data[i] * data[i];
+            int16_t abs_val = data[i] > 0 ? data[i] : -data[i];
+            if (abs_val > peak) peak = abs_val;
         }
         int32_t original_rms = (int32_t)sqrt((double)sum_sq / data.size());
         
         // ═══════════════════════════════════════════════════════════════════════════
-        // 增益放大：AEC 输出能量太低，服务端 VAD 无法识别
+        // 动态增益：根据峰值自适应调整，避免削波失真！
         // ═══════════════════════════════════════════════════════════════════════════
         // 
-        // 增加到 8x（+18dB），确保即使 AEC 输出很弱，服务端也能检测到语音
+        // 问题：固定 8x 增益导致大声说话时大量样本被限幅（削波）
+        //      削波后波形变成方波，频谱失真，VAD 无法识别为人声
+        // 
+        // 解决方案：动态增益
+        //   - 目标峰值：20000（留出余量避免任何削波）
+        //   - 根据当前峰值计算最大安全增益
+        //   - 增益范围：1x ~ 16x
+        // 
+        // 对比 Listening 模式：用户说话时 RMS 约 300，服务端能正确识别
+        // 所以我们的目标是让 AEC 输出也达到类似的 RMS 水平
         // 
         // ═══════════════════════════════════════════════════════════════════════════
-        const int16_t GAIN_FACTOR = 8;  // 放大 8 倍（+18dB）
+        
+        const int32_t TARGET_PEAK = 20000;   // 目标峰值（32767 的 61%，留余量）
+        const int32_t MIN_GAIN = 1;          // 最小增益
+        const int32_t MAX_GAIN = 16;         // 最大增益
+        
+        // 计算安全增益：确保放大后峰值不超过 TARGET_PEAK
+        int32_t safe_gain = MAX_GAIN;
+        if (peak > 0) {
+            safe_gain = TARGET_PEAK / peak;
+            if (safe_gain < MIN_GAIN) safe_gain = MIN_GAIN;
+            if (safe_gain > MAX_GAIN) safe_gain = MAX_GAIN;
+        }
+        
+        // 应用动态增益
+        int clipped = 0;
         for (size_t i = 0; i < data.size(); i++) {
-            int32_t sample = data[i] * GAIN_FACTOR;
-            // 限幅防止溢出
-            if (sample > 32767) sample = 32767;
-            if (sample < -32768) sample = -32768;
+            int32_t sample = data[i] * safe_gain;
+            // 安全检查（理论上不应该触发，因为我们已经计算了安全增益）
+            if (sample > 32767) { sample = 32767; clipped++; }
+            if (sample < -32768) { sample = -32768; clipped++; }
             data[i] = (int16_t)sample;
         }
+        if (clipped > 0) clip_count += clipped;
         
         // 重新计算放大后的 RMS（用于日志和判断）
         sum_sq = 0;
@@ -214,17 +242,17 @@ void AudioService::Initialize(AudioCodec* codec) {
         
         sent_count++;
         
-        // 定期输出详细统计信息（每 20 帧，约 1.2 秒）
-        if (sent_count % 20 == 1) {
+        // 定期输出详细统计信息（每 50 帧，与服务端 VAD 日志采样率对齐）
+        if (sent_count % 50 == 1) {
             const char* mode = is_voice ? "🗣️ VOICE" : "🔇 SILENCE";
             const char* cong = (send_queue_size >= 25) ? "🔴 DANGER" : 
                                (send_queue_size >= 15) ? "🟡 WARNING" : "🟢 NORMAL";
             int send_rate = (output_count > 0) ? (sent_count * 100 / output_count) : 0;
             
-            // 添加原始 RMS 用于诊断 AEC 输出质量
-            ESP_LOGI(TAG, "🎙️ [AEC] #%d: orig=%d → amp=%d %s, %s, sent=%d/%d (%d%%), q=%d", 
-                     output_count, original_rms, amplified_rms, mode, cong, 
-                     sent_count, output_count, send_rate, send_queue_size);
+            // 显示：原始RMS, 增益倍数, 放大后RMS, 峰值, 削波数
+            ESP_LOGI(TAG, "🎙️ [AEC] #%d: orig=%d ×%d→ amp=%d (peak=%d) %s, %s, clip=%d", 
+                     output_count, original_rms, (int)safe_gain, amplified_rms, (int)peak,
+                     mode, cong, clip_count);
         }
         
         PushTaskToEncodeQueue(kAudioTaskTypeEncodeToSendQueue, std::move(data));
