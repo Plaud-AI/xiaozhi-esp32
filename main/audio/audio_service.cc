@@ -161,23 +161,37 @@ void AudioService::Start() {
     }
 
 #if CONFIG_USE_AUDIO_PROCESSOR
+    // ═══════════════════════════════════════════════════════════════════════════
+    // AEC 模式任务分配策略：
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Core 0: AudioInputTask (读 I2S) + AudioOutputTask (写 I2S) + OpusCodecTask
+    // Core 1: AFE task (AEC 处理) - 需要独占核心以保证实时性
+    // 
+    // 原因：AFE 的 AEC 处理需要稳定的 CPU 时间，如果和 I2S 读写在同一核心
+    // 会导致 "Ringbuffer of AFE is empty" 错误，音频处理延迟严重
+    // ═══════════════════════════════════════════════════════════════════════════
+    
     /* Start the audio input task */
     if (audio_input_task_stack_ && audio_input_task_buffer_) {
-        // Move AudioInputTask to Core 1 to offload Core 0 (WiFi/BLE/System Timers)
+        // AudioInputTask 在 Core 0，让 Core 1 专门处理 AFE (AEC)
+        // Priority 8: 最高优先级确保 I2S 读取及时
         audio_input_task_handle_ = xTaskCreateStaticPinnedToCore([](void* arg) {
             AudioService* audio_service = (AudioService*)arg;
             audio_service->AudioInputTask();
             vTaskDelete(NULL);
-        }, "audio_input", 16384, this, 8, audio_input_task_stack_, audio_input_task_buffer_, 1);
+        }, "audio_input", 16384, this, 8, audio_input_task_stack_, audio_input_task_buffer_, 0);
+        ESP_LOGI(TAG, "✅ AudioInputTask created (Core 0, Priority 8)");
     }
 
     /* Start the audio output task */
     if (audio_output_task_stack_ && audio_output_task_buffer_) {
-        audio_output_task_handle_ = xTaskCreateStatic([](void* arg) {
+        // AudioOutputTask 也在 Core 0，和 AudioInputTask 共享 I2S 总线
+        audio_output_task_handle_ = xTaskCreateStaticPinnedToCore([](void* arg) {
             AudioService* audio_service = (AudioService*)arg;
             audio_service->AudioOutputTask();
             vTaskDelete(NULL);
-        }, "audio_output", 8192, this, 4, audio_output_task_stack_, audio_output_task_buffer_);
+        }, "audio_output", 8192, this, 4, audio_output_task_stack_, audio_output_task_buffer_, 0);
+        ESP_LOGI(TAG, "✅ AudioOutputTask created (Core 0, Priority 4)");
     }
 #else
     /* Start the audio input task */
@@ -200,15 +214,23 @@ void AudioService::Start() {
 #endif
 
     /* Start the opus codec task */
-    // Priority raised from 2 to 6 to keep up with AFE (prio 4) output
-    // This prevents encode_queue from backing up in AEC mode
+    // Priority 6: higher than AudioOutputTask (4) to prevent decode queue backup
+    // Core 0: keep with other I/O tasks, let Core 1 handle AFE exclusively
     if (opus_codec_task_stack_ && opus_codec_task_buffer_) {
-        opus_codec_task_handle_ = xTaskCreateStatic([](void* arg) {
+        opus_codec_task_handle_ = xTaskCreateStaticPinnedToCore([](void* arg) {
             AudioService* audio_service = (AudioService*)arg;
             audio_service->OpusCodecTask();
             vTaskDelete(NULL);
-        }, "opus_codec", 32768, this, 6, opus_codec_task_stack_, opus_codec_task_buffer_);
+        }, "opus_codec", 32768, this, 6, opus_codec_task_stack_, opus_codec_task_buffer_, 0);
+        ESP_LOGI(TAG, "✅ OpusCodecTask created (Core 0, Priority 6)");
     }
+    
+    ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════════╗");
+    ESP_LOGI(TAG, "║   📊 Audio Task Distribution for AEC Mode                    ║");
+    ESP_LOGI(TAG, "╠══════════════════════════════════════════════════════════════╣");
+    ESP_LOGI(TAG, "║   Core 0: AudioInput(8) + AudioOutput(4) + OpusCodec(6)      ║");
+    ESP_LOGI(TAG, "║   Core 1: AFE/AEC (5) - Dedicated for realtime processing    ║");
+    ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════════╝");
 }
 
 void AudioService::Stop() {
