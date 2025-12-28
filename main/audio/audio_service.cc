@@ -112,55 +112,38 @@ void AudioService::Initialize(AudioCodec* codec) {
         //   - 不经过这个回调
         // 
         // Speaking 模式下：
-        //   - AFE + AEC 处理音频
+        //   - AFE + AEC 处理音频（消除扬声器回声）
         //   - 通过这个回调输出
-        //   - 静音检测 + 降频发送（只用于打断检测）
+        //   - ⚠️ 必须发送所有帧！服务端 VAD 需要连续音频来检测打断
         // 
         // ═══════════════════════════════════════════════════════════════════════════
         
         static int output_count = 0;
         static int sent_count = 0;
-        static int skipped_silent = 0;
-        static int skipped_freq = 0;
         output_count++;
+        sent_count++;
         
-        // 计算 RMS 能量
+        // 计算 RMS 能量（用于日志）
         int64_t sum_sq = 0;
         for (size_t i = 0; i < data.size(); i++) {
             sum_sq += (int64_t)data[i] * data[i];
         }
         int32_t rms = (int32_t)sqrt((double)sum_sq / data.size());
         
-        // 优化 1：激进静音检测
-        // RMS < 300 认为是静音帧，不发送（节省带宽）
-        const int SILENCE_THRESHOLD = 300;
-        if (rms < SILENCE_THRESHOLD) {
-            skipped_silent++;
-            return;  // 静音帧不发送
-        }
-        
-        // 优化 2：降低发送频率（每 2 帧发送 1 帧）
-        // 60ms * 2 = 120ms 间隔，对于打断检测足够快
-        const int SEND_EVERY_N_FRAMES = 2;
-        static int non_silent_count = 0;
-        non_silent_count++;
-        
-        if (non_silent_count % SEND_EVERY_N_FRAMES != 1) {
-            skipped_freq++;
-            return;  // 跳过该帧（降低频率）
-        }
-        
-        // 发送该帧
-        sent_count++;
-        
-        // 定期输出统计信息
-        if (sent_count % 20 == 1) {
+        // 定期输出统计信息（每 50 帧，约 3 秒）
+        if (sent_count % 50 == 1) {
+            const char* energy_status = (rms < 100) ? "🔇 SILENT" : 
+                                        (rms < 500) ? "🔉 LOW" : 
+                                        (rms < 2000) ? "🔊 NORMAL" : "📢 LOUD";
             std::lock_guard<std::mutex> lock(audio_queue_mutex_);
-            ESP_LOGI(TAG, "🎙️ [AFE+AEC] output #%d: RMS=%d, sent=%d, skip_silent=%d, skip_freq=%d → encode_q=%d", 
-                     output_count, rms, sent_count, skipped_silent, skipped_freq,
+            ESP_LOGI(TAG, "🎙️ [AFE+AEC] output #%d: RMS=%d %s, sent=%d → encode_q=%d", 
+                     output_count, rms, energy_status, sent_count,
                      (int)audio_encode_queue_.size());
         }
         
+        // ⚠️ Speaking 模式下发送所有帧，不做静音检测！
+        // 服务端 VAD 比设备端更准确，由服务端决定用户是否在说话
+        // 这确保了打断功能能正常工作
         PushTaskToEncodeQueue(kAudioTaskTypeEncodeToSendQueue, std::move(data));
     });
 
@@ -778,54 +761,15 @@ void AudioService::OpusCodecTask() {
             }
             
             // ============================================================
-            // SILENCE DETECTION: Skip encoding for silent frames
+            // 不再做静音检测！所有帧都发送给服务器
             // ============================================================
             // 
-            // 【重要】只在 Speaking 模式下启用静音跳过！
-            // 
-            // Listening 模式：发送所有帧（服务端 VAD 更准确）
-            // Speaking 模式：跳过静音帧（只需要打断检测）
+            // 原因：
+            // 1. 服务端 VAD 比设备端更准确
+            // 2. Speaking 模式下需要连续音频流来检测打断
+            // 3. 静音检测可能误判，导致用户无法打断 TTS
             // 
             // ============================================================
-            const int16_t SILENCE_THRESHOLD = 200;  // RMS threshold for silence detection
-            int64_t sum_squares = 0;
-            const auto& pcm = task->pcm;
-            for (size_t i = 0; i < pcm.size(); i += 4) {  // Sample every 4th for speed
-                int32_t sample = pcm[i];
-                sum_squares += sample * sample;
-            }
-            int32_t rms = (int32_t)sqrt((double)sum_squares / (pcm.size() / 4));
-            bool is_silent = (rms < SILENCE_THRESHOLD);
-            
-            // 【Listening 模式】不跳过静音帧，全部发送给服务器
-            // 服务端的 VAD 更准确，能更好地检测语音边界
-            if (!playback_mode_) {
-                // Listening mode: encode and send ALL frames
-                // No silence skipping - let server-side VAD handle it
-            } else {
-                // 【Speaking 模式】跳过静音帧，只发送有语音的帧用于打断检测
-            static int silence_keepalive_count = 0;
-                const int SILENCE_KEEPALIVE_INTERVAL = 25;  // Send keepalive every 25 silent frames
-            
-            if (is_silent) {
-                silence_skip_count++;
-                silence_keepalive_count++;
-                
-                // Still send occasional silence to keep connection alive
-                if (silence_keepalive_count < SILENCE_KEEPALIVE_INTERVAL) {
-                    if (silence_skip_count % 50 == 1) {
-                        ESP_LOGD(TAG, "🔇 Skipping silent frame #%d (RMS=%d < %d)", 
-                                 silence_skip_count, rms, SILENCE_THRESHOLD);
-                    }
-                    continue;  // Skip encoding entirely - save CPU!
-                }
-                silence_keepalive_count = 0;  // Reset for next keepalive
-                ESP_LOGD(TAG, "🔇 Sending silence keepalive (RMS=%d)", rms);
-            } else {
-                // Reset silence counter when we have real audio
-                silence_keepalive_count = 0;
-                }
-            }
             
             // ============================================================
             // OPUS ENCODING (only for non-silent or keepalive frames)
@@ -840,25 +784,11 @@ void AudioService::OpusCodecTask() {
             }
             
             // ============================================================
-            // DTX (Discontinuous Transmission) - Additional bandwidth saving
+            // 不跳过 DTX 包！发送所有包给服务器
             // ============================================================
-            // Even after our silence detection, Opus may produce DTX packets.
-            // Skip most of them but keep some for connection keepalive.
-            static int dtx_skip_count = 0;
-            const int DTX_KEEPALIVE_INTERVAL = 50;
-            
-            bool is_dtx_packet = (packet->payload.size() <= 2);
-            bool should_skip_dtx = is_dtx_packet && (dtx_skip_count % DTX_KEEPALIVE_INTERVAL != 0);
-            
-            if (is_dtx_packet) {
-                dtx_skip_count++;
-                if (should_skip_dtx) {
-                    ESP_LOGD(TAG, "Skipping DTX packet #%d", dtx_skip_count);
-                    continue;
-                }
-            } else {
-                dtx_skip_count = 0;
-            }
+            // DTX 包虽然很小，但仍然携带信息，服务端需要它们来
+            // 正确处理音频流和 VAD 检测
+            // ============================================================
 
             if (task->type == kAudioTaskTypeEncodeToSendQueue) {
                 {
