@@ -174,13 +174,14 @@ void AudioService::Start() {
     /* Start the audio input task */
     if (audio_input_task_stack_ && audio_input_task_buffer_) {
         // AudioInputTask 在 Core 0，让 Core 1 专门处理 AFE (AEC)
-        // Priority 8: 最高优先级确保 I2S 读取及时
+        // Priority 5: 与 WiFi 任务相近，避免抢占 TCP 接收导致 WebSocket 数据丢失
+        // 之前用 Priority 8 会导致 WebSocket 收不到 TTS 数据包
         audio_input_task_handle_ = xTaskCreateStaticPinnedToCore([](void* arg) {
             AudioService* audio_service = (AudioService*)arg;
             audio_service->AudioInputTask();
             vTaskDelete(NULL);
-        }, "audio_input", 16384, this, 8, audio_input_task_stack_, audio_input_task_buffer_, 0);
-        ESP_LOGI(TAG, "✅ AudioInputTask created (Core 0, Priority 8)");
+        }, "audio_input", 16384, this, 5, audio_input_task_stack_, audio_input_task_buffer_, 0);
+        ESP_LOGI(TAG, "✅ AudioInputTask created (Core 0, Priority 5)");
     }
 
     /* Start the audio output task */
@@ -229,7 +230,7 @@ void AudioService::Start() {
     ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════════╗");
     ESP_LOGI(TAG, "║   📊 Audio Task Distribution for AEC Mode                    ║");
     ESP_LOGI(TAG, "╠══════════════════════════════════════════════════════════════╣");
-    ESP_LOGI(TAG, "║   Core 0: AudioInput(8)                                      ║");
+    ESP_LOGI(TAG, "║   Core 0: AudioInput(5) + WiFi/TCP - Cooperative scheduling  ║");
     ESP_LOGI(TAG, "║   Core 1: AFE/AEC (5) - Dedicated for realtime processing    ║");
     ESP_LOGI(TAG, "║   Float:  AudioOutput(5) + OpusCodec(6) - Auto scheduled     ║");
     ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════════╝");
@@ -391,6 +392,12 @@ void AudioService::AudioInputTask() {
                     if (afe_feed_count % 100 == 1) {
                         ESP_LOGI(TAG, "🎤 AFE feed #%d: %d samples", afe_feed_count, samples);
                     }
+                    
+                    // ⚠️ CRITICAL: Yield CPU to allow WiFi/TCP tasks to run
+                    // Without this, WebSocket receive is starved and TTS audio packets are lost
+                    // AudioInputTask runs at priority 8 on Core 0, same as WiFi
+                    taskYIELD();
+                    
                     continue;
                 } else {
                     ESP_LOGW(TAG, "⚠️  ReadAudioData failed for AFE feed #%d", afe_feed_count);
