@@ -87,6 +87,16 @@ void AudioService::Initialize(AudioCodec* codec) {
     opus_decoder_ = std::make_unique<OpusDecoderWrapper>(codec->output_sample_rate(), 1, OPUS_FRAME_DURATION_MS);
     opus_encoder_ = std::make_unique<OpusEncoderWrapper>(16000, 1, OPUS_FRAME_DURATION_MS);
     opus_encoder_->SetComplexity(0);
+    
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 初始禁用 DTX：因为默认进入 Listening 模式，需要完整编码所有帧
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 问题：OpusEncoderWrapper 默认启用 DTX，静音时只输出 1 byte 帧
+    //      服务器可能无法正确处理 DTX 帧，导致 VAD/ASR 失败
+    // 解决：初始禁用 DTX，SetPlaybackMode() 会根据模式动态切换
+    // ═══════════════════════════════════════════════════════════════════════════
+    opus_encoder_->SetDtx(false);
+    ESP_LOGI(TAG, "🎚️ Opus DTX: DISABLED (initial state for Listening mode)");
 
     if (codec->input_sample_rate() != 16000) {
         input_resampler_.Configure(codec->input_sample_rate(), 16000);
@@ -1147,15 +1157,34 @@ void AudioService::SetPlaybackMode(bool playback_mode) {
     //   - 启用 AFE + AEC 处理
     //   - 消除扬声器回声
     //   - 用于打断检测
+    //   - DTX 启用（节省带宽）
     // 
     // playback_mode = false (Listening 状态):
     //   - 旁路 AFE，直接输出麦克风数据
     //   - 节省大量 CPU（AFE 处理是 CPU 密集型的）
     //   - 用于语音识别
+    //   - DTX 禁用（确保所有帧完整编码，避免服务器无法识别）
     // 
     // ═══════════════════════════════════════════════════════════════════════════
     if (playback_mode_ != playback_mode) {
         playback_mode_ = playback_mode;
+        
+        // ═══════════════════════════════════════════════════════════════════════════
+        // DTX 控制：
+        // ═══════════════════════════════════════════════════════════════════════════
+        // 
+        // Listening 模式（语音识别）：禁用 DTX
+        //   - 问题：DTX 启用时，静音帧只有 1 byte，服务器可能无法正确处理
+        //   - 解决：禁用 DTX，确保所有帧都完整编码（~80-120 bytes）
+        // 
+        // Speaking 模式（打断检测）：启用 DTX
+        //   - 节省带宽，AEC 输出的静音帧不需要完整发送
+        // 
+        // ═══════════════════════════════════════════════════════════════════════════
+        if (opus_encoder_) {
+            opus_encoder_->SetDtx(playback_mode);  // Speaking=DTX on, Listening=DTX off
+            ESP_LOGI(TAG, "🎚️ Opus DTX: %s", playback_mode ? "ENABLED (Speaking)" : "DISABLED (Listening)");
+        }
         
 #if CONFIG_USE_DEVICE_AEC
         if (audio_processor_initialized_) {
