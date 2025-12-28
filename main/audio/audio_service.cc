@@ -101,26 +101,23 @@ void AudioService::Initialize(AudioCodec* codec) {
 
     audio_processor_->OnOutput([this](std::vector<int16_t>&& data) {
         // ═══════════════════════════════════════════════════════════════════════════
-        // 【Speaking 模式】AFE + AEC 输出回调 - 自适应降频策略
+        // 【Speaking 模式】AFE + AEC 输出回调 - 动态降级策略
         // ═══════════════════════════════════════════════════════════════════════════
         // 
-        // 策略：根据音频能量动态调整发送频率，平衡 ASR 质量和 TCP 压力
+        // ⚠️ 关键问题：TCP 缓冲区满会导致收发都停止（恶性循环）
         // 
-        //   语音状态 (RMS > 150)：每 2 帧发 1 帧 (50%, 120ms 间隔)
-        //     - 保证 ASR 能识别词语（每秒约 500ms 音频）
-        //     - 足够服务端识别 5+ 个词触发打断
+        // 解决方案：根据队列大小动态调整发送率
+        //   - 正常（队列 <10）：语音 100%，静音 20%
+        //   - 轻度拥塞（10-20）：语音 50%，静音 10%
+        //   - 重度拥塞（>20）：语音 25%，静音 5%
         // 
-        //   静音状态 (RMS ≤ 150)：每 10 帧发 1 帧 (10%, 600ms 间隔)
-        //     - 保持连接活跃
-        //     - 大幅减少 TCP 压力
+        // 这样在网络拥塞时自动降低数据产生速率，避免恶性循环
         // 
         // ═══════════════════════════════════════════════════════════════════════════
         
         static int output_count = 0;
         static int sent_count = 0;
         static int skipped_count = 0;
-        static int voice_frame_idx = 0;    // 有声帧计数器
-        static int silence_frame_idx = 0;  // 静音帧计数器
         output_count++;
         
         // 计算 RMS 能量
@@ -142,55 +139,81 @@ void AudioService::Initialize(AudioCodec* codec) {
             data[i] = (int16_t)sample;
         }
         
-        // 重新计算放大后的 RMS
+        // 重新计算放大后的 RMS（用于日志）
         sum_sq = 0;
         for (size_t i = 0; i < data.size(); i++) {
             sum_sq += (int64_t)data[i] * data[i];
         }
         int32_t amplified_rms = (int32_t)sqrt((double)sum_sq / data.size());
         
-        // 自适应降频参数（平衡 ASR 质量和 TCP 压力）
-        // 
-        // ⚠️ 重要：静音时不发送！否则服务器可能误认为用户在说话，导致 TTS 被打断
-        // 
-        const int VOICE_THRESHOLD = 500;      // RMS 阈值：放大后提高阈值
-        const int VOICE_SEND_EVERY = 2;       // 语音帧：每 2 帧发 1 帧 (50%, 保证 ASR)
+        // ═══════════════════════════════════════════════════════════════════════════
+        // 动态降级：根据队列大小调整发送率
+        // ═══════════════════════════════════════════════════════════════════════════
+        int queue_size = 0;
+        {
+            std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+            queue_size = (int)audio_encode_queue_.size();
+        }
         
+        // 确定拥塞级别
+        enum CongestionLevel { NORMAL, LIGHT, HEAVY };
+        CongestionLevel congestion = NORMAL;
+        if (queue_size > 20) {
+            congestion = HEAVY;
+        } else if (queue_size > 10) {
+            congestion = LIGHT;
+        }
+        
+        // 语音/静音判断
+        const int VOICE_THRESHOLD = 200;  // 放大后的阈值
         bool is_voice = (amplified_rms > VOICE_THRESHOLD);
         bool should_send = false;
         
-        if (is_voice) {
-            voice_frame_idx++;
-            silence_frame_idx = 0;  // 重置静音计数器
-            // 语音帧：每 VOICE_SEND_EVERY 帧发 1 帧
-            should_send = (voice_frame_idx % VOICE_SEND_EVERY == 1);
-        } else {
-            silence_frame_idx++;
-            voice_frame_idx = 0;  // 重置有声计数器
-            // ⚠️ 静音帧：完全不发送！避免服务器误打断 TTS
-            // 只有每 100 帧发 1 帧作为 keepalive（6 秒一次）
-            const int SILENCE_KEEPALIVE_EVERY = 100;
-            should_send = (silence_frame_idx % SILENCE_KEEPALIVE_EVERY == 1);
+        // 根据拥塞级别和语音状态决定是否发送
+        switch (congestion) {
+            case NORMAL:
+                // 正常：语音 100%，静音 20%
+                if (is_voice) {
+                    should_send = true;
+                } else {
+                    should_send = (output_count % 5 == 1);
+                }
+                break;
+                
+            case LIGHT:
+                // 轻度拥塞：语音 50%，静音 10%
+                if (is_voice) {
+                    should_send = (output_count % 2 == 1);
+                } else {
+                    should_send = (output_count % 10 == 1);
+                }
+                break;
+                
+            case HEAVY:
+                // 重度拥塞：语音 25%，静音 5%
+                if (is_voice) {
+                    should_send = (output_count % 4 == 1);
+                } else {
+                    should_send = (output_count % 20 == 1);
+                }
+                break;
         }
-        
-        // 更新日志使用放大后的 RMS
-        rms = amplified_rms;
         
         if (!should_send) {
             skipped_count++;
-            return;  // 跳过该帧
+            return;
         }
         
         sent_count++;
         
-        // 定期输出统计信息（每 25 个发送的帧）
-        if (sent_count % 25 == 1) {
+        // 定期输出统计信息（包含拥塞级别）
+        if (sent_count % 50 == 1) {
             const char* mode = is_voice ? "🗣️ VOICE" : "🔇 SILENCE";
+            const char* cong = (congestion == HEAVY) ? "🔴 HEAVY" : 
+                               (congestion == LIGHT) ? "🟡 LIGHT" : "🟢 NORMAL";
             int send_rate = (output_count > 0) ? (sent_count * 100 / output_count) : 0;
-            std::lock_guard<std::mutex> lock(audio_queue_mutex_);
-            ESP_LOGI(TAG, "🎙️ [AEC] #%d: RMS=%d %s, sent=%d, skip=%d (%d%%) → q=%d", 
-                     output_count, rms, mode, sent_count, skipped_count, send_rate,
-                     (int)audio_encode_queue_.size());
+            ESP_LOGI(TAG, "🎙️ [AEC] #%d: RMS=%d %s, %s, sent=%d (%d%%), q=%d", 
+                     output_count, amplified_rms, mode, cong, sent_count, send_rate, queue_size);
         }
         
         PushTaskToEncodeQueue(kAudioTaskTypeEncodeToSendQueue, std::move(data));
@@ -570,10 +593,14 @@ void AudioService::AudioInputTask() {
                     // 【Speaking 模式】通过 AFE + AEC 处理
                     // ═══════════════════════════════════════════════════════════════════════════
                     // 
-                    // 优化策略：
-                    // 1. 每 4 次读取只 feed 一次 AFE（累积 1024 samples = 64ms）
-                    // 2. 减少 AFE 处理频率，给网络任务更多 CPU 时间
-                    // 3. 打断检测响应时间 ~100ms 仍然足够快
+                    // ⚠️ 关键优化：确保 WiFi/LWIP 有足够 CPU 时间接收 TTS 数据
+                    // 
+                    // 问题：portYIELD() 只让同等或更高优先级任务运行
+                    //      WiFi/LWIP 协议栈运行在低优先级（~2-3），无法获得 CPU 时间
+                    //      导致 TTS 音频无法接收，对话卡住
+                    // 
+                    // 解决方案：使用 vTaskDelay() 替代 portYIELD()
+                    //          这样所有优先级的任务（包括 LWIP）都能获得 CPU 时间
                     // 
                     // ═══════════════════════════════════════════════════════════════════════════
                     
@@ -586,8 +613,8 @@ void AudioService::AudioInputTask() {
                     
                     if (afe_feed_throttle < AFE_FEED_EVERY_N) {
                         // 还没累积够，等待更多数据
-                        // 只 yield，不 delay（避免过度延迟）
-                        portYIELD();
+                        // ⚠️ 使用 vTaskDelay 而非 portYIELD，让 LWIP 有机会运行
+                        vTaskDelay(pdMS_TO_TICKS(1));  // 1ms delay，给 WiFi/LWIP CPU 时间
                         continue;
                     }
                     
@@ -625,8 +652,9 @@ void AudioService::AudioInputTask() {
                         audio_processor_->Feed(std::move(chunk));
                     }
                     
-                    // 每次批量 feed 后 yield，让其他任务有机会运行
-                    portYIELD();
+                    // ⚠️ 关键：feed 后延迟，让 WiFi/LWIP 有时间处理网络数据包
+                    // 5ms delay 足够 LWIP 处理几个 TCP 包
+                    vTaskDelay(pdMS_TO_TICKS(5));
                     
                     continue;
                 } else {

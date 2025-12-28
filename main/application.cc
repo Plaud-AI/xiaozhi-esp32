@@ -703,33 +703,40 @@ void Application::MainEventLoop() {
                                  send_count, current_send_q_size);
                     }
                     
-                    // 网络拥塞处理：等待 TCP 缓冲区清空
-                    // 不清除数据包，让它们在队列中等待
+                    // ═══════════════════════════════════════════════════════════════════════════
+                    // 网络拥塞处理：不要清空队列！
+                    // ═══════════════════════════════════════════════════════════════════════════
+                    // 
+                    // ⚠️ 之前的问题：清空队列导致 30 秒内只发了 1 字节！
+                    // 
+                    // 新策略：
+                    // 1. 失败时只是暂停，不清空数据
+                    // 2. 让数据在队列中等待，网络恢复后继续发送
+                    // 3. 只有队列太大时才清理最旧的几个包
+                    // 
+                    // ═══════════════════════════════════════════════════════════════════════════
                     if (fail_count >= 3) {
                         int64_t time_since_success = (esp_timer_get_time() - last_success_time) / 1000;
-                        ESP_LOGW(TAG, "🔥 Network congested! fail=%d, since_success=%lldms, waiting 50ms", 
-                                 fail_count, (long long)time_since_success);
+                        ESP_LOGW(TAG, "🔥 Network congested! fail=%d, since_success=%dms, q=%d", 
+                                 fail_count, (int)time_since_success, current_send_q_size);
                         
-                        // 等待更长时间让 TCP 缓冲区清空
-                        vTaskDelay(pdMS_TO_TICKS(50));
-                        
-                        // 如果超过 2 秒没有成功发送，可能是网络断开
-                        if (time_since_success > 2000) {
-                            ESP_LOGE(TAG, "❌ Network may be down! No successful send for %lldms", 
-                                     (long long)time_since_success);
-                            // 清除部分旧包以避免内存溢出
+                        // 只有队列积压严重时才清理（避免内存溢出）
+                        if (current_send_q_size > 30) {
                             int cleared = 0;
                             while (audio_service_.PopPacketFromSendQueue() && cleared < 5) {
                                 cleared++;
                             }
                             if (cleared > 0) {
-                                ESP_LOGW(TAG, "🗑️ Cleared %d stale packets (network timeout)", cleared);
+                                ESP_LOGW(TAG, "🗑️ Cleared %d old packets (queue overflow)", cleared);
                                 total_dropped += cleared;
                             }
                         }
                         
+                        // 短暂暂停让网络恢复
+                        vTaskDelay(pdMS_TO_TICKS(30));
+                        
                         fail_count = 0;
-                        break;  // Exit loop, let network recover
+                        break;  // Exit loop, retry later
                     }
                 }
                 
