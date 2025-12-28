@@ -172,54 +172,67 @@ void AudioService::Initialize(AudioCodec* codec) {
             send_queue_size = (int)audio_send_queue_.size();
         }
         
-        // 确定拥塞级别（基于 send_queue 大小）
-        // send_queue 最大是 40，所以阈值要相应调整
-        enum CongestionLevel { NORMAL, LIGHT, HEAVY };
-        CongestionLevel congestion = NORMAL;
-        if (send_queue_size > 30) {
-            congestion = HEAVY;
-        } else if (send_queue_size > 15) {
-            congestion = LIGHT;
-        }
+        // ═══════════════════════════════════════════════════════════════════════════
+        // 拥塞控制：根据 send_queue 大小决定是否发送
+        // ═══════════════════════════════════════════════════════════════════════════
+        // 
+        // ⚠️ 关键发现：TCP 是双向的！
+        // 
+        // 当发送缓冲区满时：
+        // 1. send() 阻塞
+        // 2. TCP 窗口关闭
+        // 3. recv() 也会受影响（无法发送 ACK）
+        // 4. 整个 WebSocket 通信停止！
+        // 
+        // 所以必须在 send_queue 达到危险水位前就停止发送
+        // 
+        // ═══════════════════════════════════════════════════════════════════════════
         
         // 语音/静音判断
         const int VOICE_THRESHOLD = 200;  // 放大后的阈值
         bool is_voice = (amplified_rms > VOICE_THRESHOLD);
         bool should_send = false;
         
-        // 根据拥塞级别和语音状态决定是否发送
-        switch (congestion) {
-            case NORMAL:
-                // 正常：语音 100%，静音 20%
-                if (is_voice) {
-                    should_send = true;
-                } else {
-                    should_send = (output_count % 5 == 1);
-                }
-                break;
-                
-            case LIGHT:
-                // 轻度拥塞：语音 50%，静音 10%
-                if (is_voice) {
-                    should_send = (output_count % 2 == 1);
-                } else {
-                    should_send = (output_count % 10 == 1);
-                }
-                break;
-                
-            case HEAVY:
-                // ═══════════════════════════════════════════════════════════════════════════
-                // 重度拥塞：几乎完全停止发送！
-                // ═══════════════════════════════════════════════════════════════════════════
-                // 
-                // ⚠️ 关键：TCP 是双向的，发送堵塞会阻止接收 ACK，进而阻止接收 TTS 数据
-                // 
-                // 策略：只发送极少量的 keepalive（每 100 帧 1 帧 = 6 秒一次）
-                // 这样 TCP 缓冲区有机会清空，恢复双向通信
-                // 
-                // ═══════════════════════════════════════════════════════════════════════════
-                should_send = (output_count % 100 == 1);  // 只发 1%，无论语音还是静音
-                break;
+        // 拥塞级别判断和处理
+        if (send_queue_size >= 25) {
+            // ═══════════════════════════════════════════════════════════════════════════
+            // 🚨 危险水位：完全停止发送！
+            // ═══════════════════════════════════════════════════════════════════════════
+            // 
+            // send_queue >= 25：TCP 缓冲区即将满，必须完全停止发送
+            // 让 TCP 有机会清空缓冲区，恢复双向通信
+            // 
+            // ═══════════════════════════════════════════════════════════════════════════
+            should_send = false;
+            static int danger_log_count = 0;
+            if (danger_log_count++ % 50 == 0) {
+                ESP_LOGW(TAG, "🚨 DANGER: send_queue=%d >= 25, STOPPED sending! (count=%d)", 
+                         send_queue_size, danger_log_count);
+            }
+        } else if (send_queue_size >= 15) {
+            // ═══════════════════════════════════════════════════════════════════════════
+            // ⚠️ 警告水位：大幅减少发送
+            // ═══════════════════════════════════════════════════════════════════════════
+            // 语音只发 20%，静音不发
+            if (is_voice) {
+                should_send = (output_count % 5 == 1);  // 语音 20%
+            } else {
+                should_send = false;  // 静音完全不发
+            }
+        } else if (send_queue_size >= 10) {
+            // 轻度拥塞：语音 50%，静音 10%
+            if (is_voice) {
+                should_send = (output_count % 2 == 1);
+            } else {
+                should_send = (output_count % 10 == 1);
+            }
+        } else {
+            // 正常：语音 100%，静音 20%
+            if (is_voice) {
+                should_send = true;
+            } else {
+                should_send = (output_count % 5 == 1);
+            }
         }
         
         if (!should_send) {
