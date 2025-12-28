@@ -397,10 +397,13 @@ void AudioService::AudioInputTask() {
                     // vTaskDelay(1) = 10ms (at 100Hz tick rate), too long for every feed
                     // Feed 256 samples = 16ms audio, delay 10ms = 26ms total = only 61% throughput!
                     // 
-                    // Solution: Delay every 8 feeds (128ms audio) for 1 tick (10ms)
-                    // Throughput: 128ms / 138ms = 92.7%, acceptable for AEC mode
-                    // This gives WiFi ~7% CPU time to process WebSocket frames
-                    if (afe_feed_count % 8 == 0) {
+                    // Solution: Delay every 16 feeds (256ms audio) for 1 tick (10ms)
+                    // Throughput: 256ms / 266ms = 96.2%, minimal impact on audio quality
+                    // This gives WiFi ~4% CPU time to process WebSocket frames
+                    // 
+                    // Note: WiFi task has priority 23 >> AudioInputTask priority 5
+                    // WiFi should preempt when it has data to process, this delay is just a safety net
+                    if (afe_feed_count % 16 == 0) {
                         vTaskDelay(1);
                     }
                     
