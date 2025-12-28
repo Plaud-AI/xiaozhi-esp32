@@ -101,49 +101,74 @@ void AudioService::Initialize(AudioCodec* codec) {
 
     audio_processor_->OnOutput([this](std::vector<int16_t>&& data) {
         // ═══════════════════════════════════════════════════════════════════════════
-        // 【Speaking 模式】AFE + AEC 输出回调
+        // 【Speaking 模式】AFE + AEC 输出回调 - 自适应降频策略
         // ═══════════════════════════════════════════════════════════════════════════
         // 
-        // 注意：这个回调只在 Speaking 模式下被调用！
+        // 策略：根据音频能量动态调整发送频率
         // 
-        // Listening 模式下：
-        //   - AFE 处于 bypass 模式（休眠）
-        //   - 音频直接从 AudioInputTask 输出到编码队列
-        //   - 不经过这个回调
+        //   RMS > 200 (有声音)：每 2 帧发 1 帧 (120ms 间隔)
+        //   RMS ≤ 200 (静音)  ：每 4 帧发 1 帧 (240ms 间隔)
         // 
-        // Speaking 模式下：
-        //   - AFE + AEC 处理音频（消除扬声器回声）
-        //   - 通过这个回调输出
-        //   - ⚠️ 必须发送所有帧！服务端 VAD 需要连续音频来检测打断
+        // 效果：
+        //   • 减少 60-70% 发送量，避免 TCP 缓冲区堆积
+        //   • 用户说话时仍有足够音频触发服务端 VAD
+        //   • 保持音频流连续性，不完全丢弃静音帧
         // 
         // ═══════════════════════════════════════════════════════════════════════════
         
         static int output_count = 0;
         static int sent_count = 0;
+        static int skipped_count = 0;
+        static int voice_frame_idx = 0;    // 有声帧计数器
+        static int silence_frame_idx = 0;  // 静音帧计数器
         output_count++;
-        sent_count++;
         
-        // 计算 RMS 能量（用于日志）
+        // 计算 RMS 能量
         int64_t sum_sq = 0;
         for (size_t i = 0; i < data.size(); i++) {
             sum_sq += (int64_t)data[i] * data[i];
         }
         int32_t rms = (int32_t)sqrt((double)sum_sq / data.size());
         
-        // 定期输出统计信息（每 50 帧，约 3 秒）
-        if (sent_count % 50 == 1) {
+        // 自适应降频参数
+        const int VOICE_THRESHOLD = 200;      // RMS 阈值：区分有声/静音
+        const int VOICE_SEND_EVERY = 2;       // 有声帧：每 2 帧发 1 帧 (50%)
+        const int SILENCE_SEND_EVERY = 4;     // 静音帧：每 4 帧发 1 帧 (25%)
+        
+        bool is_voice = (rms > VOICE_THRESHOLD);
+        bool should_send = false;
+        
+        if (is_voice) {
+            voice_frame_idx++;
+            silence_frame_idx = 0;  // 重置静音计数器
+            // 有声帧：每 VOICE_SEND_EVERY 帧发 1 帧
+            should_send = (voice_frame_idx % VOICE_SEND_EVERY == 1);
+        } else {
+            silence_frame_idx++;
+            voice_frame_idx = 0;  // 重置有声计数器
+            // 静音帧：每 SILENCE_SEND_EVERY 帧发 1 帧
+            should_send = (silence_frame_idx % SILENCE_SEND_EVERY == 1);
+        }
+        
+        if (!should_send) {
+            skipped_count++;
+            return;  // 跳过该帧
+        }
+        
+        sent_count++;
+        
+        // 定期输出统计信息（每 30 个发送的帧，约 3-6 秒）
+        if (sent_count % 30 == 1) {
             const char* energy_status = (rms < 100) ? "🔇 SILENT" : 
                                         (rms < 500) ? "🔉 LOW" : 
                                         (rms < 2000) ? "🔊 NORMAL" : "📢 LOUD";
+            int send_rate = (output_count > 0) ? (sent_count * 100 / output_count) : 0;
             std::lock_guard<std::mutex> lock(audio_queue_mutex_);
-            ESP_LOGI(TAG, "🎙️ [AFE+AEC] output #%d: RMS=%d %s, sent=%d → encode_q=%d", 
-                     output_count, rms, energy_status, sent_count,
+            ESP_LOGI(TAG, "🎙️ [AEC] #%d: RMS=%d %s, sent=%d, skip=%d (%d%%) → q=%d", 
+                     output_count, rms, energy_status, sent_count, skipped_count, send_rate,
                      (int)audio_encode_queue_.size());
         }
         
-        // ⚠️ Speaking 模式下发送所有帧，不做静音检测！
-        // 服务端 VAD 比设备端更准确，由服务端决定用户是否在说话
-        // 这确保了打断功能能正常工作
         PushTaskToEncodeQueue(kAudioTaskTypeEncodeToSendQueue, std::move(data));
     });
 
