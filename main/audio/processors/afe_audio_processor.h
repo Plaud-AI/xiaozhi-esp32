@@ -28,6 +28,10 @@ public:
     void OnVadStateChange(std::function<void(bool speaking)> callback) override;
     size_t GetFeedSize() override;
     void EnableDeviceAec(bool enable) override;
+    
+    // 设置旁路模式：当 bypass=true 时，AFE 任务暂停处理，节省 CPU
+    void SetBypassMode(bool bypass);
+    bool IsInBypassMode() const { return bypass_mode_; }
 
 private:
     EventGroupHandle_t event_group_ = nullptr;
@@ -39,6 +43,7 @@ private:
     int frame_samples_ = 0;
     bool is_speaking_ = false;
     bool aec_enabled_ = true;  // AEC 状态跟踪
+    volatile bool bypass_mode_ = true;  // 旁路模式：true=暂停AFE处理，节省CPU
     // Use PSRAM allocator for output buffer to save SRAM
     std::vector<int16_t, micro_wake_word::ExternalRAMAllocator<int16_t>> output_buffer_;
     TaskHandle_t task_handle_ = nullptr;
