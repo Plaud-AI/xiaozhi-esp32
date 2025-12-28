@@ -393,10 +393,16 @@ void AudioService::AudioInputTask() {
                         ESP_LOGI(TAG, "🎤 AFE feed #%d: %d samples", afe_feed_count, samples);
                     }
                     
-                    // ⚠️ CRITICAL: Yield CPU to allow WiFi/TCP tasks to run
-                    // Without this, WebSocket receive is starved and TTS audio packets are lost
-                    // AudioInputTask runs at priority 8 on Core 0, same as WiFi
-                    taskYIELD();
+                    // ⚠️ CRITICAL: Give WiFi/TCP tasks time to receive WebSocket data
+                    // vTaskDelay(1) = 10ms (at 100Hz tick rate), too long for every feed
+                    // Feed 256 samples = 16ms audio, delay 10ms = 26ms total = only 61% throughput!
+                    // 
+                    // Solution: Delay every 8 feeds (128ms audio) for 1 tick (10ms)
+                    // Throughput: 128ms / 138ms = 92.7%, acceptable for AEC mode
+                    // This gives WiFi ~7% CPU time to process WebSocket frames
+                    if (afe_feed_count % 8 == 0) {
+                        vTaskDelay(1);
+                    }
                     
                     continue;
                 } else {
