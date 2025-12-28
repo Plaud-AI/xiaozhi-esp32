@@ -130,12 +130,33 @@ void AudioService::Initialize(AudioCodec* codec) {
         }
         int32_t rms = (int32_t)sqrt((double)sum_sq / data.size());
         
-        // 自适应降频参数（平衡 ASR 质量和 TCP 压力）
-        const int VOICE_THRESHOLD = 150;      // RMS 阈值：区分有声/静音
-        const int VOICE_SEND_EVERY = 2;       // 语音帧：每 2 帧发 1 帧 (50%, 保证 ASR)
-        const int SILENCE_SEND_EVERY = 10;    // 静音帧：每 10 帧发 1 帧 (10%, 保持连接)
+        // ═══════════════════════════════════════════════════════════════════════════
+        // 增益放大：AEC 输出能量太低，服务端 VAD 无法识别
+        // ═══════════════════════════════════════════════════════════════════════════
+        const int16_t GAIN_FACTOR = 4;  // 放大 4 倍（+12dB）
+        for (size_t i = 0; i < data.size(); i++) {
+            int32_t sample = data[i] * GAIN_FACTOR;
+            // 限幅防止溢出
+            if (sample > 32767) sample = 32767;
+            if (sample < -32768) sample = -32768;
+            data[i] = (int16_t)sample;
+        }
         
-        bool is_voice = (rms > VOICE_THRESHOLD);
+        // 重新计算放大后的 RMS
+        sum_sq = 0;
+        for (size_t i = 0; i < data.size(); i++) {
+            sum_sq += (int64_t)data[i] * data[i];
+        }
+        int32_t amplified_rms = (int32_t)sqrt((double)sum_sq / data.size());
+        
+        // 自适应降频参数（平衡 ASR 质量和 TCP 压力）
+        // 
+        // ⚠️ 重要：静音时不发送！否则服务器可能误认为用户在说话，导致 TTS 被打断
+        // 
+        const int VOICE_THRESHOLD = 500;      // RMS 阈值：放大后提高阈值
+        const int VOICE_SEND_EVERY = 2;       // 语音帧：每 2 帧发 1 帧 (50%, 保证 ASR)
+        
+        bool is_voice = (amplified_rms > VOICE_THRESHOLD);
         bool should_send = false;
         
         if (is_voice) {
@@ -146,9 +167,14 @@ void AudioService::Initialize(AudioCodec* codec) {
         } else {
             silence_frame_idx++;
             voice_frame_idx = 0;  // 重置有声计数器
-            // 静音帧：每 SILENCE_SEND_EVERY 帧发 1 帧
-            should_send = (silence_frame_idx % SILENCE_SEND_EVERY == 1);
+            // ⚠️ 静音帧：完全不发送！避免服务器误打断 TTS
+            // 只有每 100 帧发 1 帧作为 keepalive（6 秒一次）
+            const int SILENCE_KEEPALIVE_EVERY = 100;
+            should_send = (silence_frame_idx % SILENCE_KEEPALIVE_EVERY == 1);
         }
+        
+        // 更新日志使用放大后的 RMS
+        rms = amplified_rms;
         
         if (!should_send) {
             skipped_count++;
