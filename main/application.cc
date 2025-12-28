@@ -704,21 +704,57 @@ void Application::MainEventLoop() {
                     }
                     
                     // ═══════════════════════════════════════════════════════════════════════════
-                    // 网络拥塞处理：不要清空队列！
+                    // 网络拥塞处理
                     // ═══════════════════════════════════════════════════════════════════════════
                     // 
-                    // ⚠️ 之前的问题：清空队列导致 30 秒内只发了 1 字节！
-                    // 
-                    // 新策略：
-                    // 1. 失败时只是暂停，不清空数据
-                    // 2. 让数据在队列中等待，网络恢复后继续发送
-                    // 3. 只有队列太大时才清理最旧的几个包
+                    // 策略：
+                    // 1. 短期拥塞（<10秒）：暂停，等待恢复
+                    // 2. 长期拥塞（>10秒）：认为连接已死，触发重连
+                    // 3. 队列积压严重时清理旧包
                     // 
                     // ═══════════════════════════════════════════════════════════════════════════
                     if (fail_count >= 3) {
                         int64_t time_since_success = (esp_timer_get_time() - last_success_time) / 1000;
                         ESP_LOGW(TAG, "🔥 Network congested! fail=%d, since_success=%dms, q=%d", 
                                  fail_count, (int)time_since_success, current_send_q_size);
+                        
+                        // ═══════════════════════════════════════════════════════════════════════════
+                        // 超时重连：TCP 缓冲区满超过 10 秒，认为连接已死
+                        // ═══════════════════════════════════════════════════════════════════════════
+                        // 
+                        // 原因：TCP 缓冲区满通常有几种情况：
+                        // 1. 短暂网络拥塞 → 几秒内恢复
+                        // 2. 服务器暂时繁忙 → 几秒内恢复
+                        // 3. 服务器停止读取 → 永远不会恢复！
+                        // 4. 网络断开但 TCP 未检测到 → 永远不会恢复！
+                        // 
+                        // TCP keepalive 默认 2 小时才超时，太慢了！
+                        // 所以我们在应用层检测：10秒没成功发送 → 主动断开重连
+                        // 
+                        // ═══════════════════════════════════════════════════════════════════════════
+                        const int64_t RECONNECT_TIMEOUT_MS = 10000;  // 10 秒
+                        if (time_since_success > RECONNECT_TIMEOUT_MS) {
+                            ESP_LOGE(TAG, "💀 Connection dead! No successful send for %d ms, reconnecting...", 
+                                     (int)time_since_success);
+                            
+                            // 清空发送队列（重连后数据已过时）
+                            while (audio_service_.PopPacketFromSendQueue()) {
+                                // 清空
+                            }
+                            
+                            // 触发重连
+                            if (protocol_) {
+                                protocol_->CloseAudioChannel();
+                            }
+                            
+                            // 重置状态
+                            SetDeviceState(kDeviceStateIdle);
+                            
+                            // 重置计数器
+                            last_success_time = esp_timer_get_time();
+                            fail_count = 0;
+                            break;
+                        }
                         
                         // 只有队列积压严重时才清理（避免内存溢出）
                         if (current_send_q_size > 30) {
