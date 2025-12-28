@@ -107,6 +107,18 @@ void AfeAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms, srm
     afe_iface_ = esp_afe_handle_from_config(afe_config);
     afe_data_ = afe_iface_->create_from_config(afe_config);
     
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ⚠️ 关键：初始化后立即禁用 AEC！
+    // 
+    // AEC 只应在 TTS 播放时启用。如果默认启用 AEC，会把用户语音当回声消除！
+    // AEC 将在 SetPlaybackMode(true) 时启用（进入 Speaking 状态）
+    // ═══════════════════════════════════════════════════════════════════════════
+#ifdef CONFIG_USE_DEVICE_AEC
+    ESP_LOGI(TAG, "🎤 Disabling AEC by default (will enable during TTS playback)");
+    afe_iface_->disable_aec(afe_data_);
+    aec_enabled_ = false;
+#endif
+    
     ESP_LOGI(TAG, "Creating AFE processor task (stack: 8192 bytes)...");
     
     // Allocate task stack in PSRAM to save SRAM
@@ -258,15 +270,32 @@ void AfeAudioProcessor::AudioProcessorTask() {
 }
 
 void AfeAudioProcessor::EnableDeviceAec(bool enable) {
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 动态 AEC 控制：
+    // - TTS 播放时启用 AEC（消除扬声器回声）
+    // - 聆听模式禁用 AEC（避免消除用户语音）
+    // 
+    // ⚠️ 注意：不调用 disable_vad/enable_vad，因为 VAD 未初始化会导致警告
+    // ═══════════════════════════════════════════════════════════════════════════
     if (enable) {
 #if CONFIG_USE_DEVICE_AEC
-        afe_iface_->disable_vad(afe_data_);
-        afe_iface_->enable_aec(afe_data_);
+        if (!aec_enabled_) {
+            ESP_LOGI(TAG, "🔊 Enabling AEC (playback mode)");
+            // ⚠️ 不调用 disable_vad - VAD 未初始化会产生警告
+            afe_iface_->enable_aec(afe_data_);
+            aec_enabled_ = true;
+        }
 #else
         ESP_LOGE(TAG, "Device AEC is not supported");
 #endif
     } else {
-        afe_iface_->disable_aec(afe_data_);
-        afe_iface_->enable_vad(afe_data_);
+#if CONFIG_USE_DEVICE_AEC
+        if (aec_enabled_) {
+            ESP_LOGI(TAG, "🎤 Disabling AEC (listening mode)");
+            afe_iface_->disable_aec(afe_data_);
+            // ⚠️ 不调用 enable_vad - VAD 未初始化
+            aec_enabled_ = false;
+        }
+#endif
     }
 }

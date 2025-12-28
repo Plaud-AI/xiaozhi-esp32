@@ -106,7 +106,8 @@ public:
     // Set playback mode to enable audio send throttling during TTS playback
     // When true, audio send rate will be reduced to prevent queue overflow
     // while still allowing interrupt detection
-    void SetPlaybackMode(bool playback_mode) { playback_mode_ = playback_mode; }
+    // Also controls AEC: enabled during playback, disabled during listening
+    void SetPlaybackMode(bool playback_mode);
 
     void SetCallbacks(AudioServiceCallbacks& callbacks);
 

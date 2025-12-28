@@ -36,7 +36,13 @@ bool WebsocketProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
         return false;
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 发送统计：诊断网络发送是否正常
+    // ═══════════════════════════════════════════════════════════════════════════
     static int audio_send_count = 0;
+    static int audio_send_success = 0;
+    static int audio_send_failed = 0;
+    static size_t total_bytes_sent = 0;
     audio_send_count++;
     
     bool result = false;
@@ -68,14 +74,24 @@ bool WebsocketProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
         result = websocket_->Send(packet->payload.data(), packet->payload.size(), true);
     }
     
-    // Log every 50 sends
+    if (result) {
+        audio_send_success++;
+        total_bytes_sent += payload_size;
+    } else {
+        audio_send_failed++;
+    }
+    
+    // Log every 50 sends with statistics
     if (audio_send_count % 50 == 1) {
-        ESP_LOGI(TAG, "🔊 WS SendAudio #%d: %u bytes, version=%d, result=%d", 
-                 audio_send_count, (unsigned int)payload_size, version_, result);
+        float success_rate = audio_send_count > 0 ? (audio_send_success * 100.0f / audio_send_count) : 0;
+        ESP_LOGI(TAG, "🔊 WS SendAudio #%d: %u bytes | 📊 total=%d, ok=%d, fail=%d (%.1f%%), sent=%u KB", 
+                 audio_send_count, (unsigned int)payload_size, 
+                 audio_send_count, audio_send_success, audio_send_failed, success_rate,
+                 (unsigned int)(total_bytes_sent / 1024));
     }
     
     if (!result) {
-        ESP_LOGW(TAG, "⚠️ WS SendAudio #%d failed!", audio_send_count);
+        ESP_LOGW(TAG, "⚠️ WS SendAudio #%d failed! (total_fail=%d)", audio_send_count, audio_send_failed);
     }
     
     return result;

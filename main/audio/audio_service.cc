@@ -101,14 +101,39 @@ void AudioService::Initialize(AudioCodec* codec) {
 
     audio_processor_->OnOutput([this](std::vector<int16_t>&& data) {
         static int output_count = 0;
+        static int low_energy_count = 0;
         output_count++;
         
-        // Log every 50 outputs
+        // ═══════════════════════════════════════════════════════════════════════════
+        // 音频能量监控：诊断 AEC 是否过度消除用户语音
+        // ═══════════════════════════════════════════════════════════════════════════
+        // 计算 RMS 能量（每 50 帧采样一次）
         if (output_count % 50 == 1) {
+            int64_t sum_sq = 0;
+            for (size_t i = 0; i < data.size(); i++) {
+                sum_sq += (int64_t)data[i] * data[i];
+            }
+            int32_t rms = (int32_t)sqrt((double)sum_sq / data.size());
+            
+            // RMS < 100 表示几乎静音（AEC 可能过度消除）
+            // RMS > 500 表示有明显的语音信号
+            const char* energy_status = (rms < 100) ? "⚠️ SILENT" : (rms < 500) ? "🔇 LOW" : "✅ OK";
+            
+            if (rms < 100) {
+                low_energy_count++;
+            }
+            
             // Check queue sizes for debugging
             std::lock_guard<std::mutex> lock(audio_queue_mutex_);
-            ESP_LOGI(TAG, "🎙️ AFE output #%d: %d samples → encode_q=%d, send_q=%d", 
-                     output_count, (int)data.size(), (int)audio_encode_queue_.size(), (int)audio_send_queue_.size());
+            ESP_LOGI(TAG, "🎙️ AFE output #%d: %d samples, RMS=%d %s → encode_q=%d, send_q=%d", 
+                     output_count, (int)data.size(), rms, energy_status,
+                     (int)audio_encode_queue_.size(), (int)audio_send_queue_.size());
+            
+            // 如果连续多帧静音，警告 AEC 可能有问题
+            if (low_energy_count > 10 && output_count > 100) {
+                ESP_LOGW(TAG, "⚠️  AEC may be over-cancelling! %d/%d frames are silent (RMS<100)", 
+                         low_energy_count, output_count / 50);
+            }
         }
         
         PushTaskToEncodeQueue(kAudioTaskTypeEncodeToSendQueue, std::move(data));
@@ -390,18 +415,41 @@ void AudioService::AudioInputTask() {
         /* Feed the audio processor */
         if (bits & AS_EVENT_AUDIO_PROCESSOR_RUNNING) {
             static int afe_feed_count = 0;
+            static int64_t input_rms_sum = 0;
+            static int input_rms_count = 0;
             afe_feed_count++;
             
             std::vector<int16_t> data;
             int samples = audio_processor_->GetFeedSize();
             if (samples > 0) {
                 if (ReadAudioData(data, 16000, samples)) {
-                    audio_processor_->Feed(std::move(data));
-                    
-                    // Log every 100 feeds
+                    // ═══════════════════════════════════════════════════════════════════════════
+                    // 输入音频能量监控：诊断麦克风是否正常采集
+                    // ═══════════════════════════════════════════════════════════════════════════
                     if (afe_feed_count % 100 == 1) {
-                        ESP_LOGI(TAG, "🎤 AFE feed #%d: %d samples", afe_feed_count, samples);
+                        // 计算麦克风通道的 RMS 能量
+                        int64_t sum_sq = 0;
+                        int mic_samples = codec_->input_channels() == 2 ? data.size() / 2 : data.size();
+                        for (int i = 0; i < mic_samples; i++) {
+                            int idx = codec_->input_channels() == 2 ? i * 2 : i;
+                            sum_sq += (int64_t)data[idx] * data[idx];
+                        }
+                        int32_t input_rms = (int32_t)sqrt((double)sum_sq / mic_samples);
+                        
+                        // 统计平均输入能量
+                        input_rms_sum += input_rms;
+                        input_rms_count++;
+                        int32_t avg_input_rms = input_rms_sum / input_rms_count;
+                        
+                        const char* input_status = (input_rms < 50) ? "🔇 VERY_LOW" : 
+                                                   (input_rms < 200) ? "🔉 LOW" : 
+                                                   (input_rms < 1000) ? "🔊 NORMAL" : "📢 LOUD";
+                        
+                        ESP_LOGI(TAG, "🎤 AFE feed #%d: %d samples, INPUT_RMS=%d %s (avg=%d)", 
+                                 afe_feed_count, samples, input_rms, input_status, avg_input_rms);
                     }
+                    
+                    audio_processor_->Feed(std::move(data));
                     
                     // ⚠️ CRITICAL: Give WiFi/TCP tasks time to receive WebSocket data
                     // 
@@ -926,6 +974,29 @@ void AudioService::EnableDeviceAec(bool enable) {
     }
 
     audio_processor_->EnableDeviceAec(enable);
+}
+
+void AudioService::SetPlaybackMode(bool playback_mode) {
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 动态 AEC 控制：
+    // - playback_mode = true (Speaking 状态): 启用 AEC 消除扬声器回声
+    // - playback_mode = false (Listening 状态): 禁用 AEC 避免消除用户语音
+    // 
+    // 这解决了 AEC 在没有播放时错误消除用户语音的问题！
+    // ═══════════════════════════════════════════════════════════════════════════
+    if (playback_mode_ != playback_mode) {
+        playback_mode_ = playback_mode;
+        
+#if CONFIG_USE_DEVICE_AEC
+        if (audio_processor_initialized_) {
+            // 只在 AEC 模式下动态控制
+            audio_processor_->EnableDeviceAec(playback_mode);
+            ESP_LOGI(TAG, "🎛️ SetPlaybackMode(%s) → AEC %s", 
+                     playback_mode ? "true" : "false",
+                     playback_mode ? "ENABLED" : "DISABLED");
+        }
+#endif
+    }
 }
 
 void AudioService::SetCallbacks(AudioServiceCallbacks& callbacks) {

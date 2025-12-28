@@ -664,12 +664,26 @@ void Application::MainEventLoop() {
             static int send_count = 0;
             static int fail_count = 0;
             static int total_dropped = 0;
+            static int64_t last_success_time = 0;
             int packets_sent = 0;
             int packets_dropped = 0;
             
-            // Limit sends per loop to give other tasks execution time
-            // This prevents network operations from starving other event handlers
-            const int MAX_SEND_PER_LOOP = 5;
+            // ═══════════════════════════════════════════════════════════════════════════
+            // 优化发送策略：
+            // 1. 增加每次循环的发送数量以减少队列堆积
+            // 2. 网络拥塞时等待更长时间让 TCP 恢复
+            // 3. 不主动清除数据包，让队列自然流转
+            // ═══════════════════════════════════════════════════════════════════════════
+            const int MAX_SEND_PER_LOOP = 10;  // 增加到 10 以减少队列堆积
+            
+            // 获取当前队列大小用于监控
+            auto queue_stats = audio_service_.GetQueueStats();
+            int current_send_q_size = queue_stats.send_queue_size;
+            
+            // 如果队列很大，警告并尝试追赶
+            if (current_send_q_size > 20) {
+                ESP_LOGW(TAG, "📊 Send queue building up: %d packets", current_send_q_size);
+            }
             
             while (auto packet = audio_service_.PopPacketFromSendQueue()) {
                 send_count++;
@@ -677,33 +691,43 @@ void Application::MainEventLoop() {
                 if (protocol_ && protocol_->SendAudio(std::move(packet))) {
                     packets_sent++;
                     fail_count = 0;  // Reset consecutive fail count
+                    last_success_time = esp_timer_get_time();
                 } else {
-                    // Send failed - network congestion, drop and continue
+                    // Send failed - network congestion
                     fail_count++;
                     packets_dropped++;
                     total_dropped++;
                     
-                    if (fail_count == 1 || fail_count % 5 == 0) {
-                        ESP_LOGW(TAG, "⚠️ SendAudio failed (consecutive: %d, total_dropped: %d)", 
-                                 fail_count, total_dropped);
+                    if (fail_count == 1) {
+                        ESP_LOGW(TAG, "⚠️ SendAudio failed #%d (send_q=%d)", 
+                                 send_count, current_send_q_size);
                     }
                     
-                    // If multiple consecutive failures, network is congested
-                    // Pause briefly and clear stale packets
+                    // 网络拥塞处理：等待 TCP 缓冲区清空
+                    // 不清除数据包，让它们在队列中等待
                     if (fail_count >= 3) {
-                        ESP_LOGW(TAG, "🔥 Network congested! Pausing 20ms, clearing stale packets");
-                        vTaskDelay(pdMS_TO_TICKS(20));
+                        int64_t time_since_success = (esp_timer_get_time() - last_success_time) / 1000;
+                        ESP_LOGW(TAG, "🔥 Network congested! fail=%d, since_success=%lldms, waiting 50ms", 
+                                 fail_count, (long long)time_since_success);
                         
-                        // Clear old packets to maintain realtime (keep only newest)
-                        int cleared = 0;
-                        while (audio_service_.PopPacketFromSendQueue()) {
-                            cleared++;
-                            if (cleared >= 10) break;  // Keep some newest packets
+                        // 等待更长时间让 TCP 缓冲区清空
+                        vTaskDelay(pdMS_TO_TICKS(50));
+                        
+                        // 如果超过 2 秒没有成功发送，可能是网络断开
+                        if (time_since_success > 2000) {
+                            ESP_LOGE(TAG, "❌ Network may be down! No successful send for %lldms", 
+                                     (long long)time_since_success);
+                            // 清除部分旧包以避免内存溢出
+                            int cleared = 0;
+                            while (audio_service_.PopPacketFromSendQueue() && cleared < 5) {
+                                cleared++;
+                            }
+                            if (cleared > 0) {
+                                ESP_LOGW(TAG, "🗑️ Cleared %d stale packets (network timeout)", cleared);
+                                total_dropped += cleared;
+                            }
                         }
-                        if (cleared > 0) {
-                            ESP_LOGW(TAG, "🗑️ Cleared %d stale packets", cleared);
-                            total_dropped += cleared;
-                        }
+                        
                         fail_count = 0;
                         break;  // Exit loop, let network recover
                     }
@@ -719,8 +743,8 @@ void Application::MainEventLoop() {
             
             // Log periodically
             if (send_count % 50 < packets_sent && packets_sent > 0) {
-                ESP_LOGI(TAG, "📡 Sent %d packets (total: #%d, dropped: %d)", 
-                         packets_sent, send_count, total_dropped);
+                ESP_LOGI(TAG, "📡 Sent %d packets (total: #%d, dropped: %d, send_q=%d)", 
+                         packets_sent, send_count, total_dropped, current_send_q_size);
             }
         }
 
