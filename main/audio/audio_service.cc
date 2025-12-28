@@ -104,15 +104,15 @@ void AudioService::Initialize(AudioCodec* codec) {
         // 【Speaking 模式】AFE + AEC 输出回调 - 自适应降频策略
         // ═══════════════════════════════════════════════════════════════════════════
         // 
-        // 策略：根据音频能量动态调整发送频率
+        // 策略：根据音频能量动态调整发送频率，平衡 ASR 质量和 TCP 压力
         // 
-        //   RMS > 200 (有声音)：每 2 帧发 1 帧 (120ms 间隔)
-        //   RMS ≤ 200 (静音)  ：每 4 帧发 1 帧 (240ms 间隔)
+        //   语音状态 (RMS > 150)：每 2 帧发 1 帧 (50%, 120ms 间隔)
+        //     - 保证 ASR 能识别词语（每秒约 500ms 音频）
+        //     - 足够服务端识别 5+ 个词触发打断
         // 
-        // 效果：
-        //   • 减少 60-70% 发送量，避免 TCP 缓冲区堆积
-        //   • 用户说话时仍有足够音频触发服务端 VAD
-        //   • 保持音频流连续性，不完全丢弃静音帧
+        //   静音状态 (RMS ≤ 150)：每 10 帧发 1 帧 (10%, 600ms 间隔)
+        //     - 保持连接活跃
+        //     - 大幅减少 TCP 压力
         // 
         // ═══════════════════════════════════════════════════════════════════════════
         
@@ -130,10 +130,10 @@ void AudioService::Initialize(AudioCodec* codec) {
         }
         int32_t rms = (int32_t)sqrt((double)sum_sq / data.size());
         
-        // 自适应降频参数
-        const int VOICE_THRESHOLD = 200;      // RMS 阈值：区分有声/静音
-        const int VOICE_SEND_EVERY = 2;       // 有声帧：每 2 帧发 1 帧 (50%)
-        const int SILENCE_SEND_EVERY = 4;     // 静音帧：每 4 帧发 1 帧 (25%)
+        // 自适应降频参数（平衡 ASR 质量和 TCP 压力）
+        const int VOICE_THRESHOLD = 150;      // RMS 阈值：区分有声/静音
+        const int VOICE_SEND_EVERY = 2;       // 语音帧：每 2 帧发 1 帧 (50%, 保证 ASR)
+        const int SILENCE_SEND_EVERY = 10;    // 静音帧：每 10 帧发 1 帧 (10%, 保持连接)
         
         bool is_voice = (rms > VOICE_THRESHOLD);
         bool should_send = false;
@@ -141,7 +141,7 @@ void AudioService::Initialize(AudioCodec* codec) {
         if (is_voice) {
             voice_frame_idx++;
             silence_frame_idx = 0;  // 重置静音计数器
-            // 有声帧：每 VOICE_SEND_EVERY 帧发 1 帧
+            // 语音帧：每 VOICE_SEND_EVERY 帧发 1 帧
             should_send = (voice_frame_idx % VOICE_SEND_EVERY == 1);
         } else {
             silence_frame_idx++;
@@ -157,15 +157,13 @@ void AudioService::Initialize(AudioCodec* codec) {
         
         sent_count++;
         
-        // 定期输出统计信息（每 30 个发送的帧，约 3-6 秒）
-        if (sent_count % 30 == 1) {
-            const char* energy_status = (rms < 100) ? "🔇 SILENT" : 
-                                        (rms < 500) ? "🔉 LOW" : 
-                                        (rms < 2000) ? "🔊 NORMAL" : "📢 LOUD";
+        // 定期输出统计信息（每 25 个发送的帧）
+        if (sent_count % 25 == 1) {
+            const char* mode = is_voice ? "🗣️ VOICE" : "🔇 SILENCE";
             int send_rate = (output_count > 0) ? (sent_count * 100 / output_count) : 0;
             std::lock_guard<std::mutex> lock(audio_queue_mutex_);
             ESP_LOGI(TAG, "🎙️ [AEC] #%d: RMS=%d %s, sent=%d, skip=%d (%d%%) → q=%d", 
-                     output_count, rms, energy_status, sent_count, skipped_count, send_rate,
+                     output_count, rms, mode, sent_count, skipped_count, send_rate,
                      (int)audio_encode_queue_.size());
         }
         
