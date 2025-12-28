@@ -173,15 +173,25 @@ void AudioService::Start() {
     
     /* Start the audio input task */
     if (audio_input_task_stack_ && audio_input_task_buffer_) {
-        // AudioInputTask 在 Core 0，让 Core 1 专门处理 AFE (AEC)
-        // Priority 5: 与 WiFi 任务相近，避免抢占 TCP 接收导致 WebSocket 数据丢失
-        // 之前用 Priority 8 会导致 WebSocket 收不到 TTS 数据包
+        // ═══════════════════════════════════════════════════════════════════════════
+        // CRITICAL: AudioInputTask must NOT be on Core 0 when WiFi is active!
+        // ═══════════════════════════════════════════════════════════════════════════
+        // Problem: I2S DMA and WiFi DMA both use Core 0's resources.
+        // When AudioInputTask runs on Core 0, it blocks WiFi TCP receive,
+        // causing WebSocket frames to be lost (only first few frames received).
+        // 
+        // Solution: Run AudioInputTask on Core 1 alongside AFE task.
+        // Both are related to audio processing and can share Core 1.
+        // Core 0 is left free for WiFi/TCP/WebSocket operations.
+        // 
+        // Priority 4: Lower than AFE task (5) to not starve AFE processing
+        // ═══════════════════════════════════════════════════════════════════════════
         audio_input_task_handle_ = xTaskCreateStaticPinnedToCore([](void* arg) {
             AudioService* audio_service = (AudioService*)arg;
             audio_service->AudioInputTask();
             vTaskDelete(NULL);
-        }, "audio_input", 16384, this, 5, audio_input_task_stack_, audio_input_task_buffer_, 0);
-        ESP_LOGI(TAG, "✅ AudioInputTask created (Core 0, Priority 5)");
+        }, "audio_input", 16384, this, 4, audio_input_task_stack_, audio_input_task_buffer_, 1);
+        ESP_LOGI(TAG, "✅ AudioInputTask created (Core 1, Priority 4)");
     }
 
     /* Start the audio output task */
@@ -230,8 +240,8 @@ void AudioService::Start() {
     ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════════╗");
     ESP_LOGI(TAG, "║   📊 Audio Task Distribution for AEC Mode                    ║");
     ESP_LOGI(TAG, "╠══════════════════════════════════════════════════════════════╣");
-    ESP_LOGI(TAG, "║   Core 0: AudioInput(5) + WiFi/TCP - Cooperative scheduling  ║");
-    ESP_LOGI(TAG, "║   Core 1: AFE/AEC (5) - Dedicated for realtime processing    ║");
+    ESP_LOGI(TAG, "║   Core 0: WiFi/TCP ONLY - Dedicated for network operations   ║");
+    ESP_LOGI(TAG, "║   Core 1: AudioInput(4) + AFE/AEC(5) - Audio processing      ║");
     ESP_LOGI(TAG, "║   Float:  AudioOutput(5) + OpusCodec(6) - Auto scheduled     ║");
     ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════════╝");
 }
@@ -394,18 +404,16 @@ void AudioService::AudioInputTask() {
                     }
                     
                     // ⚠️ CRITICAL: Give WiFi/TCP tasks time to receive WebSocket data
-                    // vTaskDelay(1) = 10ms (at 100Hz tick rate), too long for every feed
-                    // Feed 256 samples = 16ms audio, delay 10ms = 26ms total = only 61% throughput!
                     // 
-                    // Solution: Delay every 16 feeds (256ms audio) for 1 tick (10ms)
-                    // Throughput: 256ms / 266ms = 96.2%, minimal impact on audio quality
-                    // This gives WiFi ~4% CPU time to process WebSocket frames
+                    // Problem: Even with priority 23, WiFi task cannot preempt when I2S DMA
+                    // is actively transferring data. The AudioInputTask loop is too tight.
                     // 
-                    // Note: WiFi task has priority 23 >> AudioInputTask priority 5
-                    // WiFi should preempt when it has data to process, this delay is just a safety net
-                    if (afe_feed_count % 16 == 0) {
-                        vTaskDelay(1);
-                    }
+                    // Solution: Use portYIELD() every feed (no delay, just yield)
+                    // This is a cooperative yield that lets higher-priority tasks run
+                    // without adding 10ms delay like vTaskDelay(1).
+                    // 
+                    // If WiFi still starves, fall back to vTaskDelay every N feeds
+                    portYIELD();
                     
                     continue;
                 } else {
