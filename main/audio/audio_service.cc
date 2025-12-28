@@ -1157,34 +1157,30 @@ void AudioService::SetPlaybackMode(bool playback_mode) {
     //   - 启用 AFE + AEC 处理
     //   - 消除扬声器回声
     //   - 用于打断检测
-    //   - DTX 启用（节省带宽）
     // 
     // playback_mode = false (Listening 状态):
     //   - 旁路 AFE，直接输出麦克风数据
     //   - 节省大量 CPU（AFE 处理是 CPU 密集型的）
     //   - 用于语音识别
-    //   - DTX 禁用（确保所有帧完整编码，避免服务器无法识别）
     // 
     // ═══════════════════════════════════════════════════════════════════════════
     if (playback_mode_ != playback_mode) {
         playback_mode_ = playback_mode;
         
         // ═══════════════════════════════════════════════════════════════════════════
-        // DTX 控制：
+        // DTX 控制：始终禁用
         // ═══════════════════════════════════════════════════════════════════════════
         // 
-        // Listening 模式（语音识别）：禁用 DTX
-        //   - 问题：DTX 启用时，静音帧只有 1 byte，服务器可能无法正确处理
-        //   - 解决：禁用 DTX，确保所有帧都完整编码（~80-120 bytes）
+        // 问题：DTX 启用时，静音帧只有 1 byte，服务器可能无法正确处理
+        //   - Listening 模式：服务器 VAD/ASR 无法识别
+        //   - Speaking 模式：服务器可能误判，导致 TTS 中断
         // 
-        // Speaking 模式（打断检测）：启用 DTX
-        //   - 节省带宽，AEC 输出的静音帧不需要完整发送
+        // 解决：所有模式下禁用 DTX，确保所有帧都完整编码（~80-120 bytes）
+        // 
+        // 注意：DTX 已在初始化时禁用，这里只是确保状态一致
         // 
         // ═══════════════════════════════════════════════════════════════════════════
-        if (opus_encoder_) {
-            opus_encoder_->SetDtx(playback_mode);  // Speaking=DTX on, Listening=DTX off
-            ESP_LOGI(TAG, "🎚️ Opus DTX: %s", playback_mode ? "ENABLED (Speaking)" : "DISABLED (Listening)");
-        }
+        // (DTX 始终禁用，不需要在模式切换时修改)
         
 #if CONFIG_USE_DEVICE_AEC
         if (audio_processor_initialized_) {
