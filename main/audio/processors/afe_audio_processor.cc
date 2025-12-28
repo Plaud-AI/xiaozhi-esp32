@@ -78,10 +78,20 @@ void AfeAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms, srm
     afe_config->agc_init = false;
     afe_config->memory_alloc_mode = AFE_MEMORY_ALLOC_MORE_PSRAM;
 
+// ═══════════════════════════════════════════════════════════════════════════
+// AEC 配置：始终启用 AEC，但通过清零参考通道来控制行为
+// 
+// 方案：在 AudioInputTask 中，当没有 TTS 播放时，将参考通道清零
+// 这样：
+// - TTS 播放时：参考通道有有效信号，AEC 正常消除回声
+// - 聆听模式：参考通道是零，AEC 不会消除任何东西
+// 
+// 这比动态调用 enable_aec()/disable_aec() 更可靠！
+// ═══════════════════════════════════════════════════════════════════════════
 #ifdef CONFIG_USE_DEVICE_AEC
     afe_config->aec_init = true;
     afe_config->vad_init = false;
-    ESP_LOGI(TAG, "Device AEC enabled, VAD disabled");
+    ESP_LOGI(TAG, "✅ AEC enabled (reference channel will be zeroed when not playing)");
 #else
     afe_config->aec_init = false;
     // ⚠️ CRITICAL: 只有在有有效 VAD 模型时才启用 VAD
@@ -107,17 +117,11 @@ void AfeAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms, srm
     afe_iface_ = esp_afe_handle_from_config(afe_config);
     afe_data_ = afe_iface_->create_from_config(afe_config);
     
-    // ═══════════════════════════════════════════════════════════════════════════
-    // ⚠️ 关键：初始化后立即禁用 AEC！
-    // 
-    // AEC 只应在 TTS 播放时启用。如果默认启用 AEC，会把用户语音当回声消除！
-    // AEC 将在 SetPlaybackMode(true) 时启用（进入 Speaking 状态）
-    // ═══════════════════════════════════════════════════════════════════════════
-#ifdef CONFIG_USE_DEVICE_AEC
-    ESP_LOGI(TAG, "🎤 Disabling AEC by default (will enable during TTS playback)");
-    afe_iface_->disable_aec(afe_data_);
-    aec_enabled_ = false;
-#endif
+    // AEC 始终启用，通过清零参考通道来控制（在 AudioInputTask 中）
+    // 初始状态：aec_enabled_ = true（AEC 处理开启）
+    // 但 playback_mode_ 默认 false，所以参考通道会被清零，AEC 实际无效果
+    aec_enabled_ = true;
+    ESP_LOGI(TAG, "🎤 AEC initialized (reference channel control via playback_mode)");
     
     ESP_LOGI(TAG, "Creating AFE processor task (stack: 8192 bytes)...");
     
@@ -219,6 +223,22 @@ void AfeAudioProcessor::AudioProcessorTask() {
     while (true) {
         xEventGroupWaitBits(event_group_, PROCESSOR_RUNNING, pdFALSE, pdTRUE, portMAX_DELAY);
 
+        // ═══════════════════════════════════════════════════════════════════════════
+        // 【旁路模式】bypass_mode_ = true 时，AFE 任务暂停处理
+        // ═══════════════════════════════════════════════════════════════════════════
+        // 在 Listening 模式下，不需要 AEC 处理，直接旁路 AFE 节省 CPU
+        // AFE 任务进入等待状态，每 100ms 检查一次是否退出旁路模式
+        // ═══════════════════════════════════════════════════════════════════════════
+        if (bypass_mode_) {
+            static int bypass_log_count = 0;
+            bypass_log_count++;
+            if (bypass_log_count % 50 == 1) {
+                ESP_LOGI(TAG, "💤 AFE in bypass mode, sleeping... (count=%d)", bypass_log_count);
+            }
+            vTaskDelay(pdMS_TO_TICKS(100));  // 休眠 100ms，节省 CPU
+            continue;
+        }
+
         loop_count++;
         if (loop_count % 100 == 0) {
             ESP_LOGI(TAG, "📥 AFE fetch loop running (count=%d)...", loop_count);
@@ -271,31 +291,46 @@ void AfeAudioProcessor::AudioProcessorTask() {
 
 void AfeAudioProcessor::EnableDeviceAec(bool enable) {
     // ═══════════════════════════════════════════════════════════════════════════
-    // 动态 AEC 控制：
-    // - TTS 播放时启用 AEC（消除扬声器回声）
-    // - 聆听模式禁用 AEC（避免消除用户语音）
+    // AEC 控制方式：通过清零参考通道，而不是调用 enable_aec()/disable_aec()
     // 
-    // ⚠️ 注意：不调用 disable_vad/enable_vad，因为 VAD 未初始化会导致警告
+    // 原因：ESP-ADF 的动态 AEC 控制有问题，会导致 AFE 输出异常
+    // 
+    // 新方案：AEC 始终启用，但在 AudioInputTask 中根据 playback_mode_ 决定
+    // 是否清零参考通道：
+    // - playback_mode_ = true → 参考通道保持原样，AEC 正常工作
+    // - playback_mode_ = false → 参考通道清零，AEC 无效果
     // ═══════════════════════════════════════════════════════════════════════════
+    aec_enabled_ = enable;
     if (enable) {
-#if CONFIG_USE_DEVICE_AEC
-        if (!aec_enabled_) {
-            ESP_LOGI(TAG, "🔊 Enabling AEC (playback mode)");
-            // ⚠️ 不调用 disable_vad - VAD 未初始化会产生警告
-            afe_iface_->enable_aec(afe_data_);
-            aec_enabled_ = true;
-        }
-#else
-        ESP_LOGE(TAG, "Device AEC is not supported");
-#endif
+        ESP_LOGI(TAG, "🔊 AEC mode: reference channel ACTIVE (echo cancellation ON)");
     } else {
-#if CONFIG_USE_DEVICE_AEC
-        if (aec_enabled_) {
-            ESP_LOGI(TAG, "🎤 Disabling AEC (listening mode)");
-            afe_iface_->disable_aec(afe_data_);
-            // ⚠️ 不调用 enable_vad - VAD 未初始化
-            aec_enabled_ = false;
+        ESP_LOGI(TAG, "🎤 AEC mode: reference channel ZEROED (echo cancellation OFF)");
+    }
+    // 实际控制在 AudioInputTask 中通过 playback_mode_ 完成
+}
+
+void AfeAudioProcessor::SetBypassMode(bool bypass) {
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 旁路模式控制：
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 
+    // bypass = true (Listening 模式)：
+    //   - AFE 任务暂停处理，进入休眠
+    //   - 音频数据直接从麦克风输出，不经过 AFE
+    //   - 节省大量 CPU（AFE 处理是 CPU 密集型的）
+    // 
+    // bypass = false (Speaking 模式)：
+    //   - AFE 任务正常工作
+    //   - 启用 AEC 消除扬声器回声
+    //   - 用于打断检测
+    // 
+    // ═══════════════════════════════════════════════════════════════════════════
+    if (bypass_mode_ != bypass) {
+        bypass_mode_ = bypass;
+        if (bypass) {
+            ESP_LOGI(TAG, "💤 AFE bypass mode ENABLED (Listening, save CPU)");
+        } else {
+            ESP_LOGI(TAG, "🔊 AFE bypass mode DISABLED (Speaking, AEC active)");
         }
-#endif
     }
 }
