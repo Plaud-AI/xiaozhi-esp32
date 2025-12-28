@@ -680,9 +680,28 @@ void Application::MainEventLoop() {
             auto queue_stats = audio_service_.GetQueueStats();
             int current_send_q_size = queue_stats.send_queue_size;
             
-            // 如果队列很大，警告并尝试追赶
-            if (current_send_q_size > 20) {
-                ESP_LOGW(TAG, "📊 Send queue building up: %d packets", current_send_q_size);
+            // ═══════════════════════════════════════════════════════════════════════════
+            // 🚨 紧急拥塞处理：队列积压时主动清空旧数据
+            // ═══════════════════════════════════════════════════════════════════════════
+            // 
+            // ⚠️ 关键：TCP 是双向的！
+            // 当发送缓冲区满时，recv() 也会受影响，导致无法接收 TTS 数据
+            // 
+            // 所以必须主动清空队列，防止 TCP 缓冲区满
+            // 
+            // ═══════════════════════════════════════════════════════════════════════════
+            if (current_send_q_size >= 20) {
+                // 队列已经很大，主动清空一半旧数据
+                int to_drop = current_send_q_size / 2;
+                ESP_LOGW(TAG, "🚨 Send queue critical: %d packets, dropping %d old packets!", 
+                         current_send_q_size, to_drop);
+                for (int i = 0; i < to_drop; i++) {
+                    audio_service_.PopPacketFromSendQueue();  // 丢弃旧数据
+                    total_dropped++;
+                }
+                // 刷新队列大小
+                queue_stats = audio_service_.GetQueueStats();
+                current_send_q_size = queue_stats.send_queue_size;
             }
             
             while (auto packet = audio_service_.PopPacketFromSendQueue()) {
