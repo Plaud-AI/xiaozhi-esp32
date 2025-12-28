@@ -130,17 +130,23 @@ void AudioService::Initialize(AudioCodec* codec) {
         static int skipped_count = 0;
         output_count++;
         
-        // 计算 RMS 能量
+        // ═══════════════════════════════════════════════════════════════════════════
+        // 计算 AEC 输出的原始 RMS 能量（诊断用）
+        // ═══════════════════════════════════════════════════════════════════════════
         int64_t sum_sq = 0;
         for (size_t i = 0; i < data.size(); i++) {
             sum_sq += (int64_t)data[i] * data[i];
         }
-        int32_t rms = (int32_t)sqrt((double)sum_sq / data.size());
+        int32_t original_rms = (int32_t)sqrt((double)sum_sq / data.size());
         
         // ═══════════════════════════════════════════════════════════════════════════
         // 增益放大：AEC 输出能量太低，服务端 VAD 无法识别
         // ═══════════════════════════════════════════════════════════════════════════
-        const int16_t GAIN_FACTOR = 4;  // 放大 4 倍（+12dB）
+        // 
+        // 增加到 8x（+18dB），确保即使 AEC 输出很弱，服务端也能检测到语音
+        // 
+        // ═══════════════════════════════════════════════════════════════════════════
+        const int16_t GAIN_FACTOR = 8;  // 放大 8 倍（+18dB）
         for (size_t i = 0; i < data.size(); i++) {
             int32_t sample = data[i] * GAIN_FACTOR;
             // 限幅防止溢出
@@ -149,7 +155,7 @@ void AudioService::Initialize(AudioCodec* codec) {
             data[i] = (int16_t)sample;
         }
         
-        // 重新计算放大后的 RMS（用于日志）
+        // 重新计算放大后的 RMS（用于日志和判断）
         sum_sq = 0;
         for (size_t i = 0; i < data.size(); i++) {
             sum_sq += (int64_t)data[i] * data[i];
@@ -157,14 +163,7 @@ void AudioService::Initialize(AudioCodec* codec) {
         int32_t amplified_rms = (int32_t)sqrt((double)sum_sq / data.size());
         
         // ═══════════════════════════════════════════════════════════════════════════
-        // 动态降级：根据 SEND 队列大小调整发送率
-        // ═══════════════════════════════════════════════════════════════════════════
-        // 
-        // ⚠️ 关键：检查 send_queue 而不是 encode_queue！
-        // 
-        // 数据流程：OnOutput → encode_queue → OpusCodecTask → send_queue → TCP
-        // TCP 拥塞会导致 send_queue 增长，而不是 encode_queue
-        // 
+        // 检查 send_queue 大小用于拥塞控制
         // ═══════════════════════════════════════════════════════════════════════════
         int send_queue_size = 0;
         {
@@ -173,66 +172,39 @@ void AudioService::Initialize(AudioCodec* codec) {
         }
         
         // ═══════════════════════════════════════════════════════════════════════════
-        // 拥塞控制：根据 send_queue 大小决定是否发送
+        // 语音打断优先策略：Speaking 模式下尽量多发送音频
         // ═══════════════════════════════════════════════════════════════════════════
         // 
-        // ⚠️ 关键发现：TCP 是双向的！
+        // 问题分析：服务端 VAD 需要持续的音频流才能正确检测语音
+        // 之前的策略过于激进地跳过帧，导致 VAD prob 接近 0
         // 
-        // 当发送缓冲区满时：
-        // 1. send() 阻塞
-        // 2. TCP 窗口关闭
-        // 3. recv() 也会受影响（无法发送 ACK）
-        // 4. 整个 WebSocket 通信停止！
-        // 
-        // 所以必须在 send_queue 达到危险水位前就停止发送
+        // 新策略：
+        // - 正常状态（队列 <15）：发送所有帧（100%），确保 VAD 有足够数据
+        // - 警告状态（15-24）：只发送语音帧（基于 RMS 判断）
+        // - 危险状态（>=25）：完全停止，保护 TCP 通信
         // 
         // ═══════════════════════════════════════════════════════════════════════════
         
-        // 语音/静音判断
-        const int VOICE_THRESHOLD = 200;  // 放大后的阈值
+        // 语音/静音判断：降低阈值，让更多帧被识别为语音
+        const int VOICE_THRESHOLD = 100;  // 降低阈值，原始 RMS ~12 对应放大后 ~100
         bool is_voice = (amplified_rms > VOICE_THRESHOLD);
         bool should_send = false;
         
         // 拥塞级别判断和处理
         if (send_queue_size >= 25) {
-            // ═══════════════════════════════════════════════════════════════════════════
-            // 🚨 危险水位：完全停止发送！
-            // ═══════════════════════════════════════════════════════════════════════════
-            // 
-            // send_queue >= 25：TCP 缓冲区即将满，必须完全停止发送
-            // 让 TCP 有机会清空缓冲区，恢复双向通信
-            // 
-            // ═══════════════════════════════════════════════════════════════════════════
+            // 🚨 危险水位：完全停止发送，保护 TCP 通信
             should_send = false;
             static int danger_log_count = 0;
             if (danger_log_count++ % 50 == 0) {
-                ESP_LOGW(TAG, "🚨 DANGER: send_queue=%d >= 25, STOPPED sending! (count=%d)", 
-                         send_queue_size, danger_log_count);
+                ESP_LOGW(TAG, "🚨 DANGER: send_q=%d, orig_rms=%d, amp_rms=%d, STOPPED! (count=%d)", 
+                         send_queue_size, original_rms, amplified_rms, danger_log_count);
             }
         } else if (send_queue_size >= 15) {
-            // ═══════════════════════════════════════════════════════════════════════════
-            // ⚠️ 警告水位：大幅减少发送
-            // ═══════════════════════════════════════════════════════════════════════════
-            // 语音只发 20%，静音不发
-            if (is_voice) {
-                should_send = (output_count % 5 == 1);  // 语音 20%
-            } else {
-                should_send = false;  // 静音完全不发
-            }
-        } else if (send_queue_size >= 10) {
-            // 轻度拥塞：语音 50%，静音 10%
-            if (is_voice) {
-                should_send = (output_count % 2 == 1);
-            } else {
-                should_send = (output_count % 10 == 1);
-            }
+            // ⚠️ 警告水位：只发送语音帧
+            should_send = is_voice;
         } else {
-            // 正常：语音 100%，静音 20%
-            if (is_voice) {
-                should_send = true;
-            } else {
-                should_send = (output_count % 5 == 1);
-            }
+            // ✅ 正常：发送所有帧，确保服务端 VAD 有足够数据
+            should_send = true;
         }
         
         if (!should_send) {
@@ -242,15 +214,17 @@ void AudioService::Initialize(AudioCodec* codec) {
         
         sent_count++;
         
-        // 定期输出统计信息（包含拥塞级别和 send_queue 大小）
-        if (sent_count % 50 == 1) {
+        // 定期输出详细统计信息（每 20 帧，约 1.2 秒）
+        if (sent_count % 20 == 1) {
             const char* mode = is_voice ? "🗣️ VOICE" : "🔇 SILENCE";
             const char* cong = (send_queue_size >= 25) ? "🔴 DANGER" : 
-                               (send_queue_size >= 15) ? "🟡 WARNING" :
-                               (send_queue_size >= 10) ? "🟠 LIGHT" : "🟢 NORMAL";
+                               (send_queue_size >= 15) ? "🟡 WARNING" : "🟢 NORMAL";
             int send_rate = (output_count > 0) ? (sent_count * 100 / output_count) : 0;
-            ESP_LOGI(TAG, "🎙️ [AEC] #%d: RMS=%d %s, %s, sent=%d (%d%%), send_q=%d", 
-                     output_count, amplified_rms, mode, cong, sent_count, send_rate, send_queue_size);
+            
+            // 添加原始 RMS 用于诊断 AEC 输出质量
+            ESP_LOGI(TAG, "🎙️ [AEC] #%d: orig=%d → amp=%d %s, %s, sent=%d/%d (%d%%), q=%d", 
+                     output_count, original_rms, amplified_rms, mode, cong, 
+                     sent_count, output_count, send_rate, send_queue_size);
         }
         
         PushTaskToEncodeQueue(kAudioTaskTypeEncodeToSendQueue, std::move(data));
