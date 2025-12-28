@@ -43,10 +43,20 @@ void AfeAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms, srm
     char* ns_model_name = esp_srmodel_filter(models, ESP_NSNET_PREFIX, NULL);
     char* vad_model_name = esp_srmodel_filter(models, ESP_VADN_PREFIX, NULL);
     
-    afe_config_t* afe_config = afe_config_init(input_format.c_str(), NULL, AFE_TYPE_VC, AFE_MODE_HIGH_PERF);
-    afe_config->aec_mode = AEC_MODE_VOIP_HIGH_PERF;
+    // ═══════════════════════════════════════════════════════════════════════════
+    // AFE 配置：使用 LOW_COST 模式以减少 CPU 占用
+    // ═══════════════════════════════════════════════════════════════════════════
+    // HIGH_PERF 模式包含非线性噪声抑制，处理延迟非常大（每帧 >50ms）
+    // LOW_COST 模式处理延迟小（每帧 <10ms），足够用于实时打断检测
+    // ═══════════════════════════════════════════════════════════════════════════
+    afe_config_t* afe_config = afe_config_init(input_format.c_str(), NULL, AFE_TYPE_VC, AFE_MODE_LOW_COST);
+    afe_config->aec_mode = AEC_MODE_VOIP_LOW_COST;  // 低成本 AEC，CPU 占用更低
     afe_config->vad_mode = VAD_MODE_0;
     afe_config->vad_min_noise_ms = 100;
+    
+    // 设置 AFE 任务运行在 Core 1，优先级 5（高于默认值，确保实时处理）
+    afe_config->afe_perferred_core = 1;
+    afe_config->afe_perferred_priority = 5;
     
     // ⚠️ CRITICAL: 只有在找到有效的 VAD 模型时才设置模型名称
     if (vad_model_name != nullptr) {
@@ -56,14 +66,13 @@ void AfeAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms, srm
         ESP_LOGW(TAG, "⚠️ No VAD model found in partition table");
     }
 
+    // 禁用 NS（噪声抑制）以减少 CPU 占用
+    // 对于实时打断检测，NS 不是必需的
+    afe_config->ns_init = false;
     if (ns_model_name != nullptr) {
-        afe_config->ns_init = true;
-        afe_config->ns_model_name = ns_model_name;
-        afe_config->afe_ns_mode = AFE_NS_MODE_NET;
-        ESP_LOGI(TAG, "✅ NS model found: %s", ns_model_name);
+        ESP_LOGI(TAG, "ℹ️  NS model found: %s (disabled to save CPU)", ns_model_name);
     } else {
-        afe_config->ns_init = false;
-        ESP_LOGW(TAG, "⚠️ No NS model found, noise suppression disabled");
+        ESP_LOGW(TAG, "⚠️ No NS model found in partition table");
     }
 
     afe_config->agc_init = false;
@@ -86,6 +95,15 @@ void AfeAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms, srm
     }
 #endif
 
+    ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════════╗");
+    ESP_LOGI(TAG, "║   🎛️  AFE Configuration (Optimized for Realtime Interrupt)   ║");
+    ESP_LOGI(TAG, "╠══════════════════════════════════════════════════════════════╣");
+    ESP_LOGI(TAG, "║   Mode: LOW_COST (reduced CPU usage)                         ║");
+    ESP_LOGI(TAG, "║   AEC:  VOIP_LOW_COST                                        ║");
+    ESP_LOGI(TAG, "║   NS:   Disabled (save CPU for realtime processing)          ║");
+    ESP_LOGI(TAG, "║   Core: 1, Priority: 5                                       ║");
+    ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════════╝");
+    
     afe_iface_ = esp_afe_handle_from_config(afe_config);
     afe_data_ = afe_iface_->create_from_config(afe_config);
     
@@ -97,14 +115,15 @@ void AfeAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms, srm
 
     if (task_stack_ && task_buffer_) {
         // Move AFE task to Core 1 to offload Core 0
+        // Priority 5: higher than audio output (4) to ensure realtime processing
         task_handle_ = xTaskCreateStaticPinnedToCore([](void* arg) {
             auto this_ = (AfeAudioProcessor*)arg;
             ESP_LOGI("AfeAudioProcessor", "🚀 AFE task started on core %d!", xPortGetCoreID());
             this_->AudioProcessorTask();
             vTaskDelete(NULL);
-        }, "afe_proc", 8192, this, 4, task_stack_, task_buffer_, 1);
+        }, "afe_proc", 8192, this, 5, task_stack_, task_buffer_, 1);
         
-        ESP_LOGI(TAG, "✅ AFE task created (stack: 8192, core: 1, prio: 4, PSRAM)");
+        ESP_LOGI(TAG, "✅ AFE task created (stack: 8192, core: 1, prio: 5, PSRAM)");
     } else {
         ESP_LOGE(TAG, "❌ Failed to allocate AFE task stack in PSRAM!");
     }
