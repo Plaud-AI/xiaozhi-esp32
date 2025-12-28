@@ -162,13 +162,13 @@ void AudioService::Start() {
 
 #if CONFIG_USE_AUDIO_PROCESSOR
     // ═══════════════════════════════════════════════════════════════════════════
-    // AEC 模式任务分配策略：
+    // AEC 模式任务分配策略（修订版）：
     // ═══════════════════════════════════════════════════════════════════════════
-    // Core 0: AudioInputTask (读 I2S) + AudioOutputTask (写 I2S) + OpusCodecTask
-    // Core 1: AFE task (AEC 处理) - 需要独占核心以保证实时性
+    // Core 0: AudioInputTask (读 I2S，高优先级)
+    // Core 1: AFE task (AEC 处理) - 独占核心保证实时性
+    // 不绑核心: AudioOutputTask + OpusCodecTask - 让调度器自动选择
     // 
-    // 原因：AFE 的 AEC 处理需要稳定的 CPU 时间，如果和 I2S 读写在同一核心
-    // 会导致 "Ringbuffer of AFE is empty" 错误，音频处理延迟严重
+    // 注意：AudioOutputTask 不能绑定到 Core 0，否则会和 WiFi/I2S 冲突导致阻塞
     // ═══════════════════════════════════════════════════════════════════════════
     
     /* Start the audio input task */
@@ -185,13 +185,14 @@ void AudioService::Start() {
 
     /* Start the audio output task */
     if (audio_output_task_stack_ && audio_output_task_buffer_) {
-        // AudioOutputTask 也在 Core 0，和 AudioInputTask 共享 I2S 总线
-        audio_output_task_handle_ = xTaskCreateStaticPinnedToCore([](void* arg) {
+        // AudioOutputTask 不绑定核心，让调度器自动选择
+        // 绑定到 Core 0 会导致和 I2S/WiFi 冲突，OutputData 阻塞
+        audio_output_task_handle_ = xTaskCreateStatic([](void* arg) {
             AudioService* audio_service = (AudioService*)arg;
             audio_service->AudioOutputTask();
             vTaskDelete(NULL);
-        }, "audio_output", 8192, this, 4, audio_output_task_stack_, audio_output_task_buffer_, 0);
-        ESP_LOGI(TAG, "✅ AudioOutputTask created (Core 0, Priority 4)");
+        }, "audio_output", 8192, this, 5, audio_output_task_stack_, audio_output_task_buffer_);
+        ESP_LOGI(TAG, "✅ AudioOutputTask created (no core affinity, Priority 5)");
     }
 #else
     /* Start the audio input task */
@@ -214,22 +215,23 @@ void AudioService::Start() {
 #endif
 
     /* Start the opus codec task */
-    // Priority 6: higher than AudioOutputTask (4) to prevent decode queue backup
-    // Core 0: keep with other I/O tasks, let Core 1 handle AFE exclusively
+    // Priority 6: higher than AudioOutputTask (5) to ensure encoding keeps up
+    // No core affinity: let scheduler balance the load
     if (opus_codec_task_stack_ && opus_codec_task_buffer_) {
-        opus_codec_task_handle_ = xTaskCreateStaticPinnedToCore([](void* arg) {
+        opus_codec_task_handle_ = xTaskCreateStatic([](void* arg) {
             AudioService* audio_service = (AudioService*)arg;
             audio_service->OpusCodecTask();
             vTaskDelete(NULL);
-        }, "opus_codec", 32768, this, 6, opus_codec_task_stack_, opus_codec_task_buffer_, 0);
-        ESP_LOGI(TAG, "✅ OpusCodecTask created (Core 0, Priority 6)");
+        }, "opus_codec", 32768, this, 6, opus_codec_task_stack_, opus_codec_task_buffer_);
+        ESP_LOGI(TAG, "✅ OpusCodecTask created (no core affinity, Priority 6)");
     }
     
     ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════════╗");
     ESP_LOGI(TAG, "║   📊 Audio Task Distribution for AEC Mode                    ║");
     ESP_LOGI(TAG, "╠══════════════════════════════════════════════════════════════╣");
-    ESP_LOGI(TAG, "║   Core 0: AudioInput(8) + AudioOutput(4) + OpusCodec(6)      ║");
+    ESP_LOGI(TAG, "║   Core 0: AudioInput(8)                                      ║");
     ESP_LOGI(TAG, "║   Core 1: AFE/AEC (5) - Dedicated for realtime processing    ║");
+    ESP_LOGI(TAG, "║   Float:  AudioOutput(5) + OpusCodec(6) - Auto scheduled     ║");
     ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════════╝");
 }
 
@@ -442,7 +444,7 @@ void AudioService::AudioOutputTask() {
         
         // 如果播放耗时超过 100ms，打印警告
         if (elapsed > 100) {
-            ESP_LOGW(TAG, "⚠️  OutputData took %lld ms (samples=%zu)", elapsed, task->pcm.size());
+            ESP_LOGW(TAG, "⚠️  OutputData took %d ms (samples=%d)", (int)elapsed, (int)task->pcm.size());
         }
 
         /* Update the last output time */
@@ -509,8 +511,8 @@ void AudioService::OpusCodecTask() {
 
             // 每 10 个包打印日志
             if (decode_count % 10 == 1) {
-                ESP_LOGI(TAG, "🎵 Decoding #%d: decode_q=%zu, playback_q=%zu, payload=%zu bytes", 
-                         decode_count, decode_q_size, playback_q_size, packet->payload.size());
+                ESP_LOGI(TAG, "🎵 Decoding #%d: decode_q=%d, playback_q=%d, payload=%d bytes", 
+                         decode_count, (int)decode_q_size, (int)playback_q_size, (int)packet->payload.size());
             }
 
             auto task = std::make_unique<AudioTask>();
@@ -723,8 +725,8 @@ void AudioService::PushTaskToEncodeQueue(AudioTaskType type, std::vector<int16_t
         audio_encode_queue_.pop_front();  // Drop oldest frame
         drop_count++;
         if (drop_count % 10 == 1) {
-            ESP_LOGW(TAG, "⚠️  Encode queue full, dropped oldest frame #%d (queue=%zu/%d)", 
-                     drop_count, audio_encode_queue_.size(), MAX_ENCODE_TASKS_IN_QUEUE);
+            ESP_LOGW(TAG, "⚠️  Encode queue full, dropped oldest frame #%d (queue=%d/%d)", 
+                     drop_count, (int)audio_encode_queue_.size(), MAX_ENCODE_TASKS_IN_QUEUE);
         }
     }
     
@@ -742,14 +744,14 @@ bool AudioService::PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> pa
     
     // 每 10 个包或队列满时打印日志
     if (push_count % 10 == 1 || decode_size >= MAX_DECODE_PACKETS_IN_QUEUE - 1) {
-        ESP_LOGI(TAG, "📥 PushToDecodeQueue #%d: decode_q=%zu/%d, playback_q=%zu/%d", 
-                 push_count, decode_size, MAX_DECODE_PACKETS_IN_QUEUE, 
-                 playback_size, MAX_PLAYBACK_TASKS_IN_QUEUE);
+        ESP_LOGI(TAG, "📥 PushToDecodeQueue #%d: decode_q=%d/%d, playback_q=%d/%d", 
+                 push_count, (int)decode_size, MAX_DECODE_PACKETS_IN_QUEUE, 
+                 (int)playback_size, MAX_PLAYBACK_TASKS_IN_QUEUE);
     }
     
     if (audio_decode_queue_.size() >= MAX_DECODE_PACKETS_IN_QUEUE) {
-        ESP_LOGW(TAG, "⚠️  Decode queue FULL! Waiting... (decode_q=%zu, playback_q=%zu)", 
-                 decode_size, playback_size);
+        ESP_LOGW(TAG, "⚠️  Decode queue FULL! Waiting... (decode_q=%d, playback_q=%d)", 
+                 (int)decode_size, (int)playback_size);
         if (wait) {
             audio_queue_cv_.wait(lock, [this]() { return audio_decode_queue_.size() < MAX_DECODE_PACKETS_IN_QUEUE; });
             ESP_LOGI(TAG, "✅ Decode queue has space now");
