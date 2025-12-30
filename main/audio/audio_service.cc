@@ -87,7 +87,7 @@ void AudioService::Initialize(AudioCodec* codec) {
     opus_decoder_ = std::make_unique<OpusDecoderWrapper>(codec->output_sample_rate(), 1, OPUS_FRAME_DURATION_MS);
     opus_encoder_ = std::make_unique<OpusEncoderWrapper>(16000, 1, OPUS_FRAME_DURATION_MS);
     opus_encoder_->SetComplexity(0);
-    
+
     // ═══════════════════════════════════════════════════════════════════════════
     // 初始禁用 DTX：因为默认进入 Listening 模式，需要完整编码所有帧
     // ═══════════════════════════════════════════════════════════════════════════
@@ -200,26 +200,32 @@ void AudioService::Initialize(AudioCodec* codec) {
         }
         
         // ═══════════════════════════════════════════════════════════════════════════
-        // 语音打断优先策略：Speaking 模式下尽量多发送音频
+        // Speaking 模式发送策略：极低频率，防止 TCP 阻塞
         // ═══════════════════════════════════════════════════════════════════════════
         // 
-        // 问题分析：服务端 VAD 需要持续的音频流才能正确检测语音
-        // 之前的策略过于激进地跳过帧，导致 VAD prob 接近 0
+        // ⚠️ 关键发现：TCP 发送堵塞会导致 TCP 接收堵塞！
+        // 如果发送太多数据导致 TCP 缓冲区满，服务器发送的 TTS 数据也无法接收
         // 
-        // 新策略：
-        // - 正常状态（队列 <15）：发送所有帧（100%），确保 VAD 有足够数据
-        // - 警告状态（15-24）：只发送语音帧（基于 RMS 判断）
-        // - 危险状态（>=25）：完全停止，保护 TCP 通信
+        // 策略：Speaking 模式下大幅降低发送频率
+        // - 正常（<10）：每 5 帧发 1 帧（20%）
+        // - 警告（10-14）：每 10 帧发 1 帧（10%）
+        // - 危险（>=15）：完全停止
+        // 
+        // 这样可以：
+        // 1. 维持基本的打断检测能力
+        // 2. 避免 TCP 缓冲区满导致 TTS 接收阻塞
         // 
         // ═══════════════════════════════════════════════════════════════════════════
         
-        // 语音/静音判断：降低阈值，让更多帧被识别为语音
-        const int VOICE_THRESHOLD = 100;  // 降低阈值，原始 RMS ~12 对应放大后 ~100
+        // 语音/静音判断
+        const int VOICE_THRESHOLD = 100;
         bool is_voice = (amplified_rms > VOICE_THRESHOLD);
         bool should_send = false;
+        static int speaking_frame_count = 0;
+        speaking_frame_count++;
         
         // 拥塞级别判断和处理
-        if (send_queue_size >= 25) {
+        if (send_queue_size >= 15) {
             // 🚨 危险水位：完全停止发送，保护 TCP 通信
             should_send = false;
             static int danger_log_count = 0;
@@ -227,12 +233,17 @@ void AudioService::Initialize(AudioCodec* codec) {
                 ESP_LOGW(TAG, "🚨 DANGER: send_q=%d, orig_rms=%d, amp_rms=%d, STOPPED! (count=%d)", 
                          send_queue_size, original_rms, amplified_rms, danger_log_count);
             }
-        } else if (send_queue_size >= 15) {
-            // ⚠️ 警告水位：只发送语音帧
-            should_send = is_voice;
+            
+            // 🔧 防止死锁：触发发送回调让 MainEventLoop 消费队列
+            if (callbacks_.on_send_queue_available) {
+                callbacks_.on_send_queue_available();
+            }
+        } else if (send_queue_size >= 10) {
+            // ⚠️ 警告水位：每 10 帧发 1 帧（10%），且只发送语音帧
+            should_send = is_voice && (speaking_frame_count % 10 == 0);
         } else {
-            // ✅ 正常：发送所有帧，确保服务端 VAD 有足够数据
-            should_send = true;
+            // ✅ 正常：每 5 帧发 1 帧（20%）
+            should_send = (speaking_frame_count % 5 == 0);
         }
         
         if (!should_send) {
@@ -594,7 +605,7 @@ void AudioService::AudioInputTask() {
                         direct_output_buffer.insert(direct_output_buffer.end(), 
                                                     mic_data.begin(), mic_data.end());
                         
-                        // 当累积够 960 samples 时，直接送入编码队列
+                        // 当累积够 960 samples 时，根据队列状态决定是否发送
                         while (direct_output_buffer.size() >= 960) {
                             // 提取 960 samples
                             std::vector<int16_t> frame(direct_output_buffer.begin(), 
@@ -602,9 +613,36 @@ void AudioService::AudioInputTask() {
                             direct_output_buffer.erase(direct_output_buffer.begin(), 
                                                        direct_output_buffer.begin() + 960);
                             
-                            // 计算 RMS 用于日志（每 50 帧）
                             static int direct_output_count = 0;
+                            static int direct_sent_count = 0;
                             direct_output_count++;
+                            
+                            // ═════════════════════════════════════════════════════════════════
+                            // Listening 模式节流：保守策略，优先保证语音识别质量
+                            // ═════════════════════════════════════════════════════════════════
+                            // 正常（<10）：100% 全部发送（保证 STT 质量）
+                            // 轻度（10-14）：75% 发送（平滑过渡）
+                            // 警告（15-24）：50% 发送
+                            // 危险（>=25）：25% 发送（不完全停止，维持连接）
+                            // ═════════════════════════════════════════════════════════════════
+                            int send_q_size = 0;
+                            {
+                                std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+                                send_q_size = (int)audio_send_queue_.size();
+                            }
+                            
+                            bool should_send = false;
+                            if (send_q_size >= 25) {
+                                should_send = (direct_output_count % 4 == 0);  // 危险：25%
+                            } else if (send_q_size >= 15) {
+                                should_send = (direct_output_count % 2 == 0);  // 警告：50%
+                            } else if (send_q_size >= 10) {
+                                should_send = (direct_output_count % 4 != 0);  // 轻度：75%（每4帧跳1帧）
+                            } else {
+                                should_send = true;  // 正常：100%
+                            }
+                            
+                            // 日志（每 50 帧）
                             if (direct_output_count % 50 == 1) {
                                 int64_t sum_sq = 0;
                                 for (int16_t sample : frame) {
@@ -614,12 +652,17 @@ void AudioService::AudioInputTask() {
                                 
                                 const char* status = (rms < 100) ? "⚠️ SILENT" : 
                                                      (rms < 500) ? "🔇 LOW" : "✅ OK";
+                                int rate = direct_output_count > 0 ? (direct_sent_count * 100 / direct_output_count) : 0;
                                 
-                                ESP_LOGI(TAG, "🎤 [DIRECT] output #%d: 960 samples, RMS=%d %s (bypass AFE, save CPU)", 
-                                         direct_output_count, rms, status);
+                                ESP_LOGI(TAG, "🎤 [DIRECT] #%d: RMS=%d %s, send_q=%d, rate=%d%%", 
+                                         direct_output_count, rms, status, send_q_size, rate);
                             }
                             
-                            // 直接送入编码队列
+                            if (!should_send) {
+                                continue;  // 跳过此帧
+                            }
+                            
+                            direct_sent_count++;
                             PushTaskToEncodeQueue(kAudioTaskTypeEncodeToSendQueue, std::move(frame));
                         }
                         
@@ -629,86 +672,61 @@ void AudioService::AudioInputTask() {
 #endif
                     
                     // ═══════════════════════════════════════════════════════════════════════════
-                    // 【Speaking 模式】绕过 AEC，直接发送麦克风数据
+                    // 【Speaking 模式】通过 AFE + AEC 处理
                     // ═══════════════════════════════════════════════════════════════════════════
                     // 
-                    // ⚠️ 诊断模式：AEC 消除效果过强，把用户语音也消除了
-                    //    改为直接发送麦克风数据，让服务端 VAD 处理
-                    //    服务端会收到 TTS 回声，但至少用户语音也能被检测到
+                    // AEC 参数已调整（SR_LOW_COST 模式，filter_length=2）
+                    // 消除效果更温和，让用户语音能"泄漏"出来用于打断检测
                     // 
                     // ═══════════════════════════════════════════════════════════════════════════
                     
-                    // 静态变量用于累积和统计
-                    static std::vector<int16_t> speaking_output_buffer;
-                    static int speaking_output_count = 0;
+                    // 累积音频数据，减少 AFE 调用频率
+                    const int AFE_FEED_EVERY_N = 4;  // 每 4 次读取 feed 一次 AFE
                     
-                    // 清空 afe_accumulator（如果有残留）
-                    if (!afe_accumulator.empty()) {
-                        afe_accumulator.clear();
-                        afe_feed_throttle = 0;
+                    afe_accumulator.insert(afe_accumulator.end(), data.begin(), data.end());
+                    afe_feed_throttle++;
+                    
+                    if (afe_feed_throttle < AFE_FEED_EVERY_N) {
+                        // 还没累积够，等待更多数据
+                        vTaskDelay(pdMS_TO_TICKS(1));  // 让 WiFi/LWIP 有机会运行
+                        continue;
                     }
                     
-                    // 提取麦克风通道数据（Ch0）
-                    std::vector<int16_t> mic_data;
-                    if (codec_->input_channels() == 2) {
-                        // 双通道交错格式：[Mic0, Ref0, Mic1, Ref1, ...]
-                        mic_data.resize(data.size() / 2);
-                        for (size_t i = 0; i < mic_data.size(); i++) {
-                            mic_data[i] = data[i * 2];  // 提取麦克风通道
+                    // 累积够了，feed AFE
+                    afe_feed_throttle = 0;
+                    
+                    // 输入音频能量监控（每 25 次 feed，约 1.6 秒）
+                    afe_actual_feed_count++;
+                    if (afe_actual_feed_count % 25 == 1) {
+                        // 计算麦克风通道的 RMS 能量
+                        int64_t sum_sq = 0;
+                        size_t data_size = afe_accumulator.size();
+                        int mic_samples = codec_->input_channels() == 2 ? data_size / 2 : data_size;
+                        for (int i = 0; i < mic_samples; i++) {
+                            int idx = codec_->input_channels() == 2 ? i * 2 : i;
+                            sum_sq += (int64_t)afe_accumulator[idx] * afe_accumulator[idx];
                         }
-                    } else {
-                        mic_data = std::move(data);
+                        int32_t input_rms = (int32_t)sqrt((double)sum_sq / mic_samples);
+                        
+                        const char* input_status = (input_rms < 50) ? "🔇 VERY_LOW" : 
+                                                   (input_rms < 200) ? "🔉 LOW" : 
+                                                   (input_rms < 1000) ? "🔊 NORMAL" : "📢 LOUD";
+                        
+                        ESP_LOGI(TAG, "🎤 [AFE+AEC] feed #%d: %d samples, INPUT_RMS=%d %s", 
+                                 afe_actual_feed_count, (int)afe_accumulator.size(), input_rms, input_status);
                     }
                     
-                    // 累积到 960 samples（OPUS 帧大小）
-                    speaking_output_buffer.insert(speaking_output_buffer.end(), 
-                                                  mic_data.begin(), mic_data.end());
-                    
-                    // 当累积够 960 samples 时，直接送入编码队列
-                    while (speaking_output_buffer.size() >= 960) {
-                        // 提取 960 samples
-                        std::vector<int16_t> frame(speaking_output_buffer.begin(), 
-                                                   speaking_output_buffer.begin() + 960);
-                        speaking_output_buffer.erase(speaking_output_buffer.begin(), 
-                                                     speaking_output_buffer.begin() + 960);
-                        
-                        speaking_output_count++;
-                        
-                        // 计算 RMS（每 50 帧记录）
-                        if (speaking_output_count % 50 == 1) {
-                            int64_t sum_sq = 0;
-                            for (int16_t sample : frame) {
-                                sum_sq += (int64_t)sample * sample;
-                            }
-                            int32_t rms = (int32_t)sqrt((double)sum_sq / frame.size());
-                            
-                            const char* status = (rms < 100) ? "🔇 SILENT" : 
-                                                 (rms < 500) ? "🔉 LOW" : 
-                                                 (rms < 1500) ? "🔊 NORMAL" : "📢 LOUD";
-                            
-                            ESP_LOGI(TAG, "🎙️ [BYPASS_AEC] #%d: MIC_RMS=%d %s (直接发送，绕过 AEC)", 
-                                     speaking_output_count, rms, status);
-                        }
-                        
-                        // 检查 send_queue 大小，防止拥塞
-                        int send_q_size = 0;
-                        {
-                            std::lock_guard<std::mutex> lock(audio_queue_mutex_);
-                            send_q_size = audio_send_queue_.size();
-                        }
-                        if (send_q_size < 25) {
-                            // 队列未满，发送
-                            PushTaskToEncodeQueue(kAudioTaskTypeEncodeToSendQueue, std::move(frame));
-                        } else {
-                            // 队列满，跳过
-                            if (speaking_output_count % 50 == 1) {
-                                ESP_LOGW(TAG, "🔴 [BYPASS_AEC] send_q=%d FULL, skipping", send_q_size);
-                            }
-                        }
+                    // Feed 累积的数据给 AFE（分批 feed）
+                    while (afe_accumulator.size() >= (size_t)samples) {
+                        std::vector<int16_t> chunk(afe_accumulator.begin(), 
+                                                   afe_accumulator.begin() + samples);
+                        afe_accumulator.erase(afe_accumulator.begin(), 
+                                              afe_accumulator.begin() + samples);
+                        audio_processor_->Feed(std::move(chunk));
                     }
                     
-                    // 让出 CPU 时间给 WiFi/LWIP
-                    vTaskDelay(pdMS_TO_TICKS(1));
+                    // 让 WiFi/LWIP 有时间处理网络数据包
+                    vTaskDelay(pdMS_TO_TICKS(5));
                     continue;
                 } else {
                     ESP_LOGW(TAG, "⚠️  ReadAudioData failed for feed #%d", feed_count);
@@ -867,6 +885,33 @@ void AudioService::OpusCodecTask() {
             static int drop_count = 0;
             static int silence_skip_count = 0;
             static int playback_frame_count = 0;
+            static int danger_skip_count = 0;
+            
+            // ════════════════════════════════════════════════════════════════════
+            // 🚨 DANGER WATER LEVEL CHECK: If send_queue is critical, skip encoding
+            // ════════════════════════════════════════════════════════════════════
+            // This prevents send_queue from growing further when TCP is congested.
+            // The encode_queue data will be discarded to protect the system.
+            // ════════════════════════════════════════════════════════════════════
+            constexpr size_t DANGER_THRESHOLD = 25;
+            if (audio_send_queue_.size() >= DANGER_THRESHOLD) {
+                // Discard encode_queue data to prevent further growth
+                auto discarded = std::move(audio_encode_queue_.front());
+                audio_encode_queue_.pop_front();
+                audio_queue_cv_.notify_all();
+                lock.unlock();
+                
+                danger_skip_count++;
+                if (danger_skip_count % 50 == 1) {
+                    ESP_LOGW(TAG, "🛑 DANGER: send_q=%d, skipping encode #%d (TCP congested)",
+                             (int)audio_send_queue_.size(), danger_skip_count);
+                }
+                
+                // Yield CPU and continue to next iteration
+                vTaskDelay(pdMS_TO_TICKS(10));
+                continue;
+            }
+            
             encode_count++;
             
             auto task = std::move(audio_encode_queue_.front());
@@ -1214,27 +1259,15 @@ void AudioService::SetPlaybackMode(bool playback_mode) {
         
 #if CONFIG_USE_DEVICE_AEC
         if (audio_processor_initialized_) {
-            // ═══════════════════════════════════════════════════════════════════════════
-            // 诊断模式：绕过 AEC，直接发送麦克风数据
-            // ═══════════════════════════════════════════════════════════════════════════
-            // 
-            // 问题：AEC 消除效果过强，把用户语音也消除了，导致服务端 VAD 无法检测
-            // 
-            // 临时方案：两种模式都使用 bypass mode（直接麦克风输入）
-            //   - Listening: bypass (原有逻辑)
-            //   - Speaking: 也 bypass (绕过 AEC)
-            // 
-            // 服务端会收到 TTS 回声，但至少用户语音也能被检测到
-            // 
-            // ═══════════════════════════════════════════════════════════════════════════
+            // 设置 AFE 旁路模式：Listening = bypass, Speaking = AEC active
             auto afe_processor = static_cast<AfeAudioProcessor*>(audio_processor_.get());
             if (afe_processor) {
-                // 始终启用 bypass mode（绕过 AEC）
-                afe_processor->SetBypassMode(true);
+                afe_processor->SetBypassMode(!playback_mode);
             }
             
-            ESP_LOGI(TAG, "🎛️ SetPlaybackMode(%s) → AFE BYPASS (诊断：绕过 AEC)", 
-                     playback_mode ? "true" : "false");
+            ESP_LOGI(TAG, "🎛️ SetPlaybackMode(%s) → %s", 
+                     playback_mode ? "true" : "false",
+                     playback_mode ? "AFE+AEC ACTIVE" : "AFE BYPASS (save CPU)");
         }
 #endif
     }

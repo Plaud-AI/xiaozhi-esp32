@@ -50,9 +50,30 @@ void AfeAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms, srm
     // LOW_COST 模式处理延迟小（每帧 <10ms），足够用于实时打断检测
     // ═══════════════════════════════════════════════════════════════════════════
     afe_config_t* afe_config = afe_config_init(input_format.c_str(), NULL, AFE_TYPE_VC, AFE_MODE_LOW_COST);
-    afe_config->aec_mode = AEC_MODE_VOIP_LOW_COST;  // 低成本 AEC，CPU 占用更低
+    
+    // ═══════════════════════════════════════════════════════════════════════════
+    // AEC 参数调整：降低消除强度，让用户语音能"泄漏"出来
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 
+    // 问题：VOIP 模式的 AEC 消除效果过强，把用户语音也消除了
+    //      导致服务端 VAD 无法检测到用户说话，打断功能失效
+    // 
+    // 解决方案：
+    //   1. 使用 SR (Speech Recognition) 模式而不是 VOIP 模式
+    //      SR 模式设计用于语音识别，更注重保留语音特征
+    //   2. 减小 filter_length（默认 4）到 2
+    //      filter_length 越小，回声消除效果越弱，但用户语音保留更多
+    // 
+    // 权衡：会有一些回声残留，但服务端 VAD 能检测到用户语音
+    // 
+    // ═══════════════════════════════════════════════════════════════════════════
+    afe_config->aec_mode = AEC_MODE_SR_LOW_COST;  // 语音识别模式，消除效果更温和
+    afe_config->aec_filter_length = 2;            // 减小滤波器长度（默认 4）
+    
     afe_config->vad_mode = VAD_MODE_0;
     afe_config->vad_min_noise_ms = 100;
+    
+    ESP_LOGI(TAG, "🎚️ AEC: SR_LOW_COST mode, filter_length=2 (reduced for barge-in)");
     
     // 设置 AFE 任务运行在 Core 1，优先级 5（高于默认值，确保实时处理）
     afe_config->afe_perferred_core = 1;

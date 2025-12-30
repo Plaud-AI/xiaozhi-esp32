@@ -459,6 +459,20 @@ void Application::Start() {
         static int dropped_audio_packets = 0;
         total_audio_packets++;
         
+        // ════════════════════════════════════════════════════════════════════
+        // 标记已收到 TTS 音频：此时才允许发送麦克风数据
+        // ════════════════════════════════════════════════════════════════════
+        // 这防止了以下死锁场景：
+        // 1. 设备收到 tts.start，进入 Speaking 模式
+        // 2. 设备开始发送麦克风数据
+        // 3. 服务器在等待 TTS 生成，没有读取数据
+        // 4. TCP 缓冲区满，设备无法发送也无法接收
+        // ════════════════════════════════════════════════════════════════════
+        if (!tts_audio_received_) {
+            tts_audio_received_ = true;
+            ESP_LOGI(TAG, "🎵 First TTS audio received! Now allowing mic data transmission");
+        }
+        
         // 每 10 个包打印一次详细日志
         if (total_audio_packets % 10 == 1) {
             ESP_LOGI(TAG, "🎵 Audio packet #%d: size=%u, state=%s, dropped=%d", 
@@ -502,6 +516,7 @@ void Application::Start() {
                     ESP_LOGI(TAG, "🔄 Schedule callback executing for TTS start, current state: %s", 
                              STATE_STRINGS[device_state_]);
                     aborted_ = false;
+                    tts_audio_received_ = false;  // 重置：等待第一个 TTS 音频包
                     if (device_state_ == kDeviceStateIdle || device_state_ == kDeviceStateListening) {
                         ESP_LOGI(TAG, "✅ Condition met, calling SetDeviceState(kDeviceStateSpeaking)");
                         SetDeviceState(kDeviceStateSpeaking);
@@ -512,6 +527,29 @@ void Application::Start() {
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {
                 ESP_LOGI(TAG, "🎙️  TTS stopped");
+                
+                // ═══════════════════════════════════════════════════════════════════════════
+                // 🗑️ 清空 send_queue：TTS 停止后，旧的麦克风数据已过时
+                // ═══════════════════════════════════════════════════════════════════════════
+                // 
+                // 这样做的原因：
+                // 1. TTS 播放期间积累的麦克风数据可能很多
+                // 2. 这些数据对应 TTS 播放的声音（已被 AEC 处理）
+                // 3. 服务器不需要这些数据，发送它们只会浪费带宽和阻塞连接
+                // 4. 如果不清空，MainEventLoop 会被阻塞在发送循环中
+                // 
+                // ═══════════════════════════════════════════════════════════════════════════
+                int cleared = 0;
+                while (audio_service_.PopPacketFromSendQueue()) {
+                    cleared++;
+                }
+                if (cleared > 0) {
+                    ESP_LOGI(TAG, "🗑️ Cleared %d stale packets from send_queue on TTS stop", cleared);
+                }
+                
+                // 重置 TTS 音频标志
+                tts_audio_received_ = false;
+                
                 Schedule([this]() {
                     if (device_state_ == kDeviceStateSpeaking) {
                         if (listening_mode_ == kListeningModeManualStop) {
@@ -681,27 +719,54 @@ void Application::MainEventLoop() {
             int current_send_q_size = queue_stats.send_queue_size;
             
             // ═══════════════════════════════════════════════════════════════════════════
-            // 🚨 紧急拥塞处理：队列积压时主动清空旧数据
+            // 🛑 等待 TTS 音频：在 Speaking 模式下，如果还没收到 TTS 音频，不发送麦克风数据
             // ═══════════════════════════════════════════════════════════════════════════
             // 
-            // ⚠️ 关键：TCP 是双向的！
-            // 当发送缓冲区满时，recv() 也会受影响，导致无法接收 TTS 数据
+            // 问题场景：
+            // 1. 设备收到 tts.start，进入 Speaking 模式
+            // 2. 服务器还在等待 TTS 生成，没有发送音频
+            // 3. 设备开始发送麦克风数据
+            // 4. 服务器没有读取这些数据（忙于 TTS 生成）
+            // 5. TCP 发送缓冲区满，导致整个连接阻塞
             // 
-            // 所以必须主动清空队列，防止 TCP 缓冲区满
+            // 解决方案：等到收到第一个 TTS 音频包后，再开始发送麦克风数据
             // 
             // ═══════════════════════════════════════════════════════════════════════════
-            if (current_send_q_size >= 20) {
-                // 队列已经很大，主动清空一半旧数据
-                int to_drop = current_send_q_size / 2;
-                ESP_LOGW(TAG, "🚨 Send queue critical: %d packets, dropping %d old packets!", 
-                         current_send_q_size, to_drop);
-                for (int i = 0; i < to_drop; i++) {
-                    audio_service_.PopPacketFromSendQueue();  // 丢弃旧数据
+            if (device_state_ == kDeviceStateSpeaking && !tts_audio_received_) {
+                // 还没收到 TTS 音频，清空队列并跳过发送
+                static int wait_log_count = 0;
+                wait_log_count++;
+                if (wait_log_count % 50 == 1) {
+                    ESP_LOGI(TAG, "⏳ Waiting for TTS audio before sending mic data (send_q=%d, wait#%d)",
+                             current_send_q_size, wait_log_count);
+                }
+                // 清空队列，防止堆积
+                while (audio_service_.PopPacketFromSendQueue()) {
                     total_dropped++;
                 }
-                // 刷新队列大小
-                queue_stats = audio_service_.GetQueueStats();
-                current_send_q_size = queue_stats.send_queue_size;
+                continue;  // 跳过发送
+            }
+            
+            // ═══════════════════════════════════════════════════════════════════════════
+            // 🚨 紧急拥塞处理：队列积压时主动清空
+            // ═══════════════════════════════════════════════════════════════════════════
+            // 
+            // ⚠️ 关键：TCP 发送堵塞会导致 TCP 接收也堵塞！
+            // 必须快速清空队列，否则：
+            //   - send() 超时返回失败
+            //   - 但队列中还有数据
+            //   - 继续尝试发送 → 继续失败
+            //   - TCP 接收一直被阻塞 → 无法收到 TTS 数据
+            // 
+            // ═══════════════════════════════════════════════════════════════════════════
+            if (current_send_q_size >= 15) {
+                // 队列达到危险水位，清空所有数据！
+                ESP_LOGW(TAG, "🚨 Send queue critical: %d packets, clearing ALL!", current_send_q_size);
+                while (audio_service_.PopPacketFromSendQueue()) {
+                    total_dropped++;
+                }
+                // 不尝试发送，直接返回，让 TCP 有时间恢复
+                continue;
             }
             
             while (auto packet = audio_service_.PopPacketFromSendQueue()) {
@@ -712,87 +777,56 @@ void Application::MainEventLoop() {
                     fail_count = 0;  // Reset consecutive fail count
                     last_success_time = esp_timer_get_time();
                 } else {
-                    // Send failed - network congestion
+                    // ═══════════════════════════════════════════════════════════════════════════
+                    // 🔥 发送失败 = TCP 拥塞！立即清空队列
+                    // ═══════════════════════════════════════════════════════════════════════════
+                    // 
+                    // TCP 发送超时（500ms）说明缓冲区已满
+                    // 继续尝试发送没有意义，只会让拥塞更严重
+                    // 
+                    // 正确做法：立即清空队列，让 TCP 有时间恢复
+                    // 这样才能尽快恢复 TTS 接收
+                    // 
+                    // ═══════════════════════════════════════════════════════════════════════════
                     fail_count++;
                     packets_dropped++;
                     total_dropped++;
                     
-                    if (fail_count == 1) {
-                        ESP_LOGW(TAG, "⚠️ SendAudio failed #%d (send_q=%d)", 
-                                 send_count, current_send_q_size);
+                    ESP_LOGW(TAG, "🔥 SendAudio failed! Clearing queue to recover TCP (fail#%d, q=%d)", 
+                             fail_count, current_send_q_size);
+                    
+                    // 清空整个队列
+                    int cleared = 0;
+                    while (audio_service_.PopPacketFromSendQueue()) {
+                        cleared++;
+                        total_dropped++;
                     }
+                    ESP_LOGW(TAG, "🗑️ Cleared %d packets from send_queue", cleared);
                     
                     // ═══════════════════════════════════════════════════════════════════════════
-                    // 网络拥塞处理
+                    // 超时重连：连续失败超过 3 秒，认为连接已死
                     // ═══════════════════════════════════════════════════════════════════════════
-                    // 
-                    // 策略：
-                    // 1. 短期拥塞（<10秒）：暂停，等待恢复
-                    // 2. 长期拥塞（>10秒）：认为连接已死，触发重连
-                    // 3. 队列积压严重时清理旧包
-                    // 
-                    // ═══════════════════════════════════════════════════════════════════════════
-                    if (fail_count >= 3) {
-                        int64_t time_since_success = (esp_timer_get_time() - last_success_time) / 1000;
-                        ESP_LOGW(TAG, "🔥 Network congested! fail=%d, since_success=%dms, q=%d", 
-                                 fail_count, (int)time_since_success, current_send_q_size);
+                    int64_t time_since_success = (esp_timer_get_time() - last_success_time) / 1000;
+                    const int64_t RECONNECT_TIMEOUT_MS = 3000;  // 3 秒（缩短，更快恢复）
+                    
+                    if (time_since_success > RECONNECT_TIMEOUT_MS) {
+                        ESP_LOGE(TAG, "💀 Connection dead! No successful send for %d ms, reconnecting...", 
+                                 (int)time_since_success);
                         
-                        // ═══════════════════════════════════════════════════════════════════════════
-                        // 超时重连：TCP 缓冲区满超过 10 秒，认为连接已死
-                        // ═══════════════════════════════════════════════════════════════════════════
-                        // 
-                        // 原因：TCP 缓冲区满通常有几种情况：
-                        // 1. 短暂网络拥塞 → 几秒内恢复
-                        // 2. 服务器暂时繁忙 → 几秒内恢复
-                        // 3. 服务器停止读取 → 永远不会恢复！
-                        // 4. 网络断开但 TCP 未检测到 → 永远不会恢复！
-                        // 
-                        // TCP keepalive 默认 2 小时才超时，太慢了！
-                        // 所以我们在应用层检测：10秒没成功发送 → 主动断开重连
-                        // 
-                        // ═══════════════════════════════════════════════════════════════════════════
-                        const int64_t RECONNECT_TIMEOUT_MS = 10000;  // 10 秒
-                        if (time_since_success > RECONNECT_TIMEOUT_MS) {
-                            ESP_LOGE(TAG, "💀 Connection dead! No successful send for %d ms, reconnecting...", 
-                                     (int)time_since_success);
-                            
-                            // 清空发送队列（重连后数据已过时）
-                            while (audio_service_.PopPacketFromSendQueue()) {
-                                // 清空
-                            }
-                            
-                            // 触发重连
-                            if (protocol_) {
-                                protocol_->CloseAudioChannel();
-                            }
-                            
-                            // 重置状态
-                            SetDeviceState(kDeviceStateIdle);
-                            
-                            // 重置计数器
-                            last_success_time = esp_timer_get_time();
-                            fail_count = 0;
-                            break;
+                        // 触发重连
+                        if (protocol_) {
+                            protocol_->CloseAudioChannel();
                         }
                         
-                        // 只有队列积压严重时才清理（避免内存溢出）
-                        if (current_send_q_size > 30) {
-                            int cleared = 0;
-                            while (audio_service_.PopPacketFromSendQueue() && cleared < 5) {
-                                cleared++;
-                            }
-                            if (cleared > 0) {
-                                ESP_LOGW(TAG, "🗑️ Cleared %d old packets (queue overflow)", cleared);
-                                total_dropped += cleared;
-                            }
-                        }
+                        // 重置状态
+                        SetDeviceState(kDeviceStateIdle);
                         
-                        // 短暂暂停让网络恢复
-                        vTaskDelay(pdMS_TO_TICKS(30));
-                        
+                        // 重置计数器
+                        last_success_time = esp_timer_get_time();
                         fail_count = 0;
-                        break;  // Exit loop, retry later
                     }
+                    
+                    break;  // 退出发送循环
                 }
                 
                 // Limit sends per loop iteration
