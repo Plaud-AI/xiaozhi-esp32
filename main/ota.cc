@@ -45,34 +45,9 @@ Ota::~Ota() {
 }
 
 std::string Ota::GetCheckVersionUrl() {
-    // 优先读取 NVS 中的自定义地址
-    // 先尝试从 "system" namespace 读取（新逻辑）
-    try {
-        Settings settings("system", false);
-        std::string custom_url = settings.GetString("ota_url", "");
-        if (!custom_url.empty()) {
-            ESP_LOGI(TAG, "Using custom OTA URL from NVS (system): %s", custom_url.c_str());
-            return custom_url;
-        }
-    } catch (const std::exception& e) {
-        ESP_LOGW(TAG, "Failed to read custom OTA URL from system: %s", e.what());
-    }
-    
-    // 然后尝试从 "wifi" namespace 读取（兼容原项目）
-    try {
-        Settings settings("wifi", false);
-        std::string custom_url = settings.GetString("ota_url", "");
-        if (!custom_url.empty()) {
-            ESP_LOGI(TAG, "Using custom OTA URL from NVS (wifi): %s", custom_url.c_str());
-            return custom_url;
-        }
-    } catch (const std::exception& e) {
-        ESP_LOGW(TAG, "Failed to read custom OTA URL from wifi: %s", e.what());
-    }
-    
-    // 回退到默认配置
+    // 强制使用固定的 OTA 地址，忽略 NVS 中的自定义配置
     std::string url = CONFIG_OTA_URL;
-    ESP_LOGI(TAG, "Using default OTA URL: %s", url.c_str());
+    ESP_LOGI(TAG, "Using fixed OTA URL: %s", url.c_str());
     return url;
 }
 
