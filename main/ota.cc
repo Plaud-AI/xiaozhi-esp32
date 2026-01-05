@@ -24,7 +24,7 @@
 // 官方 OTA 服务器域名
 #define OFFICIAL_OTA_DOMAIN "api.tenclass.net"
 #define OFFICIAL_OTA_DOMAIN_2 "2662r3426b.vicp.fun"
-#define OFFICIAL_OTA_IP "35.89.101.222"
+#define OFFICIAL_OTA_IP "44.228.155.146"
 
 
 Ota::Ota() {

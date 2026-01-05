@@ -16,7 +16,7 @@
 // 官方 OTA 服务器域名
 #define OFFICIAL_OTA_DOMAIN "api.tenclass.net"
 #define OFFICIAL_OTA_DOMAIN_2 "2662r3426b.vicp.fun"
-#define OFFICIAL_OTA_IP "35.89.101.222"
+#define OFFICIAL_OTA_IP "44.228.155.146"
 
 WebsocketProtocol::WebsocketProtocol() {
     event_group_handle_ = xEventGroupCreate();
@@ -89,7 +89,7 @@ bool WebsocketProtocol::IsOfficialServer(const std::string& ota_url) {
     // 判断是否是官方服务器：
     // 1. OTA URL 包含官方域名 api.tenclass.net
     // 2. 或者 OTA URL 包含官方域名 2662r3426b.vicp.fun
-    // 3. 或者 OTA URL 包含官方 IP 35.89.101.222
+    // 3. 或者 OTA URL 包含官方 IP 44.228.155.146
     // 4. 或者使用默认的官方 OTA 配置
     return ota_url.find(OFFICIAL_OTA_DOMAIN) != std::string::npos ||
            ota_url.find(OFFICIAL_OTA_DOMAIN_2) != std::string::npos ||
@@ -107,7 +107,7 @@ bool WebsocketProtocol::OpenAudioChannel() {
 
     // 如果 NVS 中没有 WebSocket URL，使用默认值
     if (url.empty()) {
-        url = "ws://35.89.101.222:8000/xiaozhi/v1/";
+        url = "ws://44.228.155.146:8000/xiaozhi/v1/";
         ESP_LOGW(TAG, "WebSocket URL not configured in NVS, using default: %s", url.c_str());
     }
     

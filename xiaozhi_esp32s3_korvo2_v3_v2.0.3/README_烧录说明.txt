@@ -7,7 +7,7 @@
 芯片: ESP32-S3
 Flash: 16MB
 
-此版本已将默认 OTA 地址修改为: http://35.89.101.222:8003/xiaozhi/ota/
+此版本已将默认 OTA 地址修改为: http://44.228.155.146:8003/xiaozhi/ota/
 
 烧录地址表:
 -----------
@@ -31,4 +31,5 @@ esptool.py --chip esp32s3 --port [PORT] --baud 921600 \
 提示:
 - [PORT]: Windows 为 COMx, macOS 为 /dev/cu.usbserial-xxx, Linux 为 /dev/ttyUSBx
 - 也可以使用乐鑫官方的 Flash Download Tool 工具进行烧录
+
 
