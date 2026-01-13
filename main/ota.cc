@@ -46,9 +46,28 @@ Ota::~Ota() {
 }
 
 std::string Ota::GetCheckVersionUrl() {
-    // 强制使用固定的 OTA 地址，忽略 NVS 中的自定义配置
-    std::string url = CONFIG_OTA_URL;
-    ESP_LOGI(TAG, "Using fixed OTA URL: %s", url.c_str());
+    // 优先读取 NVS 中的自定义 OTA URL
+    // 读取顺序：1. system/ota_url  2. wifi/ota_url  3. CONFIG_OTA_URL
+    std::string url;
+    
+    // 尝试从 "system" namespace 读取（BLE 配网设置的地址保存在这里）
+    Settings system_settings("system", false);
+    url = system_settings.GetString("ota_url", "");
+    
+    if (url.empty()) {
+        // 尝试从 "wifi" namespace 读取（兼容旧版本）
+        Settings wifi_settings("wifi", false);
+        url = wifi_settings.GetString("ota_url", "");
+    }
+    
+    if (url.empty()) {
+        // 使用 Kconfig 中配置的默认 URL
+        url = CONFIG_OTA_URL;
+        ESP_LOGI(TAG, "Using default OTA URL: %s", url.c_str());
+    } else {
+        ESP_LOGI(TAG, "Using custom OTA URL from NVS: %s", url.c_str());
+    }
+    
     return url;
 }
 
