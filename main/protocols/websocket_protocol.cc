@@ -105,10 +105,10 @@ bool WebsocketProtocol::OpenAudioChannel() {
         version_ = version;
     }
 
-    // 如果 NVS 中没有 WebSocket URL，使用默认值
+    // 如果 NVS 中没有 WebSocket URL，报错并返回失败
     if (url.empty()) {
-        url = "ws://44.228.155.146:8000/xiaozhi/v1/";
-        ESP_LOGW(TAG, "WebSocket URL not configured in NVS, using default: %s", url.c_str());
+        ESP_LOGE(TAG, "WebSocket URL not configured in NVS, please configure OTA server first");
+        return false;
     }
     
     current_url_ = url;
