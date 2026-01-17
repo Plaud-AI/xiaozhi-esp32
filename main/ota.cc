@@ -42,7 +42,7 @@ Ota::~Ota() {
 
 std::string Ota::GetCheckVersionUrl() {
     // 强制使用新的配置，忽略 NVS 中的旧配置
-    std::string url = "http://34.221.190.98:8002/xiaozhi/ota/";//CONFIG_OTA_URL;
+    std::string url = "http://192.168.86.26:8002/xiaozhi/ota/";//CONFIG_OTA_URL;
     ESP_LOGI(TAG, "Using OTA URL (forced): %s", url.c_str());
     return url;
 }
