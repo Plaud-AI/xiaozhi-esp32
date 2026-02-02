@@ -672,6 +672,47 @@ void AudioService::SetCallbacks(AudioServiceCallbacks& callbacks) {
     callbacks_ = callbacks;
 }
 
+void AudioService::PlayP3Sound(const std::string_view& p3_data) {
+    ESP_LOGI(TAG, "🎵 播放P3提示音: 大小=%d 字节", p3_data.size());
+    
+    if (!codec_->output_enabled()) {
+        ESP_LOGI(TAG, "🔊 音频输出未启用，正在启用...");
+        codec_->EnableOutput(true);
+    }
+
+    const uint8_t* buf = reinterpret_cast<const uint8_t*>(p3_data.data());
+    size_t size = p3_data.size();
+    size_t offset = 0;
+
+    // P3 format: [1字节类型, 1字节保留, 2字节长度(大端), Opus数据]
+    // 采样率固定为16000Hz，单声道，每帧60ms
+    while (offset + 4 <= size) {
+        // 读取头部
+        uint8_t packet_type = buf[offset];
+        uint8_t reserved = buf[offset + 1];
+        uint16_t data_len = (buf[offset + 2] << 8) | buf[offset + 3];  // 大端序
+        
+        offset += 4;
+        
+        if (offset + data_len > size) {
+            ESP_LOGW(TAG, "P3数据不完整，期望 %d 字节，剩余 %d 字节", data_len, size - offset);
+            break;
+        }
+        
+        // 创建 AudioStreamPacket 并推送到解码队列
+        auto packet = std::make_unique<AudioStreamPacket>();
+        packet->sample_rate = 16000;  // P3 固定采样率
+        packet->frame_duration = 60;  // P3 固定帧长
+        packet->payload.resize(data_len);
+        std::memcpy(packet->payload.data(), buf + offset, data_len);
+        PushPacketToDecodeQueue(std::move(packet), true);
+        
+        offset += data_len;
+    }
+    
+    ESP_LOGI(TAG, "✅ P3音频已推送到解码队列");
+}
+
 void AudioService::PlaySound(const std::string_view& ogg) {
     ESP_LOGI(TAG, "🎵 播放提示音: 大小=%d 字节", ogg.size());
     

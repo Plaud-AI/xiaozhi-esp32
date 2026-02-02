@@ -401,6 +401,11 @@ void Application::Start() {
     };
     audio_service_.SetCallbacks(callbacks);
 
+    // 启动后立即播放 P3 音频（音量设为最大）
+    ESP_LOGI(TAG, "🎵 播放启动 P3 音频...");
+    codec->SetOutputVolume(100);  // 音量调到最大
+    audio_service_.PlayP3Sound(Lang::Sounds::P3_STARTUP);
+
     // Start the main event loop task with priority 3
     // Stack size: 14KB (balanced for OPUS resampler + WebSocket operations)
     xTaskCreate([](void* arg) {
