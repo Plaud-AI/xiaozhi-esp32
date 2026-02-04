@@ -144,6 +144,13 @@ void Application::CheckAssetsVersion() {
 }
 
 void Application::CheckNewVersion(Ota& ota) {
+    // 跳过 OTA 检查，直接进入唤醒测试模式
+    ESP_LOGW(TAG, "╔════════════════════════════════════════╗");
+    ESP_LOGW(TAG, "║   ⚠️  跳过 OTA 检查，进入唤醒测试模式   ║");
+    ESP_LOGW(TAG, "╚════════════════════════════════════════╝");
+    xEventGroupSetBits(event_group_, MAIN_EVENT_CHECK_NEW_VERSION_DONE);
+    return;
+
     const int MAX_RETRY = 10;
     int retry_count = 0;
     int retry_delay = 10; // 初始重试延迟为10秒
