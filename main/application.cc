@@ -710,6 +710,7 @@ void Application::MainEventLoop() {
             MAIN_EVENT_VAD_CHANGE |
             MAIN_EVENT_CLOCK_TICK |
             MAIN_EVENT_WAKE_WORD_TEST_CYCLE |
+            MAIN_EVENT_WAKE_WORD_TEST_TIMEOUT |
             MAIN_EVENT_ERROR, pdTRUE, pdFALSE, portMAX_DELAY);
 
         if (bits & MAIN_EVENT_ERROR) {
@@ -732,6 +733,10 @@ void Application::MainEventLoop() {
         if (bits & MAIN_EVENT_WAKE_WORD_TEST_CYCLE) {
             // 开始新一轮测试循环
             StartWakeWordTestCycle();
+        }
+
+        if (bits & MAIN_EVENT_WAKE_WORD_TEST_TIMEOUT) {
+            OnWakeWordTestTimeout();
         }
 
         if (bits & MAIN_EVENT_VAD_CHANGE) {
@@ -1198,6 +1203,37 @@ void Application::PlayBeepTone(int frequency_hz, int duration_ms) {
 }
 
 /**
+ * @brief 启动超时定时器
+ */
+void Application::StartTestTimeoutTimer() {
+    StopTestTimeoutTimer();
+
+    if (!wake_word_test_timer_) {
+        esp_timer_create_args_t timer_args = {};
+        timer_args.callback = [](void* arg) {
+            auto* app = static_cast<Application*>(arg);
+            xEventGroupSetBits(app->event_group_, MAIN_EVENT_WAKE_WORD_TEST_TIMEOUT);
+        };
+        timer_args.arg = this;
+        timer_args.name = "ww_test_timeout";
+        esp_timer_create(&timer_args, &wake_word_test_timer_);
+    }
+
+    uint64_t timeout_us = (uint64_t)kWakeWordTestTimeoutSec * 1000000ULL;
+    esp_timer_start_once(wake_word_test_timer_, timeout_us);
+    ESP_LOGI(TAG, "⏱️ Test timeout timer started (%lu seconds)", (unsigned long)kWakeWordTestTimeoutSec);
+}
+
+/**
+ * @brief 停止超时定时器
+ */
+void Application::StopTestTimeoutTimer() {
+    if (wake_word_test_timer_) {
+        esp_timer_stop(wake_word_test_timer_);
+    }
+}
+
+/**
  * @brief 启动一个测试循环
  */
 void Application::StartWakeWordTestCycle() {
@@ -1226,7 +1262,11 @@ void Application::StartWakeWordTestCycle() {
     SetDeviceState(kDeviceStateIdle);  // 确保进入 IDLE 状态
     audio_service_.EnableWakeWordDetection(true);
     
-    ESP_LOGI(TAG, "✅ Ready! Please say the wake word...");
+    // 3. 启动超时定时器
+    StartTestTimeoutTimer();
+    
+    ESP_LOGI(TAG, "✅ Ready! Please say the wake word (timeout: %lu s)...", 
+             (unsigned long)kWakeWordTestTimeoutSec);
     ESP_LOGI(TAG, "");
 }
 
@@ -1234,6 +1274,9 @@ void Application::StartWakeWordTestCycle() {
  * @brief 测试模式下的唤醒处理
  */
 void Application::OnWakeWordDetectedInTestMode() {
+    // 取消超时定时器（检测成功了，不需要超时）
+    StopTestTimeoutTimer();
+
     // 获取检测到的唤醒词信息
     last_wake_word_name_ = audio_service_.GetLastWakeWord();
     last_wake_word_probability_ = audio_service_.GetLastWakeWordProbability();
@@ -1268,6 +1311,38 @@ void Application::OnWakeWordDetectedInTestMode() {
     if (wake_word_test_mode_enabled_) {
         ESP_LOGI(TAG, "🔄 Starting next test cycle...");
         StartWakeWordTestCycle();  // 直接调用，不通过事件
+    }
+}
+
+/**
+ * @brief 测试模式下检测超时处理
+ * 在超时时间内未检测到唤醒词，上传数据后自动进入下一轮
+ */
+void Application::OnWakeWordTestTimeout() {
+    if (!wake_word_test_mode_enabled_) {
+        return;
+    }
+
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════╗");
+    ESP_LOGI(TAG, "║  ⏱️ Wake Word Test Timeout (%lu s)                       ║", 
+             (unsigned long)kWakeWordTestTimeoutSec);
+    ESP_LOGI(TAG, "║  No wake word detected, uploading data and continuing   ║");
+    ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════╝");
+    ESP_LOGI(TAG, "");
+
+    // 停止检测 → 触发 MicroWakeWord::Stop() → 打包上传失败数据
+    audio_service_.EnableWakeWordDetection(false);
+
+    // 播放低沉的短提示音（表示超时/失败）
+    PlayBeepTone(300, 300);  // 300Hz, 300ms
+
+    vTaskDelay(pdMS_TO_TICKS(500));
+
+    // 自动开始下一轮
+    if (wake_word_test_mode_enabled_) {
+        ESP_LOGI(TAG, "🔄 Starting next test cycle after timeout...");
+        StartWakeWordTestCycle();
     }
 }
 
@@ -1309,6 +1384,8 @@ void Application::EnableWakeWordTestMode(bool enable) {
         ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════╝");
         ESP_LOGI(TAG, "");
         
+        // 停止超时定时器
+        StopTestTimeoutTimer();
         // 停止唤醒词检测
         audio_service_.EnableWakeWordDetection(false);
     }

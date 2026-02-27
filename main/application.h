@@ -25,6 +25,7 @@
 #define MAIN_EVENT_CHECK_NEW_VERSION_DONE (1 << 5)
 #define MAIN_EVENT_CLOCK_TICK (1 << 6)
 #define MAIN_EVENT_WAKE_WORD_TEST_CYCLE (1 << 7)  // 唤醒词测试模式循环事件
+#define MAIN_EVENT_WAKE_WORD_TEST_TIMEOUT (1 << 8)  // 唤醒词测试模式检测超时
 
 
 enum AecMode {
@@ -101,6 +102,11 @@ private:
 
     void OnWakeWordDetected();
     void OnWakeWordDetectedInTestMode();  // 测试模式下的唤醒处理
+    void OnWakeWordTestTimeout();         // 测试模式下检测超时处理
+    void StartTestTimeoutTimer();         // 启动超时定时器
+    void StopTestTimeoutTimer();          // 停止超时定时器
+
+    static constexpr uint32_t kWakeWordTestTimeoutSec = 10;  // 每轮检测超时（秒）
     void CheckNewVersion(Ota& ota);
     void CheckAssetsVersion();
     void ShowActivationCode(const std::string& code, const std::string& message);
