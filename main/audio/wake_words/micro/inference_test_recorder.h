@@ -102,9 +102,9 @@ private:
     
     // 配置常量 - 使用环形缓冲，只保留最近 N 秒的数据
     static constexpr uint32_t kSampleRate = 16000;
-    static constexpr uint32_t kMaxDurationMs = 5000;   // 保留最近 5 秒音频
-    static constexpr size_t kMaxPCMSamples = kSampleRate * kMaxDurationMs / 1000;  // 80000 samples = 160KB
-    static constexpr size_t kMaxProbabilities = 500;   // 保留最近 500 次推理结果
+    static constexpr uint32_t kMaxDurationMs = 11000;  // 保留最近 11 秒音频（覆盖 10s 超时 + 余量）
+    static constexpr size_t kMaxPCMSamples = kSampleRate * kMaxDurationMs / 1000;  // 176000 samples = 344KB
+    static constexpr size_t kMaxProbabilities = 1100;  // 保留最近 1100 次推理结果（覆盖 11 秒）
 };
 
 }  // namespace micro_wake_word
