@@ -177,18 +177,11 @@ void MicroWakeWord::Feed(const std::vector<int16_t> &data) {
       detected_ = true;
       set_state_(State::DETECTED);
       
-      // 【测试模式】只有 hey ploud 检测成功时才上传（因为只记录了它的概率）
+      // 【测试模式】检测成功，打包上传数据
       if (test_recorder_ && test_uploader_) {
-        if (detected_wake_word_ == "hey ploud") {
-          auto packet = test_recorder_->OnDetectionEnd(detected_wake_word_, detected_probability_);
-          test_uploader_->Submit(std::move(packet));
-          ESP_LOGI(TAG, "📤 Test data submitted for 'hey ploud'");
-        } else {
-          // 其他唤醒词检测成功，取消记录（不上传）
-          test_recorder_->OnDetectionCancelled();
-          ESP_LOGI(TAG, "📤 Test data discarded (detected '%s', not 'hey ploud')", 
-                   detected_wake_word_.c_str());
-        }
+        auto packet = test_recorder_->OnDetectionEnd(detected_wake_word_, detected_probability_);
+        test_uploader_->Submit(std::move(packet));
+        ESP_LOGI(TAG, "📤 Test data submitted for '%s'", detected_wake_word_.c_str());
       }
       
       if (detection_callback_) {
@@ -259,8 +252,16 @@ void MicroWakeWord::Stop() {
     return;
   }
 
-  // 【测试模式】取消记录（未检测到唤醒词）
-  if (test_recorder_) {
+  // 【测试模式】未检测到唤醒词，仍然打包上传（用于分析误拒情况）
+  if (test_recorder_ && test_uploader_) {
+    auto packet = test_recorder_->OnDetectionEnd("_not_detected_", 0.0f);
+    if (!packet.pcm_data.empty()) {
+      test_uploader_->Submit(std::move(packet));
+      ESP_LOGI(TAG, "📤 Test data submitted (detection failed, for rejection analysis)");
+    } else {
+      ESP_LOGI(TAG, "📤 No test data to submit (empty recording)");
+    }
+  } else if (test_recorder_) {
     test_recorder_->OnDetectionCancelled();
   }
 
