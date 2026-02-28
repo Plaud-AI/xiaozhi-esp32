@@ -106,7 +106,7 @@ private:
     void StartTestTimeoutTimer();         // 启动超时定时器
     void StopTestTimeoutTimer();          // 停止超时定时器
 
-    static constexpr uint32_t kWakeWordTestTimeoutSec = 10;  // 每轮检测超时（秒）
+    static constexpr uint32_t kWakeWordTestTimeoutSec = 20;  // 每轮检测超时（秒）
     void CheckNewVersion(Ota& ota);
     void CheckAssetsVersion();
     void ShowActivationCode(const std::string& code, const std::string& message);
