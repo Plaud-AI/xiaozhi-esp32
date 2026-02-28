@@ -252,16 +252,14 @@ void MicroWakeWord::Stop() {
     return;
   }
 
-  // 【测试模式】未检测到唤醒词，仍然打包上传（用于分析误拒情况）
-  if (test_recorder_ && test_uploader_) {
+  // 【测试模式】如果仍在录音（即未经过 Feed 中的成功上传），打包上传失败数据
+  if (test_recorder_ && test_recorder_->IsRecording() && test_uploader_) {
     auto packet = test_recorder_->OnDetectionEnd("_not_detected_", 0.0f);
     if (!packet.pcm_data.empty()) {
       test_uploader_->Submit(std::move(packet));
       ESP_LOGI(TAG, "📤 Test data submitted (detection failed, for rejection analysis)");
-    } else {
-      ESP_LOGI(TAG, "📤 No test data to submit (empty recording)");
     }
-  } else if (test_recorder_) {
+  } else if (test_recorder_ && test_recorder_->IsRecording()) {
     test_recorder_->OnDetectionCancelled();
   }
 

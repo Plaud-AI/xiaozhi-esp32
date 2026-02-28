@@ -25,10 +25,21 @@ void InferenceTestRecorder::OnDetectionStart() {
     std::lock_guard<std::mutex> lock(mutex_);
     
     Reset();
+    
+    // std::move 后 vector 容量为 0，必须重新预分配
+    // 否则录音过程中会反复 realloc（344KB），在实时音频路径上极易导致崩溃
+    if (pcm_data_.capacity() < kMaxPCMSamples) {
+        pcm_data_.reserve(kMaxPCMSamples);
+    }
+    if (probabilities_.capacity() < kMaxProbabilities) {
+        probabilities_.reserve(kMaxProbabilities);
+    }
+    
     recording_ = true;
     start_time_ms_ = esp_timer_get_time() / 1000;
     
-    ESP_LOGI(TAG, "📹 Recording started at %lu ms", (unsigned long)start_time_ms_);
+    ESP_LOGI(TAG, "📹 Recording started at %lu ms (PCM capacity: %lu samples)",
+             (unsigned long)start_time_ms_, (unsigned long)pcm_data_.capacity());
 }
 
 InferenceTestRecorder::UploadPacket InferenceTestRecorder::OnDetectionEnd(

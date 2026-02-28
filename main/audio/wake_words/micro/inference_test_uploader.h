@@ -99,7 +99,7 @@ private:
     
     // 配置常量
     static constexpr size_t kQueueSize = 10;          // 队列最多缓存 10 个数据包
-    static constexpr size_t kTaskStackSize = 8192;    // 任务栈大小
+    static constexpr size_t kTaskStackSize = 16384;   // 任务栈大小（HTTP + ostringstream 需要较大栈）
     static constexpr UBaseType_t kTaskPriority = 5;   // 任务优先级（较低）
     static constexpr int kHttpTimeoutMs = 15000;      // HTTP 超时 15 秒
 };
