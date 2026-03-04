@@ -18,8 +18,8 @@
 // ✅ Using ESPHome official v2 model "Okay Nabu" for testing
 // Downloaded from: https://github.com/esphome/micro-wake-word-models
 #include "wake_words/micro/okay_nabu.h"
-// ✅ Using custom Plaud AI model "Hey Ploud" V3 (20251212 训练)
-#include "wake_words/micro/hey_ploudv3.h"
+// ✅ Using custom Plaud AI model "Hey Plaud" V4
+#include "wake_words/micro/hey_plaud.h"
 #endif
 #else
 #include "wake_words/esp_wake_word.h"
@@ -793,10 +793,10 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
         // ✅ 配置参数：根据实际测试调整
         // 由于使用 24kHz->16kHz 重采样，阈值需要相应调整
         float threshold_okay_nabu = 0.90;  // 调整后的阈值
-        float threshold_hey_ploud = 0.90;  // Hey Ploud 阈值（测试中）
+        float threshold_hey_plaud = 0.90;  // Hey Plaud 阈值（测试中）
         size_t sliding_window = 5;  // 官方推荐滑动窗口
         size_t tensor_arena_okay_nabu = 26080;  // Okay Nabu 的 tensor arena
-        size_t tensor_arena_hey_ploud = 26080;  // Hey Ploud 的 tensor arena（初始估计，可能需要调整）
+        size_t tensor_arena_hey_plaud = 26080;  // Hey Plaud 的 tensor arena（初始估计，可能需要调整）
         
         ESP_LOGI(TAG, "🎯 Loading Multiple Wake Word Models:");
         ESP_LOGI(TAG, "   - Sample Rate: 24kHz (ES7210 原生)");
@@ -805,18 +805,18 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
         ESP_LOGI(TAG, "   - MIC Input: SLOT0 only (主麦克风) ✅");
         ESP_LOGI(TAG, "   - Sliding Window: %u", (unsigned int)sliding_window);
         
-        // Model 1: Plaud AI 定制 Hey Ploud V3 模型 (20251212 训练)
+        // Model 1: Plaud AI 定制 Hey Plaud V4 模型
         // 【测试模式】放在第一个，以便记录其推理概率
-        ESP_LOGI(TAG, "📦 Model 1: Hey Ploud V3 (Plaud AI Custom, 20251212) ⭐ 测试中");
-        ESP_LOGI(TAG, "   - Threshold: %.2f (initial, needs testing)", threshold_hey_ploud);
-        ESP_LOGI(TAG, "   - Tensor Arena: %u bytes (initial estimate)", (unsigned int)tensor_arena_hey_ploud);
-        ESP_LOGI(TAG, "   - Wake Phrase: 'Hey Ploud'");
+        ESP_LOGI(TAG, "📦 Model 1: Hey Plaud V4 (Plaud AI Custom) ⭐ 测试中");
+        ESP_LOGI(TAG, "   - Threshold: %.2f (initial, needs testing)", threshold_hey_plaud);
+        ESP_LOGI(TAG, "   - Tensor Arena: %u bytes (initial estimate)", (unsigned int)tensor_arena_hey_plaud);
+        ESP_LOGI(TAG, "   - Wake Phrase: 'Hey Plaud'");
         micro_ww->add_wake_word_model(
-            hey_ploud_v3_tflite,
-            threshold_hey_ploud,
+            hey_plaud_tflite,
+            threshold_hey_plaud,
             sliding_window,
-            "hey ploud",
-            tensor_arena_hey_ploud
+            "hey plaud",
+            tensor_arena_hey_plaud
         );
         
         // Model 2: ESPHome 官方 Okay Nabu 模型
