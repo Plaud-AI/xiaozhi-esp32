@@ -8,6 +8,19 @@
 
 static const char* TAG = "InferenceTestUploader";
 
+static std::string url_encode(const std::string& value) {
+    std::ostringstream encoded;
+    encoded << std::hex << std::uppercase;
+    for (unsigned char c : value) {
+        if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
+            encoded << c;
+        } else {
+            encoded << '%' << std::setw(2) << std::setfill('0') << (int)c;
+        }
+    }
+    return encoded.str();
+}
+
 namespace micro_wake_word {
 
 InferenceTestUploader::InferenceTestUploader() {
@@ -276,7 +289,7 @@ bool InferenceTestUploader::UploadProbabilities(const std::vector<uint8_t>& prob
                                                 const std::string& model_name) {
     std::string url = server_url_ + "/upload/text";
     if (!model_name.empty()) {
-        url += "?model=" + model_name;
+        url += "?model=" + url_encode(model_name);
     }
     
     std::ostringstream oss;
@@ -397,7 +410,7 @@ bool InferenceTestUploader::SaveBytes() {
 bool InferenceTestUploader::SaveText(const std::string& model_name) {
     std::string url = server_url_ + "/save/text";
     if (!model_name.empty()) {
-        url += "?model=" + model_name;
+        url += "?model=" + url_encode(model_name);
     }
     
     ESP_LOGI(TAG, "💾 Saving text on server: %s", url.c_str());
