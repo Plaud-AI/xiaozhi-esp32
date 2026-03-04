@@ -70,10 +70,13 @@ private:
     
     /**
      * @brief 上传概率数据
-     * POST {server_url}/upload/text
+     * POST {server_url}/upload/text?model={model_name}
+     * @param probabilities 概率数据
+     * @param model_name 模型名称
      * @return 成功返回 true
      */
-    bool UploadProbabilities(const std::vector<uint8_t>& probabilities);
+    bool UploadProbabilities(const std::vector<uint8_t>& probabilities,
+                             const std::string& model_name);
     
     /**
      * @brief 保存字节数据到服务器文件
@@ -84,10 +87,11 @@ private:
     
     /**
      * @brief 保存文本数据到服务器文件
-     * POST {server_url}/save/text
+     * POST {server_url}/save/text?model={model_name}
+     * @param model_name 模型名称
      * @return 成功返回 true
      */
-    bool SaveText();
+    bool SaveText(const std::string& model_name = "");
 
     // 服务器配置
     std::string server_url_ = "http://115.190.161.149:7007";

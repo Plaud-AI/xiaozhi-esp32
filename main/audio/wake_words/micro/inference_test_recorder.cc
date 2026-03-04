@@ -8,9 +8,7 @@ static const char* TAG = "InferenceTestRecorder";
 namespace micro_wake_word {
 
 InferenceTestRecorder::InferenceTestRecorder() {
-    // 预分配内存，避免运行时频繁分配
     pcm_data_.reserve(kMaxPCMSamples);
-    probabilities_.reserve(kMaxProbabilities);
     ESP_LOGI(TAG, "InferenceTestRecorder created (ring buffer: %u samples = %u ms, %u KB)", 
              (unsigned)kMaxPCMSamples, 
              (unsigned)kMaxDurationMs,
@@ -26,13 +24,8 @@ void InferenceTestRecorder::OnDetectionStart() {
     
     Reset();
     
-    // std::move 后 vector 容量为 0，必须重新预分配
-    // 否则录音过程中会反复 realloc（344KB），在实时音频路径上极易导致崩溃
     if (pcm_data_.capacity() < kMaxPCMSamples) {
         pcm_data_.reserve(kMaxPCMSamples);
-    }
-    if (probabilities_.capacity() < kMaxProbabilities) {
-        probabilities_.reserve(kMaxProbabilities);
     }
     
     recording_ = true;
@@ -52,21 +45,22 @@ InferenceTestRecorder::UploadPacket InferenceTestRecorder::OnDetectionEnd(
     uint32_t duration_ms = end_time_ms - start_time_ms_;
     
     uint32_t pcm_count = (uint32_t)pcm_data_.size();
-    uint32_t prob_count = (uint32_t)probabilities_.size();
     uint32_t audio_ms = pcm_count * 1000 / kSampleRate;
     
     ESP_LOGI(TAG, "📹 Recording ended:");
     ESP_LOGI(TAG, "   - Duration: %lu ms", (unsigned long)duration_ms);
     ESP_LOGI(TAG, "   - PCM samples: %lu (%lu ms audio)", 
              (unsigned long)pcm_count, (unsigned long)audio_ms);
-    ESP_LOGI(TAG, "   - Probabilities: %lu inference results", (unsigned long)prob_count);
+    for (const auto& kv : model_probabilities_) {
+        ESP_LOGI(TAG, "   - Model '%s': %lu inference results", 
+                 kv.first.c_str(), (unsigned long)kv.second.size());
+    }
     ESP_LOGI(TAG, "   - Wake word: %s", wake_word.c_str());
     ESP_LOGI(TAG, "   - Final probability: %.3f", probability);
     
-    // 打包数据
     UploadPacket packet;
     packet.pcm_data = std::move(pcm_data_);
-    packet.probabilities = std::move(probabilities_);
+    packet.model_probabilities = std::move(model_probabilities_);
     packet.wake_word = wake_word;
     packet.final_probability = probability;
     packet.duration_ms = duration_ms;
@@ -81,8 +75,8 @@ void InferenceTestRecorder::OnDetectionCancelled() {
     std::lock_guard<std::mutex> lock(mutex_);
     
     if (recording_) {
-        ESP_LOGI(TAG, "📹 Recording cancelled (PCM: %lu samples, Prob: %lu values)",
-                 (unsigned long)pcm_data_.size(), (unsigned long)probabilities_.size());
+        ESP_LOGI(TAG, "📹 Recording cancelled (PCM: %lu samples, Models: %lu)",
+                 (unsigned long)pcm_data_.size(), (unsigned long)model_probabilities_.size());
     }
     
     recording_ = false;
@@ -107,18 +101,18 @@ void InferenceTestRecorder::RecordPCM(const int16_t* data, size_t samples) {
     }
 }
 
-void InferenceTestRecorder::RecordProbability(uint8_t raw_probability) {
+void InferenceTestRecorder::RecordProbability(const std::string& model_name, uint8_t raw_probability) {
     std::lock_guard<std::mutex> lock(mutex_);
     
     if (!recording_) {
         return;
     }
     
-    // 使用环形缓冲策略：如果超出最大容量，删除最旧的数据
-    probabilities_.push_back(raw_probability);
+    auto& probs = model_probabilities_[model_name];
+    probs.push_back(raw_probability);
     
-    if (probabilities_.size() > kMaxProbabilities) {
-        probabilities_.erase(probabilities_.begin());
+    if (probs.size() > kMaxProbabilities) {
+        probs.erase(probs.begin());
     }
 }
 
@@ -129,12 +123,16 @@ size_t InferenceTestRecorder::GetPCMSampleCount() const {
 
 size_t InferenceTestRecorder::GetProbabilityCount() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return probabilities_.size();
+    size_t total = 0;
+    for (const auto& kv : model_probabilities_) {
+        total += kv.second.size();
+    }
+    return total;
 }
 
 void InferenceTestRecorder::Reset() {
     pcm_data_.clear();
-    probabilities_.clear();
+    model_probabilities_.clear();
     start_time_ms_ = 0;
 }
 

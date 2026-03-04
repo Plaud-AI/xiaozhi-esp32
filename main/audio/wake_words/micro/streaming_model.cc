@@ -131,7 +131,8 @@ float StreamingModel::get_sliding_window_average() const {
 }
 
 bool StreamingModel::perform_streaming_inference(const int8_t features[PREPROCESSOR_FEATURE_SIZE],
-                                                 InferenceTestRecorder* recorder) {
+                                                 InferenceTestRecorder* recorder,
+                                                 const std::string& model_name) {
   if (this->interpreter_ != nullptr) {
     TfLiteTensor *input = this->interpreter_->input(0);
     
@@ -211,9 +212,8 @@ bool StreamingModel::perform_streaming_inference(const int8_t features[PREPROCES
                  (unsigned int)invoke_count, raw_output, raw_output / 255.0f);
       }
 
-      // 【测试模式】记录原始推理概率（滑动窗口平均前）
-      if (recorder) {
-        recorder->RecordProbability(raw_output);
+      if (recorder && !model_name.empty()) {
+        recorder->RecordProbability(model_name, raw_output);
       }
 
       ++this->last_n_index_;

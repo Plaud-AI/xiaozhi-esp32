@@ -1,6 +1,7 @@
 #pragma once
 
 #include <vector>
+#include <map>
 #include <cstdint>
 #include <string>
 #include <mutex>
@@ -24,7 +25,7 @@ public:
      */
     struct UploadPacket {
         std::vector<int16_t> pcm_data;      // PCM 音频数据
-        std::vector<uint8_t> probabilities;  // 原始概率序列 (0-255)
+        std::map<std::string, std::vector<uint8_t>> model_probabilities;  // 每个模型的概率序列 (model_name -> probabilities)
         std::string wake_word;               // 检测到的唤醒词
         float final_probability;             // 最终检测概率（滑动窗口平均）
         uint32_t duration_ms;                // 检测时长
@@ -71,9 +72,10 @@ public:
     /**
      * @brief 记录单次推理概率
      * 在 StreamingModel::perform_streaming_inference() 中调用
+     * @param model_name 模型名称（用于区分不同模型的概率数据）
      * @param raw_probability 模型原始输出 (0-255, 滑动窗口平均前)
      */
-    void RecordProbability(uint8_t raw_probability);
+    void RecordProbability(const std::string& model_name, uint8_t raw_probability);
 
     //========== 状态查询 ==========//
     
@@ -95,8 +97,8 @@ private:
     // PCM 数据缓冲
     std::vector<int16_t> pcm_data_;
     
-    // 概率数据缓冲
-    std::vector<uint8_t> probabilities_;
+    // 每个模型的概率数据缓冲
+    std::map<std::string, std::vector<uint8_t>> model_probabilities_;
     
     mutable std::mutex mutex_;
     

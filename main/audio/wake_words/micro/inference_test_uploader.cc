@@ -104,18 +104,17 @@ bool InferenceTestUploader::Submit(InferenceTestRecorder::UploadPacket&& packet)
         return false;
     }
     
-    // 非阻塞发送
     if (xQueueSend(upload_queue_, &heap_packet, 0) != pdTRUE) {
-        ESP_LOGW(TAG, "Upload queue full, dropping packet (PCM: %lu, Prob: %lu)",
+        ESP_LOGW(TAG, "Upload queue full, dropping packet (PCM: %lu, Models: %lu)",
                  (unsigned long)heap_packet->pcm_data.size(), 
-                 (unsigned long)heap_packet->probabilities.size());
+                 (unsigned long)heap_packet->model_probabilities.size());
         delete heap_packet;
         return false;
     }
     
-    ESP_LOGI(TAG, "📤 Packet submitted (PCM: %lu samples, Prob: %lu values)",
+    ESP_LOGI(TAG, "📤 Packet submitted (PCM: %lu samples, Models: %lu)",
              (unsigned long)heap_packet->pcm_data.size(), 
-             (unsigned long)heap_packet->probabilities.size());
+             (unsigned long)heap_packet->model_probabilities.size());
     return true;
 }
 
@@ -138,14 +137,12 @@ void InferenceTestUploader::UploadTask() {
                 break;
             }
             
-            // 计算音频时长和数据量
             uint32_t pcm_samples = (uint32_t)packet->pcm_data.size();
-            uint32_t prob_count = (uint32_t)packet->probabilities.size();
-            uint32_t audio_duration_ms = pcm_samples * 1000 / 16000;  // 16kHz
+            uint32_t audio_duration_ms = pcm_samples * 1000 / 16000;
             uint32_t pcm_bytes = pcm_samples * sizeof(int16_t);
             uint32_t pcm_kb = pcm_bytes / 1024;
+            size_t num_models = packet->model_probabilities.size();
             
-            // 上传开始总结
             ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════╗");
             ESP_LOGI(TAG, "║  📤 Inference Test Upload Started                        ║");
             ESP_LOGI(TAG, "╠══════════════════════════════════════════════════════════╣");
@@ -155,67 +152,68 @@ void InferenceTestUploader::UploadTask() {
             ESP_LOGI(TAG, "║  Audio Duration: %-38lu ms ║", (unsigned long)audio_duration_ms);
             ESP_LOGI(TAG, "║  PCM Data: %lu samples (%lu KB)                          ║", 
                      (unsigned long)pcm_samples, (unsigned long)pcm_kb);
-            ESP_LOGI(TAG, "║  Inference Count: %-37lu ║", (unsigned long)prob_count);
+            ESP_LOGI(TAG, "║  Models: %-46lu ║", (unsigned long)num_models);
+            for (const auto& kv : packet->model_probabilities) {
+                ESP_LOGI(TAG, "║    '%s': %lu inferences                                ║",
+                         kv.first.c_str(), (unsigned long)kv.second.size());
+            }
             ESP_LOGI(TAG, "║  Server: %-46s ║", server_url_.c_str());
             ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════╝");
             
             bool pcm_success = true;
-            bool prob_success = true;
             bool pcm_saved = false;
-            bool prob_saved = false;
+            bool all_prob_success = true;
+            bool all_prob_saved = true;
             
-            // 上传 PCM 数据
+            // 上传 PCM 数据（所有模型共享）
             if (!packet->pcm_data.empty()) {
-                ESP_LOGI(TAG, "📤 [1/4] Uploading PCM data (%lu KB)...", (unsigned long)pcm_kb);
+                ESP_LOGI(TAG, "📤 Uploading PCM data (%lu KB)...", (unsigned long)pcm_kb);
                 pcm_success = UploadPCM(packet->pcm_data);
                 if (pcm_success) {
-                    ESP_LOGI(TAG, "✅ [1/4] PCM upload success");
-                    // 调用 save/bytes 保存到服务器文件
-                    ESP_LOGI(TAG, "💾 [2/4] Saving PCM to file on server...");
+                    ESP_LOGI(TAG, "✅ PCM upload success");
                     pcm_saved = SaveBytes();
                     if (!pcm_saved) {
-                        ESP_LOGW(TAG, "⚠️ [2/4] PCM save failed (upload was OK)");
+                        ESP_LOGW(TAG, "⚠️ PCM save failed (upload was OK)");
                     }
                 } else {
-                    ESP_LOGE(TAG, "❌ [1/4] PCM upload failed");
+                    ESP_LOGE(TAG, "❌ PCM upload failed");
                 }
             }
             
-            // 上传概率数据
-            if (!packet->probabilities.empty()) {
-                ESP_LOGI(TAG, "📤 [3/4] Uploading probabilities (%lu values)...", 
-                         (unsigned long)prob_count);
-                prob_success = UploadProbabilities(packet->probabilities);
-                if (prob_success) {
-                    ESP_LOGI(TAG, "✅ [3/4] Probabilities upload success");
-                    // 调用 save/text 保存到服务器文件
-                    ESP_LOGI(TAG, "💾 [4/4] Saving probabilities to file on server...");
-                    prob_saved = SaveText();
-                    if (!prob_saved) {
-                        ESP_LOGW(TAG, "⚠️ [4/4] Probabilities save failed (upload was OK)");
+            // 逐个模型上传概率数据
+            for (const auto& kv : packet->model_probabilities) {
+                const std::string& model_name = kv.first;
+                const std::vector<uint8_t>& probs = kv.second;
+                
+                if (probs.empty()) continue;
+                
+                ESP_LOGI(TAG, "📤 Uploading probabilities for '%s' (%lu values)...", 
+                         model_name.c_str(), (unsigned long)probs.size());
+                bool uploaded = UploadProbabilities(probs, model_name);
+                if (uploaded) {
+                    ESP_LOGI(TAG, "✅ '%s' probabilities uploaded", model_name.c_str());
+                    bool saved = SaveText(model_name);
+                    if (!saved) {
+                        ESP_LOGW(TAG, "⚠️ '%s' probabilities save failed", model_name.c_str());
+                        all_prob_saved = false;
                     }
                 } else {
-                    ESP_LOGE(TAG, "❌ [3/4] Probabilities upload failed");
+                    ESP_LOGE(TAG, "❌ '%s' probabilities upload failed", model_name.c_str());
+                    all_prob_success = false;
                 }
             }
             
-            // 上传完成总结
-            bool all_success = pcm_success && prob_success && pcm_saved && prob_saved;
+            bool all_success = pcm_success && all_prob_success && pcm_saved && all_prob_saved;
             ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════╗");
             if (all_success) {
                 ESP_LOGI(TAG, "║  ✅ Upload & Save Complete - SUCCESS                     ║");
-            } else if (pcm_success && prob_success) {
-                ESP_LOGW(TAG, "║  ⚠️  Upload OK, Save Partial                             ║");
             } else {
-                ESP_LOGE(TAG, "║  ❌ Upload Complete - FAILED                             ║");
+                ESP_LOGW(TAG, "║  ⚠️  Upload Complete - Partial failures                  ║");
             }
-            ESP_LOGI(TAG, "╠══════════════════════════════════════════════════════════╣");
-            ESP_LOGI(TAG, "║  PCM Upload:    %-39s ║", pcm_success ? "✅ SUCCESS" : "❌ FAILED");
-            ESP_LOGI(TAG, "║  PCM Save:      %-39s ║", pcm_saved ? "✅ SAVED" : "❌ NOT SAVED");
-            ESP_LOGI(TAG, "║  Prob Upload:   %-39s ║", prob_success ? "✅ SUCCESS" : "❌ FAILED");
-            ESP_LOGI(TAG, "║  Prob Save:     %-39s ║", prob_saved ? "✅ SAVED" : "❌ NOT SAVED");
-            ESP_LOGI(TAG, "║  Total Data:    %lu KB + %lu values                       ║", 
-                     (unsigned long)pcm_kb, (unsigned long)prob_count);
+            ESP_LOGI(TAG, "║  PCM:  %-48s ║", pcm_success && pcm_saved ? "✅ OK" : "❌ FAILED");
+            for (const auto& kv : packet->model_probabilities) {
+                ESP_LOGI(TAG, "║  Prob [%-10s]: uploaded                               ║", kv.first.c_str());
+            }
             ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════╝");
             
             // 释放数据包
@@ -274,10 +272,13 @@ bool InferenceTestUploader::UploadPCM(const std::vector<int16_t>& pcm_data) {
     return true;
 }
 
-bool InferenceTestUploader::UploadProbabilities(const std::vector<uint8_t>& probabilities) {
+bool InferenceTestUploader::UploadProbabilities(const std::vector<uint8_t>& probabilities,
+                                                const std::string& model_name) {
     std::string url = server_url_ + "/upload/text";
+    if (!model_name.empty()) {
+        url += "?model=" + model_name;
+    }
     
-    // 构造文本：逗号分隔的概率值（转换为 0.0-1.0 的浮点数）
     std::ostringstream oss;
     oss << std::fixed << std::setprecision(4);
     for (size_t i = 0; i < probabilities.size(); ++i) {
@@ -288,10 +289,9 @@ bool InferenceTestUploader::UploadProbabilities(const std::vector<uint8_t>& prob
     }
     std::string text = oss.str();
     
-    // 打印概率序列摘要
-    ESP_LOGI(TAG, "📊 Probability sequence (%lu values):", (unsigned long)probabilities.size());
+    ESP_LOGI(TAG, "📊 [%s] Probability sequence (%lu values):", 
+             model_name.c_str(), (unsigned long)probabilities.size());
     
-    // 找出非零概率及其位置
     ESP_LOGI(TAG, "   Non-zero probabilities:");
     int non_zero_count = 0;
     for (size_t i = 0; i < probabilities.size(); ++i) {
@@ -309,8 +309,6 @@ bool InferenceTestUploader::UploadProbabilities(const std::vector<uint8_t>& prob
         ESP_LOGI(TAG, "   (all zeros)");
     }
     
-    // 打印最后 20 个值（通常包含唤醒词检测的关键部分）
-    ESP_LOGI(TAG, "   Last 20 probabilities:");
     size_t start = probabilities.size() > 20 ? probabilities.size() - 20 : 0;
     std::ostringstream last_oss;
     last_oss << std::fixed << std::setprecision(3);
@@ -318,7 +316,7 @@ bool InferenceTestUploader::UploadProbabilities(const std::vector<uint8_t>& prob
         if (i > start) last_oss << ", ";
         last_oss << (static_cast<float>(probabilities[i]) / 255.0f);
     }
-    ESP_LOGI(TAG, "   %s", last_oss.str().c_str());
+    ESP_LOGI(TAG, "   Last 20: %s", last_oss.str().c_str());
     
     ESP_LOGD(TAG, "POST %s (%lu chars)", url.c_str(), (unsigned long)text.length());
     
@@ -396,8 +394,11 @@ bool InferenceTestUploader::SaveBytes() {
     return true;
 }
 
-bool InferenceTestUploader::SaveText() {
+bool InferenceTestUploader::SaveText(const std::string& model_name) {
     std::string url = server_url_ + "/save/text";
+    if (!model_name.empty()) {
+        url += "?model=" + model_name;
+    }
     
     ESP_LOGI(TAG, "💾 Saving text on server: %s", url.c_str());
     

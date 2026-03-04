@@ -27,10 +27,12 @@ class StreamingModel {
    * @brief 执行流式推理
    * @param features 输入特征数组 (40-dim int8)
    * @param recorder 可选的测试记录器，用于记录原始推理概率
+   * @param model_name 模型名称，用于在 recorder 中区分不同模型的数据
    * @return 成功返回 true
    */
   bool perform_streaming_inference(const int8_t features[PREPROCESSOR_FEATURE_SIZE],
-                                   InferenceTestRecorder* recorder = nullptr);
+                                   InferenceTestRecorder* recorder = nullptr,
+                                   const std::string& model_name = "");
 
   /// @brief Sets all recent_streaming_probabilities to 0
   void reset_probabilities();
