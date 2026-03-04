@@ -796,7 +796,7 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
         float threshold_hey_plaud = 0.90;  // Hey Plaud 阈值（测试中）
         size_t sliding_window = 5;  // 官方推荐滑动窗口
         size_t tensor_arena_okay_nabu = 26080;  // Okay Nabu 的 tensor arena
-        size_t tensor_arena_hey_plaud = 26080;  // Hey Plaud 的 tensor arena（初始估计，可能需要调整）
+        size_t tensor_arena_hey_plaud = 32000;  // Hey Plaud V4 需要 ~28028 bytes，留足余量
         
         ESP_LOGI(TAG, "🎯 Loading Multiple Wake Word Models:");
         ESP_LOGI(TAG, "   - Sample Rate: 24kHz (ES7210 原生)");

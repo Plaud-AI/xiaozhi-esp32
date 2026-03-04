@@ -70,6 +70,7 @@ bool StreamingModel::load_model(tflite::MicroMutableOpResolver<20> &op_resolver)
         this->tensor_arena_size_, this->mrv_);
     if (this->interpreter_->AllocateTensors() != kTfLiteOk) {
       ESP_LOGE(TAG, "Failed to allocate tensors for the streaming model");
+      this->interpreter_.reset();
       return false;
     }
 
