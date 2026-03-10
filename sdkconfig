@@ -2918,6 +2918,12 @@ CONFIG_CODEC_TAS5805M_SUPPORT=y
 # end of Audio Codec Device Configuration
 
 #
+# ESP IO Expander
+#
+# CONFIG_IO_EXPANDER_ENABLE_GPIO_API_WRAPPER is not set
+# end of ESP IO Expander
+
+#
 # JPEG Decoder
 #
 CONFIG_JD_USE_ROM=y
