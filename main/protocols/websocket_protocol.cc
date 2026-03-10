@@ -1,8 +1,6 @@
 #include "websocket_protocol.h"
-#include "board.h"
-#include "system_info.h"
+#include "websocket_channel.h"
 #include "application.h"
-#include "settings.h"
 
 #include <cstring>
 #include <cJSON.h>
@@ -13,11 +11,6 @@
 
 #define TAG "WS"
 
-// 官方 OTA 服务器域名
-#define OFFICIAL_OTA_DOMAIN "api.tenclass.net"
-#define OFFICIAL_OTA_DOMAIN_2 "2662r3426b.vicp.fun"
-#define OFFICIAL_OTA_IP "44.228.155.146"
-
 WebsocketProtocol::WebsocketProtocol() {
     event_group_handle_ = xEventGroupCreate();
 }
@@ -27,12 +20,12 @@ WebsocketProtocol::~WebsocketProtocol() {
 }
 
 bool WebsocketProtocol::Start() {
-    // Only connect to server when audio channel is needed
+    // Only connect to server when audio channel is needed.
     return true;
 }
 
 bool WebsocketProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
-    if (websocket_ == nullptr || !websocket_->IsConnected()) {
+    if (channel_ == nullptr || !channel_->IsConnected()) {
         return false;
     }
 
@@ -40,35 +33,33 @@ bool WebsocketProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
         std::string serialized;
         serialized.resize(sizeof(BinaryProtocol2) + packet->payload.size());
         auto bp2 = (BinaryProtocol2*)serialized.data();
-        bp2->version = htons(version_);
-        bp2->type = 0;
-        bp2->reserved = 0;
-        bp2->timestamp = htonl(packet->timestamp);
+        bp2->version      = htons(version_);
+        bp2->type         = 0;
+        bp2->reserved     = 0;
+        bp2->timestamp    = htonl(packet->timestamp);
         bp2->payload_size = htonl(packet->payload.size());
         memcpy(bp2->payload, packet->payload.data(), packet->payload.size());
-
-        return websocket_->Send(serialized.data(), serialized.size(), true);
+        return channel_->SendBinary(serialized.data(), serialized.size());
     } else if (version_ == 3) {
         std::string serialized;
         serialized.resize(sizeof(BinaryProtocol3) + packet->payload.size());
         auto bp3 = (BinaryProtocol3*)serialized.data();
-        bp3->type = 0;
-        bp3->reserved = 0;
+        bp3->type         = 0;
+        bp3->reserved     = 0;
         bp3->payload_size = htons(packet->payload.size());
         memcpy(bp3->payload, packet->payload.data(), packet->payload.size());
-
-        return websocket_->Send(serialized.data(), serialized.size(), true);
+        return channel_->SendBinary(serialized.data(), serialized.size());
     } else {
-        return websocket_->Send(packet->payload.data(), packet->payload.size(), true);
+        return channel_->SendBinary(packet->payload.data(), packet->payload.size());
     }
 }
 
 bool WebsocketProtocol::SendText(const std::string& text) {
-    if (websocket_ == nullptr || !websocket_->IsConnected()) {
+    if (channel_ == nullptr || !channel_->IsConnected()) {
         return false;
     }
 
-    if (!websocket_->Send(text)) {
+    if (!channel_->SendText(text)) {
         ESP_LOGE(TAG, "Failed to send text: %s", text.c_str());
         SetError(Lang::Strings::SERVER_ERROR);
         return false;
@@ -78,190 +69,118 @@ bool WebsocketProtocol::SendText(const std::string& text) {
 }
 
 bool WebsocketProtocol::IsAudioChannelOpened() const {
-    return websocket_ != nullptr && websocket_->IsConnected() && !error_occurred_ && !IsTimeout();
+    return channel_ != nullptr && channel_->IsConnected() && !error_occurred_ && !IsTimeout();
 }
 
 void WebsocketProtocol::CloseAudioChannel() {
-    websocket_.reset();
-}
-
-bool WebsocketProtocol::IsOfficialServer(const std::string& ota_url) {
-    // 判断是否是官方服务器：
-    // 1. OTA URL 包含官方域名 api.tenclass.net
-    // 2. 或者 OTA URL 包含官方域名 2662r3426b.vicp.fun
-    // 3. 或者 OTA URL 包含官方 IP 44.228.155.146
-    // 4. 或者使用默认的官方 OTA 配置
-    return ota_url.find(OFFICIAL_OTA_DOMAIN) != std::string::npos ||
-           ota_url.find(OFFICIAL_OTA_DOMAIN_2) != std::string::npos ||
-           ota_url.find(OFFICIAL_OTA_IP) != std::string::npos;
+    channel_.reset();
 }
 
 bool WebsocketProtocol::OpenAudioChannel() {
-    Settings settings("websocket", false);
-    std::string url = settings.GetString("url");
-    std::string token = settings.GetString("token");
-    int version = settings.GetInt("version");
-    if (version != 0) {
-        version_ = version;
-    }
-
-    // 如果 NVS 中没有 WebSocket URL，报错并返回失败
-    if (url.empty()) {
-        ESP_LOGE(TAG, "WebSocket URL not configured in NVS, please configure OTA server first");
-        return false;
-    }
-    
-    current_url_ = url;
-
-    // 读取 OTA URL 来判断是否是官方服务器
-    // 先尝试从 "system" namespace 读取，再尝试从 "wifi" namespace 读取（兼容原项目）
-    std::string ota_url;
-    Settings system_settings("system", false);
-    ota_url = system_settings.GetString("ota_url", "");
-    if (ota_url.empty()) {
-        Settings wifi_settings("wifi", false);
-        ota_url = wifi_settings.GetString("ota_url", CONFIG_OTA_URL);
-    }
-    is_official_server_ = IsOfficialServer(ota_url);
-
-    ESP_LOGI(TAG, "WebSocket configuration - URL: %s, Version: %d, Official: %s", 
-             url.c_str(), version_, is_official_server_ ? "Yes" : "No");
-    
     error_occurred_ = false;
 
-    auto network = Board::GetInstance().GetNetwork();
-    websocket_ = network->CreateWebSocket(1);
-    if (websocket_ == nullptr) {
-        ESP_LOGE(TAG, "Failed to create websocket");
-        return false;
-    }
+    // Create and connect the WebSocket transport channel.
+    auto ws_channel = std::make_unique<WebsocketChannel>();
 
-    if (!token.empty()) {
-        // If token not has a space, add "Bearer " prefix
-        if (token.find(" ") == std::string::npos) {
-            token = "Bearer " + token;
+    ws_channel->OnDisconnected([this]() {
+        ESP_LOGI(TAG, "Websocket disconnected");
+        if (on_audio_channel_closed_ != nullptr) {
+            on_audio_channel_closed_();
         }
-        websocket_->SetHeader("Authorization", token.c_str());
-    }
-    websocket_->SetHeader("Protocol-Version", std::to_string(version_).c_str());
-    
-    // 根据服务器类型设置不同的 Header
-    // 官方服务器：使用 MAC 地址作为 Device-Id，DeviceId 作为 Client-Id（兼容原项目）
-    // 非官方服务器：都使用 DeviceId（当前项目逻辑）
-    if (is_official_server_) {
-        websocket_->SetHeader("Device-Id", SystemInfo::GetMacAddress().c_str());
-        websocket_->SetHeader("Client-Id", Board::GetInstance().GetUuid().c_str());
-        ESP_LOGI(TAG, "Using official server headers: Device-Id=MAC, Client-Id=UUID");
-    } else {
-        websocket_->SetHeader("Device-Id", Board::GetInstance().GetDeviceId().c_str());
-        websocket_->SetHeader("Client-Id", Board::GetInstance().GetDeviceId().c_str());
-        ESP_LOGI(TAG, "Using custom server headers: Device-Id=DeviceId, Client-Id=DeviceId");
-    }
+    });
 
-    websocket_->OnData([this](const char* data, size_t len, bool binary) {
+    ws_channel->OnData([this](const char* data, size_t len, bool binary) {
         if (binary) {
             static int audio_packet_count = 0;
             static int64_t first_packet_time = 0;
             audio_packet_count++;
-            
+
             int64_t now = esp_timer_get_time() / 1000; // ms
             if (audio_packet_count == 1) {
                 first_packet_time = now;
-                ESP_LOGI(TAG, "🎵 First audio packet: %u bytes, type=0x%02x", (unsigned int)len, (uint8_t)data[0]);
+                ESP_LOGI(TAG, "First audio packet: %u bytes, type=0x%02x",
+                         (unsigned int)len, (uint8_t)data[0]);
             }
-            
-            // 每 10 个包打印一次日志
             if (audio_packet_count % 10 == 1) {
                 int64_t elapsed = now - first_packet_time;
-                ESP_LOGI(TAG, "🎵 Audio #%d: %u bytes, elapsed=%ldms, type=0x%02x, official=%d", 
-                         audio_packet_count, (unsigned int)len, (long)elapsed, (uint8_t)data[0], is_official_server_);
+                ESP_LOGI(TAG, "Audio #%d: %u bytes, elapsed=%ldms, type=0x%02x, official=%d",
+                         audio_packet_count, (unsigned int)len, (long)elapsed,
+                         (uint8_t)data[0], is_official_server_);
             }
+
             if (on_incoming_audio_ != nullptr) {
                 if (version_ == 2) {
                     BinaryProtocol2* bp2 = (BinaryProtocol2*)data;
-                    bp2->version = ntohs(bp2->version);
-                    bp2->type = ntohs(bp2->type);
-                    bp2->timestamp = ntohl(bp2->timestamp);
+                    bp2->version      = ntohs(bp2->version);
+                    bp2->type         = ntohs(bp2->type);
+                    bp2->timestamp    = ntohl(bp2->timestamp);
                     bp2->payload_size = ntohl(bp2->payload_size);
                     auto payload = (uint8_t*)bp2->payload;
                     on_incoming_audio_(std::make_unique<AudioStreamPacket>(AudioStreamPacket{
-                        .sample_rate = server_sample_rate_,
+                        .sample_rate    = server_sample_rate_,
                         .frame_duration = server_frame_duration_,
-                        .timestamp = bp2->timestamp,
-                        .payload = std::vector<uint8_t>(payload, payload + bp2->payload_size)
+                        .timestamp      = bp2->timestamp,
+                        .payload        = std::vector<uint8_t>(payload, payload + bp2->payload_size)
                     }));
                 } else if (version_ == 3) {
                     BinaryProtocol3* bp3 = (BinaryProtocol3*)data;
-                    bp3->type = bp3->type;
                     bp3->payload_size = ntohs(bp3->payload_size);
                     auto payload = (uint8_t*)bp3->payload;
                     on_incoming_audio_(std::make_unique<AudioStreamPacket>(AudioStreamPacket{
-                        .sample_rate = server_sample_rate_,
+                        .sample_rate    = server_sample_rate_,
                         .frame_duration = server_frame_duration_,
-                        .timestamp = 0,
-                        .payload = std::vector<uint8_t>(payload, payload + bp3->payload_size)
+                        .timestamp      = 0,
+                        .payload        = std::vector<uint8_t>(payload, payload + bp3->payload_size)
                     }));
                 } else {
-                    // 默认版本：根据服务器类型使用不同的解析逻辑
                     if (is_official_server_) {
-                        // 官方服务器：直接使用原始数据（兼容原项目）
                         on_incoming_audio_(std::make_unique<AudioStreamPacket>(AudioStreamPacket{
-                            .sample_rate = server_sample_rate_,
+                            .sample_rate    = server_sample_rate_,
                             .frame_duration = server_frame_duration_,
-                            .timestamp = 0,
-                            .payload = std::vector<uint8_t>((uint8_t*)data, (uint8_t*)data + len)
+                            .timestamp      = 0,
+                            .payload        = std::vector<uint8_t>((uint8_t*)data, (uint8_t*)data + len)
                         }));
                     } else {
-                        // 非官方服务器：解析服务端新增的 16 字节头部
-                        // 头部格式：type(1) + message_tag(1) + payload_size(4, big-endian) + reserved(10) = 16 bytes
                         if (len >= sizeof(AudioPacketHeader)) {
                             const AudioPacketHeader* header = (const AudioPacketHeader*)data;
                             if (header->type == 0x01) {
-                                // 这是带有 16 字节头部的音频包
-                                // payload_size 是大端序，需要转换
                                 uint32_t payload_size = ntohl(header->payload_size);
-                                
-                                // 验证数据包大小
                                 if (len >= sizeof(AudioPacketHeader) + payload_size) {
                                     auto payload = (uint8_t*)header->payload;
                                     on_incoming_audio_(std::make_unique<AudioStreamPacket>(AudioStreamPacket{
-                                        .sample_rate = server_sample_rate_,
+                                        .sample_rate    = server_sample_rate_,
                                         .frame_duration = server_frame_duration_,
-                                        .timestamp = 0,
-                                        .payload = std::vector<uint8_t>(payload, payload + payload_size)
+                                        .timestamp      = 0,
+                                        .payload        = std::vector<uint8_t>(payload, payload + payload_size)
                                     }));
                                 } else {
-                                    ESP_LOGE(TAG, "Audio packet size mismatch: len=%u, header_size=%u, payload_size=%lu", 
+                                    ESP_LOGE(TAG, "Audio packet size mismatch: len=%u, header_size=%u, payload_size=%lu",
                                              (unsigned int)len, (unsigned int)sizeof(AudioPacketHeader), payload_size);
                                 }
                             } else {
-                                // 非音频消息类型，按原始数据处理
                                 on_incoming_audio_(std::make_unique<AudioStreamPacket>(AudioStreamPacket{
-                                    .sample_rate = server_sample_rate_,
+                                    .sample_rate    = server_sample_rate_,
                                     .frame_duration = server_frame_duration_,
-                                    .timestamp = 0,
-                                    .payload = std::vector<uint8_t>((uint8_t*)data, (uint8_t*)data + len)
+                                    .timestamp      = 0,
+                                    .payload        = std::vector<uint8_t>((uint8_t*)data, (uint8_t*)data + len)
                                 }));
                             }
                         } else {
-                            // 数据太短，按原始数据处理（向后兼容）
                             on_incoming_audio_(std::make_unique<AudioStreamPacket>(AudioStreamPacket{
-                                .sample_rate = server_sample_rate_,
+                                .sample_rate    = server_sample_rate_,
                                 .frame_duration = server_frame_duration_,
-                                .timestamp = 0,
-                                .payload = std::vector<uint8_t>((uint8_t*)data, (uint8_t*)data + len)
+                                .timestamp      = 0,
+                                .payload        = std::vector<uint8_t>((uint8_t*)data, (uint8_t*)data + len)
                             }));
                         }
                     }
                 }
             }
         } else {
-            // Parse JSON data
-            ESP_LOGI(TAG, "📩 Received JSON: %.*s", (len > 200 ? 200 : (int)len), data);
+            ESP_LOGI(TAG, "Received JSON: %.*s", (len > 200 ? 200 : (int)len), data);
             auto root = cJSON_Parse(data);
             auto type = cJSON_GetObjectItem(root, "type");
             if (cJSON_IsString(type)) {
-                ESP_LOGD(TAG, "   Message type: %s", type->valuestring);
                 if (strcmp(type->valuestring, "hello") == 0) {
                     ParseServerHello(root);
                 } else {
@@ -277,37 +196,26 @@ bool WebsocketProtocol::OpenAudioChannel() {
         last_incoming_time_ = std::chrono::steady_clock::now();
     });
 
-    websocket_->OnDisconnected([this]() {
-        ESP_LOGI(TAG, "Websocket disconnected");
-        if (on_audio_channel_closed_ != nullptr) {
-            on_audio_channel_closed_();
-        }
-    });
-
-    ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════════╗");
-    ESP_LOGI(TAG, "║   🔗 正在连接 WebSocket 服务器                                 ║");
-    ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════════╣");
-    ESP_LOGI(TAG, "║   URL: %s", url.c_str());
-    ESP_LOGI(TAG, "║   Protocol Version: %d", version_);
-    ESP_LOGI(TAG, "║   Token: %s", token.empty() ? "(无)" : "(已配置)");
-    ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════════╝");
-    
-    if (!websocket_->Connect(url.c_str())) {
-        ESP_LOGE(TAG, "❌ Failed to connect to websocket server: %s", url.c_str());
+    if (!ws_channel->Connect()) {
         SetError(Lang::Strings::SERVER_NOT_CONNECTED);
         return false;
     }
-    
-    ESP_LOGI(TAG, "✅ WebSocket 连接成功: %s", url.c_str());
 
-    // Send hello message to describe the client
+    // Cache transport-level properties for use during audio serialization.
+    version_           = ws_channel->version();
+    is_official_server_ = ws_channel->is_official_server();
+
+    channel_ = std::move(ws_channel);
+
+    // Application-level handshake: send hello and wait for server hello.
     auto message = GetHelloMessage();
     if (!SendText(message)) {
         return false;
     }
 
-    // Wait for server hello
-    EventBits_t bits = xEventGroupWaitBits(event_group_handle_, WEBSOCKET_PROTOCOL_SERVER_HELLO_EVENT, pdTRUE, pdFALSE, pdMS_TO_TICKS(10000));
+    EventBits_t bits = xEventGroupWaitBits(event_group_handle_,
+                                           WEBSOCKET_PROTOCOL_SERVER_HELLO_EVENT,
+                                           pdTRUE, pdFALSE, pdMS_TO_TICKS(10000));
     if (!(bits & WEBSOCKET_PROTOCOL_SERVER_HELLO_EVENT)) {
         ESP_LOGE(TAG, "Failed to receive server hello");
         SetError(Lang::Strings::SERVER_TIMEOUT);
@@ -322,7 +230,6 @@ bool WebsocketProtocol::OpenAudioChannel() {
 }
 
 std::string WebsocketProtocol::GetHelloMessage() {
-    // keys: message type, version, audio_params (format, sample_rate, channels)
     cJSON* root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "type", "hello");
     cJSON_AddNumberToObject(root, "version", version_);
