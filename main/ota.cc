@@ -46,6 +46,26 @@ Ota::Ota() {
 Ota::~Ota() {
 }
 
+// 已下线的旧服务器地址列表，启动时自动迁移到新地址
+static const char* DEPRECATED_OTA_IPS[] = {
+    "34.221.190.98",
+    "44.228.155.146",
+    nullptr
+};
+
+static std::string MigrateDeprecatedUrl(const std::string& url, const char* nvs_namespace) {
+    for (int i = 0; DEPRECATED_OTA_IPS[i] != nullptr; i++) {
+        if (url.find(DEPRECATED_OTA_IPS[i]) != std::string::npos) {
+            ESP_LOGW(TAG, "OTA URL contains deprecated server '%s', migrating to new server", DEPRECATED_OTA_IPS[i]);
+            Settings s(nvs_namespace, true);
+            s.SetString("ota_url", CONFIG_OTA_URL);
+            ESP_LOGI(TAG, "NVS ota_url migrated to: %s", CONFIG_OTA_URL);
+            return CONFIG_OTA_URL;
+        }
+    }
+    return url;
+}
+
 std::string Ota::GetCheckVersionUrl() {
     // 优先读取 NVS 中的自定义 OTA URL
     // 读取顺序：1. system/ota_url  2. wifi/ota_url  3. CONFIG_OTA_URL
@@ -54,11 +74,17 @@ std::string Ota::GetCheckVersionUrl() {
     // 尝试从 "system" namespace 读取（BLE 配网设置的地址保存在这里）
     Settings system_settings("system", false);
     url = system_settings.GetString("ota_url", "");
+    if (!url.empty()) {
+        url = MigrateDeprecatedUrl(url, "system");
+    }
     
     if (url.empty()) {
         // 尝试从 "wifi" namespace 读取（兼容旧版本）
         Settings wifi_settings("wifi", false);
         url = wifi_settings.GetString("ota_url", "");
+        if (!url.empty()) {
+            url = MigrateDeprecatedUrl(url, "wifi");
+        }
     }
     
     if (url.empty()) {
