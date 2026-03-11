@@ -38,6 +38,9 @@ public:
     bool SendText(const std::string& text) override;
     bool SendBinary(const void* data, size_t len) override;
 
+    // Available after Connect() succeeds.
+    const std::string& channel() const { return channel_; }
+
 private:
     connection_id_t conn_id_   = CONNECTION_ID_INVALID;
     int             stream_id_ = -1;

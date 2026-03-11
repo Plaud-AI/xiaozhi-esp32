@@ -15,8 +15,9 @@
 cmake_minimum_required(VERSION 3.16)
 
 idf_component_register(
+    SRCS         "freertos_compat.c"
     INCLUDE_DIRS "include"
-    REQUIRES     lwip pthread
+    REQUIRES     lwip pthread freertos
 )
 
 set(AGORA_LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/libs")

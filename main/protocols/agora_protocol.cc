@@ -109,9 +109,10 @@ bool AgoraProtocol::OpenAudioChannel() {
         return false;
     }
 
-    // Use the Agora agent_id as the session identifier so that Protocol's
-    // default SendStartListening / SendWakeWordDetected etc. include it.
-    session_id_ = agora_ch->agent_id();
+    // session_id_ is not used in Agora's conversation model (the AI Agent
+    // manages the session server-side), but Protocol's default JSON helpers
+    // embed it; set it to the channel name as a stable identifier.
+    session_id_ = agora_ch->channel();
 
     channel_ = std::move(agora_ch);
 
