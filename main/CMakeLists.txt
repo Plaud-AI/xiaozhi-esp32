@@ -45,6 +45,8 @@ set(SOURCES "audio/audio_codec.cc"
             "protocols/mqtt_protocol.cc"
             "protocols/websocket_channel.cc"
             "protocols/websocket_protocol.cc"
+            "protocols/agora_channel.cc"
+            "protocols/agora_protocol.cc"
             "bluetooth_service.cc"
             "ble_wifi_provisioner.cc"
             "wake_word_manager.cc"
@@ -646,7 +648,7 @@ idf_component_register(SRCS ${SOURCES}
                     EMBED_FILES ${LANG_SOUNDS} ${COMMON_SOUNDS}
                     INCLUDE_DIRS ${INCLUDE_DIRS}
                     REQUIRES spi_flash esp_psram esp_app_format app_update efuse bootloader_support esp-opus-encoder nvs_flash esp-wifi-connect esp_micro_speech_features
-                    PRIV_REQUIRES bt esp-tflite-micro
+                    PRIV_REQUIRES bt esp-tflite-micro agora_iot_sdk esp_http_client mbedtls
                     WHOLE_ARCHIVE
                     )
 

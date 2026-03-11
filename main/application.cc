@@ -5,6 +5,7 @@
 #include "audio_codec.h"
 #include "mqtt_protocol.h"
 #include "websocket_protocol.h"
+#include "agora_protocol.h"
 #include "assets/lang_config.h"
 #include "mcp_server.h"
 #include "assets.h"
@@ -432,8 +433,11 @@ void Application::Start() {
     mcp_server.AddCommonTools();
     mcp_server.AddUserOnlyTools();
 
-    // WebSocket 优先于 MQTT（更轻量、低延迟）
-    if (ota.HasWebsocketConfig()) {
+    // Protocol priority: Agora (WebRTC) > WebSocket > MQTT > default WebSocket
+    if (ota.HasAgoraConfig()) {
+        ESP_LOGI(TAG, "Using Agora WebRTC protocol");
+        protocol_ = std::make_unique<AgoraProtocol>();
+    } else if (ota.HasWebsocketConfig()) {
         ESP_LOGI(TAG, "Using WebSocket protocol");
         protocol_ = std::make_unique<WebsocketProtocol>();
     } else if (ota.HasMqttConfig()) {

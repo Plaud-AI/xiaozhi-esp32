@@ -383,6 +383,33 @@ bool Ota::CheckVersion() {
         ESP_LOGW(TAG, "    如需使用 WebSocket，请确保服务器返回 websocket 字段");
     }
 
+    has_agora_config_ = false;
+    cJSON *agora = cJSON_GetObjectItem(root, "agora");
+    if (cJSON_IsObject(agora)) {
+        Settings settings("agora", true);
+        cJSON *item = NULL;
+        cJSON_ArrayForEach(item, agora) {
+            if (cJSON_IsString(item)) {
+                if (settings.GetString(item->string) != item->valuestring) {
+                    settings.SetString(item->string, item->valuestring);
+                }
+            } else if (cJSON_IsNumber(item)) {
+                if (settings.GetInt(item->string) != item->valueint) {
+                    settings.SetInt(item->string, item->valueint);
+                }
+            }
+        }
+        has_agora_config_ = true;
+        cJSON *agora_app_id  = cJSON_GetObjectItem(agora, "app_id");
+        cJSON *agora_channel = cJSON_GetObjectItem(agora, "channel");
+        ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════════╗");
+        ESP_LOGI(TAG, "║   ✅ Agora (WebRTC) 配置已保存                                 ║");
+        ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════════╣");
+        if (cJSON_IsString(agora_app_id))  ESP_LOGI(TAG, "║   App ID: %s",  agora_app_id->valuestring);
+        if (cJSON_IsString(agora_channel)) ESP_LOGI(TAG, "║   Channel: %s", agora_channel->valuestring);
+        ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════════╝");
+    }
+
     has_server_time_ = false;
     cJSON *server_time = cJSON_GetObjectItem(root, "server_time");
     if (cJSON_IsObject(server_time)) {
