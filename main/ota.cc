@@ -402,11 +402,15 @@ bool Ota::CheckVersion() {
         has_agora_config_ = true;
         cJSON *agora_app_id  = cJSON_GetObjectItem(agora, "app_id");
         cJSON *agora_channel = cJSON_GetObjectItem(agora, "channel");
+        cJSON *agora_uid     = cJSON_GetObjectItem(agora, "uid");
+        cJSON *agora_token   = cJSON_GetObjectItem(agora, "token");
         ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════════╗");
         ESP_LOGI(TAG, "║   ✅ Agora (WebRTC) 配置已保存                                 ║");
         ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════════╣");
-        if (cJSON_IsString(agora_app_id))  ESP_LOGI(TAG, "║   App ID: %s",  agora_app_id->valuestring);
+        if (cJSON_IsString(agora_app_id))  ESP_LOGI(TAG, "║   App ID:  %s", agora_app_id->valuestring);
         if (cJSON_IsString(agora_channel)) ESP_LOGI(TAG, "║   Channel: %s", agora_channel->valuestring);
+        if (cJSON_IsNumber(agora_uid))     ESP_LOGI(TAG, "║   UID:     %d", agora_uid->valueint);
+        if (cJSON_IsString(agora_token))   ESP_LOGI(TAG, "║   Token:   %s", strlen(agora_token->valuestring) ? "(已配置)" : "(无，不鉴权)");
         ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════════╝");
     }
 
