@@ -18,6 +18,7 @@ idf_component_register(
     SRCS         "freertos_compat.c"
     INCLUDE_DIRS "include"
     REQUIRES     lwip pthread freertos
+    WHOLE_ARCHIVE
 )
 
 set(AGORA_LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/libs")
