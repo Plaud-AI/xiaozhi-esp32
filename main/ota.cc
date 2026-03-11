@@ -25,6 +25,7 @@
 #define OFFICIAL_OTA_DOMAIN "api.tenclass.net"
 #define OFFICIAL_OTA_DOMAIN_2 "2662r3426b.vicp.fun"
 #define OFFICIAL_OTA_IP "44.228.155.146"
+#define OFFICIAL_OTA_IP_2 "54.218.11.250"
 
 
 Ota::Ota() {
@@ -81,7 +82,8 @@ std::unique_ptr<Http> Ota::SetupHttp() {
     std::string ota_url = GetCheckVersionUrl();
     bool is_official_server = (ota_url.find(OFFICIAL_OTA_DOMAIN) != std::string::npos) ||
                               (ota_url.find(OFFICIAL_OTA_DOMAIN_2) != std::string::npos) ||
-                              (ota_url.find(OFFICIAL_OTA_IP) != std::string::npos);
+                              (ota_url.find(OFFICIAL_OTA_IP) != std::string::npos) ||
+                              (ota_url.find(OFFICIAL_OTA_IP_2) != std::string::npos);
     
     http->SetHeader("Activation-Version", has_serial_number_ ? "2" : "1");
     
@@ -129,7 +131,8 @@ bool Ota::CheckVersion() {
     // 判断是否是官方服务器（用于日志显示，支持多个官方域名）
     bool is_official_server = (url.find(OFFICIAL_OTA_DOMAIN) != std::string::npos) ||
                               (url.find(OFFICIAL_OTA_DOMAIN_2) != std::string::npos) ||
-                              (url.find(OFFICIAL_OTA_IP) != std::string::npos);
+                              (url.find(OFFICIAL_OTA_IP) != std::string::npos) ||
+                              (url.find(OFFICIAL_OTA_IP_2) != std::string::npos);
     std::string device_id_header = is_official_server ? SystemInfo::GetMacAddress() : board.GetDeviceId();
     std::string client_id_header = is_official_server ? board.GetUuid() : board.GetDeviceId();
 
