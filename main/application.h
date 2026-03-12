@@ -78,6 +78,7 @@ private:
     EventGroupHandle_t event_group_ = nullptr;
     esp_timer_handle_t clock_timer_handle_ = nullptr;
     esp_timer_handle_t enable_mic_timer_ = nullptr;
+    int mic_echo_wait_count_ = 0;  // counts 50ms ticks after IsIdle() for echo decay delay
     volatile DeviceState device_state_ = kDeviceStateUnknown;
     ListeningMode listening_mode_ = kListeningModeAutoStop;
     AecMode aec_mode_ = kAecOff;

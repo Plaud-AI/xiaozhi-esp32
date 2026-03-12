@@ -65,15 +65,25 @@ Application::Application() {
     esp_timer_create(&clock_timer_args, &clock_timer_handle_);
 
     // Timer used for Agora half-duplex: polls IsIdle() every 50 ms after
-    // tts:stop and enables the microphone only after the playback queue empties.
+    // tts:stop and enables the microphone only after the playback queue empties
+    // AND a short echo-decay wait has passed.
     esp_timer_create_args_t mic_timer_args = {
         .callback = [](void* arg) {
             Application* app = static_cast<Application*>(arg);
             if (app->audio_service_.IsIdle()) {
-                esp_timer_stop(app->enable_mic_timer_);
-                app->Schedule([app]() {
-                    app->EnableVoiceProcessingWhenIdle();
-                });
+                // Phase 2: count post-drain ticks for echo decay.
+                // 20 ticks × 50 ms = 1 second of room-reverb settling time.
+                if (++app->mic_echo_wait_count_ >= 20) {
+                    esp_timer_stop(app->enable_mic_timer_);
+                    app->mic_echo_wait_count_ = 0;
+                    app->Schedule([app]() {
+                        app->EnableVoiceProcessingWhenIdle();
+                    });
+                }
+                // Otherwise keep the timer running so the silence sender stays active.
+            } else {
+                // Audio still playing — reset the counter.
+                app->mic_echo_wait_count_ = 0;
             }
         },
         .arg = this,
@@ -841,6 +851,7 @@ void Application::SetDeviceState(DeviceState state) {
         case kDeviceStateIdle: {
             // Cancel any pending mic-enable timer.
             esp_timer_stop(enable_mic_timer_);
+            mic_echo_wait_count_ = 0;
 
             ESP_LOGI(TAG, "Entering IDLE state...");
             display->SetStatus(Lang::Strings::STANDBY);
@@ -898,22 +909,29 @@ void Application::SetDeviceState(DeviceState state) {
         case kDeviceStateListening:
             display->SetStatus(Lang::Strings::LISTENING);
 
-            // Make sure the audio processor is running
-            if (!audio_service_.IsAudioProcessorRunning()) {
+            // Trigger setup when:
+            // (a) AFE not yet running — first LISTENING after wake word (both modes), OR
+            // (b) returning from SPEAKING in realtime/AEC mode — AFE stays on the whole
+            //     time so IsAudioProcessorRunning() is always true, but we still need to
+            //     send listen:start and stop the silence sender.
+            if (!audio_service_.IsAudioProcessorRunning() ||
+                previous_state == kDeviceStateSpeaking) {
                 // Disable wake word to free MicroWakeWord memory
                 audio_service_.EnableWakeWordDetection(false);
-                
+
                 // Send the start listening command immediately so the server is ready.
                 protocol_->SendStartListening(listening_mode_);
-                
-                // Enable AFE — but defer until the TTS playback queue has drained to
-                // avoid sending speaker echo to the server (half-duplex protection).
+
+                // In half-duplex mode this defers until the TTS playback queue drains.
+                // In realtime mode the AFE is already running, so it just stops the
+                // silence sender (NotifyPlaybackComplete) at the right moment.
                 EnableVoiceProcessingWhenIdle();
             }
             break;
         case kDeviceStateSpeaking:
             // Cancel any pending mic-enable timer when we start speaking again.
             esp_timer_stop(enable_mic_timer_);
+            mic_echo_wait_count_ = 0;
 
             display->SetStatus(Lang::Strings::SPEAKING);
 
