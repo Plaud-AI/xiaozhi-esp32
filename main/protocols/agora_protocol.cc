@@ -3,6 +3,7 @@
 
 #include <cJSON.h>
 #include <esp_log.h>
+#include <opus_encoder.h>
 #include "assets/lang_config.h"
 
 #define TAG "AgoraProtocol"
@@ -13,6 +14,23 @@ static constexpr int kFrameDurationMs = 60;
 AgoraProtocol::AgoraProtocol() {
     server_sample_rate_    = kSampleRate;
     server_frame_duration_ = kFrameDurationMs;
+
+    // Pre-encode one frame of PCM silence into OPUS and cache it.
+    // This cached frame is sent repeatedly during TTS to keep the RTC
+    // audio stream alive without leaking microphone echo.
+    const int frame_samples = kSampleRate * kFrameDurationMs / 1000; // 960
+    OpusEncoderWrapper enc(kSampleRate, 1, kFrameDurationMs);
+    std::vector<int16_t> silence(frame_samples, 0);
+    enc.Encode(std::move(silence), opus_silence_frame_);
+    ESP_LOGI(TAG, "Cached OPUS silence frame: %u bytes", (unsigned)opus_silence_frame_.size());
+}
+
+AgoraProtocol::~AgoraProtocol() {
+    StopSilenceSender();
+    if (silence_timer_) {
+        xTimerDelete(silence_timer_, 0);
+        silence_timer_ = nullptr;
+    }
 }
 
 bool AgoraProtocol::Start() {
@@ -26,7 +44,46 @@ bool AgoraProtocol::IsAudioChannelOpened() const {
 }
 
 void AgoraProtocol::CloseAudioChannel() {
+    StopSilenceSender();
     channel_.reset();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TTS silence sender
+// ─────────────────────────────────────────────────────────────────────────────
+
+void AgoraProtocol::SilenceTimerCallback(TimerHandle_t timer) {
+    auto* self = static_cast<AgoraProtocol*>(pvTimerGetTimerID(timer));
+    if (!self || !self->tts_playing_ || !self->channel_ || !self->channel_->IsConnected()) {
+        return;
+    }
+    self->channel_->SendBinary(self->opus_silence_frame_.data(),
+                               self->opus_silence_frame_.size());
+}
+
+void AgoraProtocol::StartSilenceSender() {
+    if (tts_playing_) return;
+    tts_playing_ = true;
+
+    if (!silence_timer_) {
+        silence_timer_ = xTimerCreate("agora_sil", pdMS_TO_TICKS(kFrameDurationMs),
+                                      pdTRUE, this, SilenceTimerCallback);
+    }
+    if (silence_timer_) {
+        xTimerStart(silence_timer_, 0);
+        ESP_LOGI(TAG, "Silence sender started (TTS playing, %d ms interval)",
+                 kFrameDurationMs);
+    }
+}
+
+void AgoraProtocol::StopSilenceSender() {
+    if (!tts_playing_) return;
+    tts_playing_ = false;
+
+    if (silence_timer_) {
+        xTimerStop(silence_timer_, 0);
+    }
+    ESP_LOGI(TAG, "Silence sender stopped (TTS ended)");
 }
 
 bool AgoraProtocol::SendText(const std::string& text) {
@@ -49,6 +106,12 @@ bool AgoraProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
         ESP_LOGW(TAG, "SendAudio: channel not ready (ch=%p, connected=%d)",
                  channel_.get(), channel_ ? channel_->IsConnected() : 0);
         return false;
+    }
+
+    // During TTS the silence timer handles audio; drop real mic data
+    // to prevent echo from reaching the server.
+    if (tts_playing_) {
+        return true;
     }
 
     audio_packets_sent_++;
@@ -98,6 +161,20 @@ void AgoraProtocol::HandleIncomingData(const char* data, size_t len, bool binary
                     session_id_ = server_sid;
                 }
             }
+            // Detect tts:start / tts:stop to drive the silence sender.
+            auto* type_item = cJSON_GetObjectItem(root, "type");
+            if (type_item && cJSON_IsString(type_item) &&
+                strcmp(type_item->valuestring, "tts") == 0) {
+                auto* state_item = cJSON_GetObjectItem(root, "state");
+                if (state_item && cJSON_IsString(state_item)) {
+                    if (strcmp(state_item->valuestring, "start") == 0) {
+                        StartSilenceSender();
+                    } else if (strcmp(state_item->valuestring, "stop") == 0) {
+                        StopSilenceSender();
+                    }
+                }
+            }
+
             if (on_incoming_json_) {
                 on_incoming_json_(root);
             }
