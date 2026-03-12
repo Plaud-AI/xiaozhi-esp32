@@ -77,6 +77,7 @@ private:
     std::unique_ptr<Protocol> protocol_;
     EventGroupHandle_t event_group_ = nullptr;
     esp_timer_handle_t clock_timer_handle_ = nullptr;
+    esp_timer_handle_t enable_mic_timer_ = nullptr;
     volatile DeviceState device_state_ = kDeviceStateUnknown;
     ListeningMode listening_mode_ = kListeningModeAutoStop;
     AecMode aec_mode_ = kAecOff;
@@ -94,6 +95,9 @@ private:
     void CheckAssetsVersion();
     void ShowActivationCode(const std::string& code, const std::string& message);
     void SetListeningMode(ListeningMode mode);
+    // Delays enabling the microphone until the audio playback queue is empty.
+    // Used when switching from SPEAKING to LISTENING to prevent TTS echo.
+    void EnableVoiceProcessingWhenIdle();
 };
 
 

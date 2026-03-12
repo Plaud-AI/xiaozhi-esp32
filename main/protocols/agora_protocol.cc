@@ -86,6 +86,13 @@ void AgoraProtocol::StopSilenceSender() {
     ESP_LOGI(TAG, "Silence sender stopped (TTS ended)");
 }
 
+void AgoraProtocol::NotifyPlaybackComplete() {
+    if (!tts_stop_pending_) return;
+    tts_stop_pending_ = false;
+    ESP_LOGI(TAG, "Playback queue drained — stopping silence sender, mic echo guard lifted");
+    StopSilenceSender();
+}
+
 bool AgoraProtocol::SendText(const std::string& text) {
     if (!channel_ || !channel_->IsConnected()) {
         ESP_LOGW(TAG, "SendText: channel not ready (channel=%p, connected=%d)",
@@ -168,9 +175,17 @@ void AgoraProtocol::HandleIncomingData(const char* data, size_t len, bool binary
                 auto* state_item = cJSON_GetObjectItem(root, "state");
                 if (state_item && cJSON_IsString(state_item)) {
                     if (strcmp(state_item->valuestring, "start") == 0) {
+                        tts_stop_pending_ = false;
                         StartSilenceSender();
                     } else if (strcmp(state_item->valuestring, "stop") == 0) {
-                        StopSilenceSender();
+                        // Do NOT clear tts_playing_ yet — audio frames sent by the
+                        // server over the RTC channel may still be in the local
+                        // decode/playback queue.  Application::EnableVoiceProcessingWhenIdle()
+                        // will poll IsIdle() and call NotifyPlaybackComplete() once the
+                        // queue drains, which is when we safely stop sending silence and
+                        // allow real microphone packets through.
+                        tts_stop_pending_ = true;
+                        ESP_LOGI(TAG, "tts:stop received, waiting for playback queue to drain");
                     }
                 }
             }

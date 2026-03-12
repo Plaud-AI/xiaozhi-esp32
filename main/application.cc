@@ -63,9 +63,32 @@ Application::Application() {
         .skip_unhandled_events = true
     };
     esp_timer_create(&clock_timer_args, &clock_timer_handle_);
+
+    // Timer used for Agora half-duplex: polls IsIdle() every 50 ms after
+    // tts:stop and enables the microphone only after the playback queue empties.
+    esp_timer_create_args_t mic_timer_args = {
+        .callback = [](void* arg) {
+            Application* app = static_cast<Application*>(arg);
+            if (app->audio_service_.IsIdle()) {
+                esp_timer_stop(app->enable_mic_timer_);
+                app->Schedule([app]() {
+                    app->EnableVoiceProcessingWhenIdle();
+                });
+            }
+        },
+        .arg = this,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "enable_mic",
+        .skip_unhandled_events = true
+    };
+    esp_timer_create(&mic_timer_args, &enable_mic_timer_);
 }
 
 Application::~Application() {
+    if (enable_mic_timer_ != nullptr) {
+        esp_timer_stop(enable_mic_timer_);
+        esp_timer_delete(enable_mic_timer_);
+    }
     if (clock_timer_handle_ != nullptr) {
         esp_timer_stop(clock_timer_handle_);
         esp_timer_delete(clock_timer_handle_);
@@ -816,6 +839,9 @@ void Application::SetDeviceState(DeviceState state) {
     switch (state) {
         case kDeviceStateUnknown:
         case kDeviceStateIdle: {
+            // Cancel any pending mic-enable timer.
+            esp_timer_stop(enable_mic_timer_);
+
             ESP_LOGI(TAG, "Entering IDLE state...");
             display->SetStatus(Lang::Strings::STANDBY);
             audio_service_.EnableVoiceProcessing(false);
@@ -877,14 +903,18 @@ void Application::SetDeviceState(DeviceState state) {
                 // Disable wake word to free MicroWakeWord memory
                 audio_service_.EnableWakeWordDetection(false);
                 
-                // Send the start listening command
+                // Send the start listening command immediately so the server is ready.
                 protocol_->SendStartListening(listening_mode_);
                 
-                // Enable AFE
-                audio_service_.EnableVoiceProcessing(true);
+                // Enable AFE — but defer until the TTS playback queue has drained to
+                // avoid sending speaker echo to the server (half-duplex protection).
+                EnableVoiceProcessingWhenIdle();
             }
             break;
         case kDeviceStateSpeaking:
+            // Cancel any pending mic-enable timer when we start speaking again.
+            esp_timer_stop(enable_mic_timer_);
+
             display->SetStatus(Lang::Strings::SPEAKING);
 
             if (listening_mode_ != kListeningModeRealtime) {
@@ -1219,5 +1249,27 @@ bool Application::ApplyWakeWordConfig() {
         ESP_LOGE(TAG, "║  建议: 重启设备后唤醒词将自动加载                         ║");
         ESP_LOGE(TAG, "╚══════════════════════════════════════════════════════════╝");
         return false;
+    }
+}
+
+void Application::EnableVoiceProcessingWhenIdle() {
+    if (device_state_ != kDeviceStateListening) {
+        return;
+    }
+
+    if (audio_service_.IsIdle()) {
+        ESP_LOGI(TAG, "Audio queue drained — enabling microphone (half-duplex clear)");
+
+        // For Agora: clear the tts_playing_ echo guard now that playback is done.
+        if (auto* agora_proto = dynamic_cast<AgoraProtocol*>(protocol_.get())) {
+            agora_proto->NotifyPlaybackComplete();
+        }
+
+        audio_service_.EnableVoiceProcessing(true);
+    } else {
+        // TTS audio is still playing; start 50 ms polling timer.
+        ESP_LOGI(TAG, "TTS audio still playing — delaying microphone (half-duplex)");
+        esp_timer_stop(enable_mic_timer_);
+        esp_timer_start_periodic(enable_mic_timer_, 50000);  // 50 ms
     }
 }
