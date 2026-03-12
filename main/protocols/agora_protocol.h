@@ -32,6 +32,11 @@ public:
     void CloseAudioChannel() override;
     bool IsAudioChannelOpened() const override;
 
+    // Called by Application after the audio decode/playback queue is empty.
+    // Finalises the TTS→Listening transition: clears tts_playing_ so that
+    // real microphone packets are no longer dropped.
+    void NotifyPlaybackComplete();
+
 private:
     std::unique_ptr<Channel> channel_;
     int audio_packets_sent_ = 0;
@@ -41,11 +46,6 @@ private:
     std::vector<uint8_t> opus_silence_frame_;
     TimerHandle_t silence_timer_ = nullptr;
     bool tts_playing_ = false;
-
-    // Called by Application after the audio decode/playback queue is empty.
-    // Finalises the TTS→Listening transition: clears tts_playing_ so that
-    // real microphone packets are no longer dropped.
-    void NotifyPlaybackComplete();
 
     void StartSilenceSender();
     void StopSilenceSender();
