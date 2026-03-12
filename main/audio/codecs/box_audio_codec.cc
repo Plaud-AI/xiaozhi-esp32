@@ -380,21 +380,11 @@ int BoxAudioCodec::Read(int16_t* dest, int samples) {
         return samples;
     }
 
-    // Channel swap for Korvo-2 V3 AEC.
-    // The ES7210 TDM bus delivers data as:
-    //   slot-0 (even index) = ES8311 hardware loopback (AEC reference)
-    //   slot-1 (odd  index) = ES7210 MIC1 (primary microphone)
-    // The ESP AFE expects [mic, ref, mic, ref, ...] interleaved order.
-    // Swap each pair so AFE channel-0 = mic and channel-1 = ref.
-    // (Matches reference project: algorithm_stream swap_ch = true, TYPE1)
-    if (input_reference_) {
-        const int pair_count = samples / 2;
-        for (int i = 0; i < pair_count; i++) {
-            int16_t tmp      = dest[i * 2];       // slot-0: hardware ref
-            dest[i * 2]      = dest[i * 2 + 1];   // slot-1 mic → position 0
-            dest[i * 2 + 1]  = tmp;               // hardware ref → position 1
-        }
-    }
+    // On Korvo-2 V3 the ES7210 TDM delivers:
+    //   slot-0 (even index) = ES7210 MIC1 — primary microphone
+    //   slot-1 (odd  index) = ES8311 hardware output loopback — AEC reference
+    // The ESP AFE expects [mic, ref, mic, ref, ...] interleaved order, which
+    // matches the raw TDM read directly — no channel swap required.
 
     return samples;
 }
@@ -406,7 +396,7 @@ int BoxAudioCodec::Write(const int16_t* data, int samples) {
     }
 
     // Hardware loopback on Korvo-2 V3: ES8311 DAC output is wired back into
-    // ES7210 SLOT0, so the AFE AEC reference is provided automatically by
+    // ES7210 SLOT1, so the AFE AEC reference is provided automatically by
     // the hardware. No software ring buffer capture is needed here.
     esp_err_t ret = esp_codec_dev_write(output_dev_, (void*)data, samples * sizeof(int16_t));
     if (ret != ESP_OK) {
