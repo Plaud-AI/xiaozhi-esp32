@@ -64,26 +64,28 @@ Application::Application() {
     };
     esp_timer_create(&clock_timer_args, &clock_timer_handle_);
 
-    // Timer used for Agora half-duplex: polls IsIdle() every 50 ms after
-    // tts:stop and enables the microphone only after the playback queue empties
-    // AND a short echo-decay wait has passed.
+    // Timer used to enforce an echo-decay pause between SPEAKING and LISTENING.
+    // The timer is ALWAYS started unconditionally when the device transitions from
+    // SPEAKING → LISTENING, so the 1-second window is counted from that moment —
+    // not from when IsIdle() first returns true (the queue may already be empty
+    // before tts:stop even arrives via the Agora data stream).
     esp_timer_create_args_t mic_timer_args = {
         .callback = [](void* arg) {
             Application* app = static_cast<Application*>(arg);
-            if (app->audio_service_.IsIdle()) {
-                // Phase 2: count post-drain ticks for echo decay.
-                // 20 ticks × 50 ms = 1 second of room-reverb settling time.
-                if (++app->mic_echo_wait_count_ >= 20) {
-                    esp_timer_stop(app->enable_mic_timer_);
-                    app->mic_echo_wait_count_ = 0;
-                    app->Schedule([app]() {
-                        app->EnableVoiceProcessingWhenIdle();
-                    });
-                }
-                // Otherwise keep the timer running so the silence sender stays active.
-            } else {
-                // Audio still playing — reset the counter.
+            // Increment unconditionally — counts elapsed time since timer start.
+            ++app->mic_echo_wait_count_;
+
+            // Enable the mic only when BOTH conditions hold:
+            //   1. At least 20 ticks (1 second) have elapsed since the timer started.
+            //   2. The audio playback queue is empty (IsIdle).
+            // Condition 1 prevents echo even when the queue drains before tts:stop.
+            // Condition 2 prevents enabling while delayed audio frames are still playing.
+            if (app->mic_echo_wait_count_ >= 20 && app->audio_service_.IsIdle()) {
+                esp_timer_stop(app->enable_mic_timer_);
                 app->mic_echo_wait_count_ = 0;
+                app->Schedule([app]() {
+                    app->EnableVoiceProcessingWhenIdle();
+                });
             }
         },
         .arg = this,
@@ -911,21 +913,32 @@ void Application::SetDeviceState(DeviceState state) {
 
             // Trigger setup when:
             // (a) AFE not yet running — first LISTENING after wake word (both modes), OR
-            // (b) returning from SPEAKING in realtime/AEC mode — AFE stays on the whole
-            //     time so IsAudioProcessorRunning() is always true, but we still need to
-            //     send listen:start and stop the silence sender.
+            // (b) returning from SPEAKING — need to send listen:start and stop the
+            //     silence sender; in realtime/AEC mode AFE never stopped so
+            //     IsAudioProcessorRunning() is always true, hence the previous_state check.
             if (!audio_service_.IsAudioProcessorRunning() ||
                 previous_state == kDeviceStateSpeaking) {
-                // Disable wake word to free MicroWakeWord memory
+                // Disable wake word to free MicroWakeWord memory.
                 audio_service_.EnableWakeWordDetection(false);
 
-                // Send the start listening command immediately so the server is ready.
+                // Tell the server to prepare a fresh Deepgram session immediately.
                 protocol_->SendStartListening(listening_mode_);
 
-                // In half-duplex mode this defers until the TTS playback queue drains.
-                // In realtime mode the AFE is already running, so it just stops the
-                // silence sender (NotifyPlaybackComplete) at the right moment.
-                EnableVoiceProcessingWhenIdle();
+                if (previous_state == kDeviceStateSpeaking) {
+                    // Always go through the timer-based echo-decay path when returning
+                    // from SPEAKING — even if the playback queue is already empty (the
+                    // last audio frame may have drained before tts:stop arrived due to
+                    // Agora's separate data / audio channels).  The timer counts 1 second
+                    // from THIS moment, so echo has time to decay regardless.
+                    mic_echo_wait_count_ = 0;
+                    esp_timer_stop(enable_mic_timer_);
+                    esp_timer_start_periodic(enable_mic_timer_, 50000);  // 50 ms
+                } else {
+                    // First LISTENING after wake word — no TTS was playing, so there is
+                    // no echo to wait for.  Enable immediately (or after the queue drains
+                    // in the unlikely event some audio is still in flight).
+                    EnableVoiceProcessingWhenIdle();
+                }
             }
             break;
         case kDeviceStateSpeaking:
