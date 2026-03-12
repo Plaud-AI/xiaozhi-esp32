@@ -460,19 +460,26 @@ void Application::Start() {
         static int total_audio_packets = 0;
         static int dropped_audio_packets = 0;
         total_audio_packets++;
-        
-        // 每 10 个包打印一次详细日志
+
         if (total_audio_packets % 10 == 1) {
-            ESP_LOGI(TAG, "🎵 Audio packet #%d: size=%u, state=%s, dropped=%d", 
-                     total_audio_packets, (unsigned int)packet->payload.size(), 
+            ESP_LOGI(TAG, "🎵 Audio packet #%d: size=%u, state=%s, dropped=%d",
+                     total_audio_packets, (unsigned int)packet->payload.size(),
                      STATE_STRINGS[device_state_], dropped_audio_packets);
         }
-        
+
         if (device_state_ == kDeviceStateSpeaking) {
+            audio_service_.PushPacketToDecodeQueue(std::move(packet));
+        } else if (device_state_ == kDeviceStateListening) {
+            // In Agora mode, RTC audio arrives before the tts:start data-stream
+            // message because they travel on separate channels with different
+            // latencies. Auto-transition to speaking and accept the packet.
+            ESP_LOGI(TAG, "Audio arrived in listening state, auto-transitioning to speaking");
+            aborted_ = false;
+            SetDeviceState(kDeviceStateSpeaking);
             audio_service_.PushPacketToDecodeQueue(std::move(packet));
         } else {
             dropped_audio_packets++;
-            ESP_LOGW(TAG, "⚠️  Dropped audio #%d: state=%s (not SPEAKING), total_dropped=%d", 
+            ESP_LOGW(TAG, "Dropped audio #%d: state=%s (not SPEAKING/LISTENING), total_dropped=%d",
                      total_audio_packets, STATE_STRINGS[device_state_], dropped_audio_packets);
         }
     });
