@@ -74,6 +74,21 @@ void AgoraProtocol::HandleIncomingData(const char* data, size_t len, bool binary
         ESP_LOGI(TAG, "Received JSON: %.*s", (int)std::min(len, (size_t)200), data);
         auto* root = cJSON_Parse(data);
         if (root) {
+            // The Agora AI Agent assigns its own session_id and embeds it in
+            // every response message. Unlike the WebSocket protocol (which has
+            // an explicit hello handshake), we must extract and adopt the
+            // server-side session_id from the first incoming JSON so that all
+            // subsequent control messages (listen:start, listen:stop, …) carry
+            // the session_id the server actually recognises.
+            auto* sid_item = cJSON_GetObjectItem(root, "session_id");
+            if (sid_item && cJSON_IsString(sid_item) && sid_item->valuestring) {
+                std::string server_sid = sid_item->valuestring;
+                if (!server_sid.empty() && server_sid != session_id_) {
+                    ESP_LOGI(TAG, "Adopting server session_id: %s -> %s",
+                             session_id_.c_str(), server_sid.c_str());
+                    session_id_ = server_sid;
+                }
+            }
             if (on_incoming_json_) {
                 on_incoming_json_(root);
             }
