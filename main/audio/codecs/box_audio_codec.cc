@@ -380,26 +380,20 @@ int BoxAudioCodec::Read(int16_t* dest, int samples) {
         return samples;
     }
 
-    // Software-loopback AEC reference injection.
-    // The raw TDM read delivers [MIC1, MIC2, MIC1, MIC2, ...] in the dest
-    // buffer (slot 0 = primary mic, slot 1 = a second physical mic that is
-    // NOT the speaker output and therefore useless as an AEC reference).
-    // Replace every slot-1 sample with TTS playback audio captured by
-    // Write() so the AFE/AEC gets a real loudspeaker reference signal.
+    // Channel swap for Korvo-2 V3 AEC.
+    // The ES7210 TDM bus delivers data as:
+    //   slot-0 (even index) = ES8311 hardware loopback (AEC reference)
+    //   slot-1 (odd  index) = ES7210 MIC1 (primary microphone)
+    // The ESP AFE expects [mic, ref, mic, ref, ...] interleaved order.
+    // Swap each pair so AFE channel-0 = mic and channel-1 = ref.
+    // (Matches reference project: algorithm_stream swap_ch = true, TYPE1)
     if (input_reference_) {
-        // samples == input_channels_ * mono_count == 2 * mono_count
-        const int mono_count = samples / 2;
-        int ri = loopback_read_idx_.load(std::memory_order_acquire);
-        const int wi = loopback_write_idx_.load(std::memory_order_acquire);
-        for (int i = 0; i < mono_count; i++) {
-            int16_t ref = 0;
-            if (ri != wi) {
-                ref = loopback_buf_[ri];
-                ri = (ri + 1) % kLoopbackBufSize;
-            }
-            dest[i * 2 + 1] = ref;  // overwrite slot-1 (reference channel)
+        const int pair_count = samples / 2;
+        for (int i = 0; i < pair_count; i++) {
+            int16_t tmp      = dest[i * 2];       // slot-0: hardware ref
+            dest[i * 2]      = dest[i * 2 + 1];   // slot-1 mic → position 0
+            dest[i * 2 + 1]  = tmp;               // hardware ref → position 1
         }
-        loopback_read_idx_.store(ri, std::memory_order_release);
     }
 
     return samples;
@@ -411,20 +405,9 @@ int BoxAudioCodec::Write(const int16_t* data, int samples) {
         return samples;
     }
 
-    // Capture outgoing TTS PCM into the software-loopback ring buffer so
-    // Read() can inject it as the AEC reference channel.
-    // If the ring buffer is momentarily full (shouldn't happen in steady
-    // state) we overwrite the oldest samples; a brief AEC misalignment is
-    // preferable to dropping the reference entirely.
-    if (input_reference_) {
-        int wi = loopback_write_idx_.load(std::memory_order_acquire);
-        for (int i = 0; i < samples; i++) {
-            loopback_buf_[wi] = data[i];
-            wi = (wi + 1) % kLoopbackBufSize;
-        }
-        loopback_write_idx_.store(wi, std::memory_order_release);
-    }
-
+    // Hardware loopback on Korvo-2 V3: ES8311 DAC output is wired back into
+    // ES7210 SLOT0, so the AFE AEC reference is provided automatically by
+    // the hardware. No software ring buffer capture is needed here.
     esp_err_t ret = esp_codec_dev_write(output_dev_, (void*)data, samples * sizeof(int16_t));
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Write failed: %s (0x%x), output_enabled=%d",
