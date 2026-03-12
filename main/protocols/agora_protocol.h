@@ -29,6 +29,7 @@ public:
 
 private:
     std::unique_ptr<Channel> channel_;
+    int audio_packets_sent_ = 0;
 
     bool SendText(const std::string& text) override;
     void HandleIncomingData(const char* data, size_t len, bool binary);

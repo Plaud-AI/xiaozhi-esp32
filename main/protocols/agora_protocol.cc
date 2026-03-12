@@ -32,8 +32,11 @@ void AgoraProtocol::CloseAudioChannel() {
 
 bool AgoraProtocol::SendText(const std::string& text) {
     if (!channel_ || !channel_->IsConnected()) {
+        ESP_LOGW(TAG, "SendText: channel not ready (channel=%p, connected=%d)",
+                 channel_.get(), channel_ ? channel_->IsConnected() : 0);
         return false;
     }
+    ESP_LOGI(TAG, "SendText: %.*s", (int)std::min(text.size(), (size_t)200), text.c_str());
     if (!channel_->SendText(text)) {
         ESP_LOGE(TAG, "Failed to send text via Agora data stream");
         SetError(Lang::Strings::SERVER_ERROR);
@@ -46,7 +49,11 @@ bool AgoraProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
     if (!channel_ || !channel_->IsConnected()) {
         return false;
     }
-    // packet->payload already contains a raw OPUS frame; send it directly.
+    audio_packets_sent_++;
+    if (audio_packets_sent_ <= 3 || audio_packets_sent_ % 50 == 0) {
+        ESP_LOGI(TAG, "SendAudio #%d: %u bytes", audio_packets_sent_,
+                 (unsigned)packet->payload.size());
+    }
     return channel_->SendBinary(packet->payload.data(), packet->payload.size());
 }
 
