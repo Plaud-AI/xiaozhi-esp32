@@ -23,6 +23,14 @@ void AgoraChannel::S_OnConnectionLost(connection_id_t conn_id) {
     if (s_instance_) s_instance_->OnConnectionLost(conn_id);
 }
 
+void AgoraChannel::S_OnReconnecting(connection_id_t conn_id) {
+    if (s_instance_) s_instance_->OnReconnecting(conn_id);
+}
+
+void AgoraChannel::S_OnRejoinSuccess(connection_id_t conn_id, uint32_t uid, int elapsed_ms) {
+    if (s_instance_) s_instance_->OnRejoinSuccess(conn_id, uid, elapsed_ms);
+}
+
 void AgoraChannel::S_OnAudioData(connection_id_t /*conn_id*/, uint32_t /*uid*/,
                                   uint16_t /*sent_ts*/,
                                   const void* data, size_t len,
@@ -92,11 +100,13 @@ bool AgoraChannel::Connect() {
 
     // Register event callbacks.
     agora_rtc_event_handler_t handler{};
-    handler.on_join_channel_success = S_OnJoinSuccess;
-    handler.on_connection_lost      = S_OnConnectionLost;
-    handler.on_audio_data           = S_OnAudioData;
-    handler.on_stream_message       = S_OnStreamMessage;
-    handler.on_error                = S_OnError;
+    handler.on_join_channel_success   = S_OnJoinSuccess;
+    handler.on_connection_lost        = S_OnConnectionLost;
+    handler.on_reconnecting           = S_OnReconnecting;
+    handler.on_rejoin_channel_success = S_OnRejoinSuccess;
+    handler.on_audio_data             = S_OnAudioData;
+    handler.on_stream_message         = S_OnStreamMessage;
+    handler.on_error                  = S_OnError;
 
     rtc_service_option_t service_opt{};
     service_opt.area_code           = AREA_CODE_GLOB;
@@ -151,16 +161,26 @@ bool AgoraChannel::Connect() {
         return false;
     }
 
-    // Create a data stream for bidirectional JSON control messages.
-    rc = agora_rtc_create_data_stream(conn_id_, &stream_id_, false, false);
+    CreateDataStream();
+
+    connected_ = true;
+    ESP_LOGI(TAG, "Agora channel connected (channel=%s)", channel_.c_str());
+    return true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helper: (re)create the data stream used for JSON control messages
+// ─────────────────────────────────────────────────────────────────────────────
+
+bool AgoraChannel::CreateDataStream() {
+    stream_id_ = -1;
+    int rc = agora_rtc_create_data_stream(conn_id_, &stream_id_, false, false);
     if (rc < 0) {
         ESP_LOGW(TAG, "Data stream creation failed (%s); JSON messages unavailable",
                  agora_rtc_err_2_str(rc));
         stream_id_ = -1;
+        return false;
     }
-
-    connected_ = true;
-    ESP_LOGI(TAG, "Agora channel connected (channel=%s)", channel_.c_str());
     return true;
 }
 
@@ -200,7 +220,9 @@ bool AgoraChannel::SendBinary(const void* data, size_t len) {
     info.data_type = AUDIO_DATA_TYPE_OPUS; // 16 kHz OPUS frames
     int rc = agora_rtc_send_audio_data(conn_id_, data, len, &info);
     if (rc < 0) {
-        ESP_LOGE(TAG, "agora_rtc_send_audio_data failed: %s", agora_rtc_err_2_str(rc));
+        // ERR_NOT_IN_CHANNEL is expected during transient WiFi reconnection;
+        // the SDK is silently trying to rejoin and will fire on_rejoin_channel_success.
+        ESP_LOGW(TAG, "agora_rtc_send_audio_data failed: %s", agora_rtc_err_2_str(rc));
         return false;
     }
     return true;
@@ -230,11 +252,28 @@ void AgoraChannel::OnJoinSuccess(connection_id_t /*conn_id*/, uint32_t uid, int 
 }
 
 void AgoraChannel::OnConnectionLost(connection_id_t /*conn_id*/) {
-    ESP_LOGW(TAG, "Agora connection lost");
+    ESP_LOGW(TAG, "Agora connection lost (permanent)");
     connected_ = false;
+    stream_id_ = -1;
     if (on_disconnected_) {
         on_disconnected_();
     }
+}
+
+void AgoraChannel::OnReconnecting(connection_id_t /*conn_id*/) {
+    // Transient network interruption — SDK will attempt to rejoin automatically.
+    // Pause audio/text sending until on_rejoin_channel_success fires.
+    ESP_LOGW(TAG, "Agora reconnecting (transient network interruption)...");
+    connected_ = false;
+    stream_id_ = -1;
+    // Do NOT call on_disconnected_: let the SDK handle the reconnection silently.
+}
+
+void AgoraChannel::OnRejoinSuccess(connection_id_t /*conn_id*/, uint32_t uid, int elapsed_ms) {
+    ESP_LOGI(TAG, "Rejoin channel success (uid=%lu, elapsed=%d ms)",
+             (unsigned long)uid, elapsed_ms);
+    CreateDataStream();
+    connected_ = true;
 }
 
 void AgoraChannel::OnAudioData(const void* data, size_t len,

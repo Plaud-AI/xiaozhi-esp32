@@ -58,14 +58,20 @@ private:
     // Internal event handlers invoked from static C-callback bridges.
     void OnJoinSuccess(connection_id_t conn_id, uint32_t uid, int elapsed_ms);
     void OnConnectionLost(connection_id_t conn_id);
+    void OnReconnecting(connection_id_t conn_id);
+    void OnRejoinSuccess(connection_id_t conn_id, uint32_t uid, int elapsed_ms);
     void OnAudioData(const void* data, size_t len, const audio_frame_info_t* info);
     void OnStreamMessage(const char* data, size_t length);
     void OnError(int code, const char* msg);
+
+    bool CreateDataStream();
 
     // Static singleton + C-callback bridges (Agora API uses raw function pointers).
     static AgoraChannel* s_instance_;
     static void S_OnJoinSuccess(connection_id_t, uint32_t, int);
     static void S_OnConnectionLost(connection_id_t);
+    static void S_OnReconnecting(connection_id_t);
+    static void S_OnRejoinSuccess(connection_id_t, uint32_t, int);
     static void S_OnAudioData(connection_id_t, uint32_t, uint16_t,
                               const void*, size_t, const audio_frame_info_t*);
     static void S_OnStreamMessage(connection_id_t, uint32_t, int,
