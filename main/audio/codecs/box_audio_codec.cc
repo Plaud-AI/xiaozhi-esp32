@@ -21,7 +21,7 @@ BoxAudioCodec::BoxAudioCodec(void* i2c_master_handle, int input_sample_rate, int
     output_sample_rate_ = output_sample_rate;
     
     // 🎤 麦克风增益设置（恢复原始值）
-    input_gain_ = 30;  // 原始工程的增益
+    input_gain_ = 24;  // Korvo-2 V3 ES7210 麦克风增益 (30dB 过高会导致削波影响 ASR)
     
     ESP_LOGI(TAG, "🎤 BoxAudioCodec constructor: input_sample_rate=%d, output_sample_rate=%d, input_reference=%d, input_channels=%d, input_gain=%.1f dB",
              input_sample_rate_, output_sample_rate_, input_reference_, input_channels_, input_gain_);

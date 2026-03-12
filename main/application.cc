@@ -505,13 +505,21 @@ void Application::Start() {
         if (device_state_ == kDeviceStateSpeaking) {
             audio_service_.PushPacketToDecodeQueue(std::move(packet));
         } else if (device_state_ == kDeviceStateListening) {
-            // In Agora mode, RTC audio arrives before the tts:start data-stream
-            // message because they travel on separate channels with different
-            // latencies. Auto-transition to speaking and accept the packet.
-            ESP_LOGI(TAG, "Audio arrived in listening state, auto-transitioning to speaking");
-            aborted_ = false;
-            SetDeviceState(kDeviceStateSpeaking);
-            audio_service_.PushPacketToDecodeQueue(std::move(packet));
+            if (esp_timer_is_active(enable_mic_timer_)) {
+                // Echo-decay timer is running: we just came from SPEAKING and
+                // the 1-second post-TTS silence window is still in progress.
+                // This audio is a stale TTS packet still in-flight through Agora's
+                // network buffer — play it without changing state.
+                audio_service_.PushPacketToDecodeQueue(std::move(packet));
+            } else {
+                // Timer has expired (mic is already enabled or was never started).
+                // A new TTS is starting and its audio arrived before the tts:start
+                // JSON due to Agora's dual-channel latency difference.
+                ESP_LOGI(TAG, "Audio arrived in listening state, auto-transitioning to speaking");
+                aborted_ = false;
+                SetDeviceState(kDeviceStateSpeaking);
+                audio_service_.PushPacketToDecodeQueue(std::move(packet));
+            }
         } else {
             dropped_audio_packets++;
             ESP_LOGW(TAG, "Dropped audio #%d: state=%s (not SPEAKING/LISTENING), total_dropped=%d",
