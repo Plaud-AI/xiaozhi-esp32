@@ -15,14 +15,18 @@ AgoraProtocol::AgoraProtocol() {
     server_sample_rate_    = kSampleRate;
     server_frame_duration_ = kFrameDurationMs;
 
-    // Pre-encode one frame of PCM silence into OPUS and cache it.
-    // This cached frame is sent repeatedly during TTS to keep the RTC
-    // audio stream alive without leaking microphone echo.
+    // Pre-encode OPUS silence with DTX enabled.  DTX (Discontinuous
+    // Transmission) produces minimal 1-byte comfort-noise frames after a few
+    // frames of silence input.  The server's VAD treats these as true silence,
+    // unlike a full 18-byte OPUS frame which may be misread as low-level noise.
     const int frame_samples = kSampleRate * kFrameDurationMs / 1000; // 960
     OpusEncoderWrapper enc(kSampleRate, 1, kFrameDurationMs);
-    std::vector<int16_t> silence(frame_samples, 0);
-    enc.Encode(std::move(silence), opus_silence_frame_);
-    ESP_LOGI(TAG, "Cached OPUS silence frame: %u bytes", (unsigned)opus_silence_frame_.size());
+    enc.SetDtx(true);
+    for (int i = 0; i < 10; i++) {
+        std::vector<int16_t> silence(frame_samples, 0);
+        enc.Encode(std::move(silence), opus_silence_frame_);
+    }
+    ESP_LOGI(TAG, "Cached OPUS silence frame (DTX): %u bytes", (unsigned)opus_silence_frame_.size());
 }
 
 AgoraProtocol::~AgoraProtocol() {
@@ -115,12 +119,6 @@ bool AgoraProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
         return false;
     }
 
-    // During TTS the silence timer handles audio; drop real mic data
-    // to prevent echo from reaching the server.
-    if (tts_playing_) {
-        return true;
-    }
-
     audio_packets_sent_++;
     if (audio_packets_sent_ <= 5 || audio_packets_sent_ % 50 == 0) {
         ESP_LOGI(TAG, "SendAudio #%d: %u bytes (OPUS)",
@@ -168,27 +166,11 @@ void AgoraProtocol::HandleIncomingData(const char* data, size_t len, bool binary
                     session_id_ = server_sid;
                 }
             }
-            // Detect tts:start / tts:stop to drive the silence sender.
-            auto* type_item = cJSON_GetObjectItem(root, "type");
-            if (type_item && cJSON_IsString(type_item) &&
-                strcmp(type_item->valuestring, "tts") == 0) {
-                auto* state_item = cJSON_GetObjectItem(root, "state");
-                if (state_item && cJSON_IsString(state_item)) {
-                    if (strcmp(state_item->valuestring, "start") == 0) {
-                        tts_stop_pending_ = false;
-                        StartSilenceSender();
-                    } else if (strcmp(state_item->valuestring, "stop") == 0) {
-                        // Do NOT clear tts_playing_ yet — audio frames sent by the
-                        // server over the RTC channel may still be in the local
-                        // decode/playback queue.  Application::EnableVoiceProcessingWhenIdle()
-                        // will poll IsIdle() and call NotifyPlaybackComplete() once the
-                        // queue drains, which is when we safely stop sending silence and
-                        // allow real microphone packets through.
-                        tts_stop_pending_ = true;
-                        ESP_LOGI(TAG, "tts:stop received, waiting for playback queue to drain");
-                    }
-                }
-            }
+            // TTS silence sender is DISABLED.  The device mic is already OFF
+            // during TTS (Application disables voice processing in SPEAKING state),
+            // so no echo reaches the server.  Sending silence during TTS actually
+            // causes the AI Agent's VAD to start its listen-timeout prematurely,
+            // making it miss the user's speech after TTS ends.
 
             if (on_incoming_json_) {
                 on_incoming_json_(root);
