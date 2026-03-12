@@ -79,7 +79,7 @@ BoxAudioCodec::BoxAudioCodec(void* i2c_master_handle, int input_sample_rate, int
     in_codec_if_ = es7210_codec_new(&es7210_cfg);
     assert(in_codec_if_ != NULL);
 
-    dev_cfg.dev_type = ESP_CODEC_DEV_TYPE_IN;
+    dev_cfg.dev_type =   ESP_CODEC_DEV_TYPE_IN;     
     dev_cfg.codec_if = in_codec_if_;
     input_dev_ = esp_codec_dev_new(&dev_cfg);
     assert(input_dev_ != NULL);
