@@ -128,8 +128,9 @@ bool AgoraChannel::Connect() {
         return false;
     }
 
-    // Disable the built-in codec: we send pre-encoded OPUS frames directly
-    // via AUDIO_DATA_TYPE_OPUS, matching the xiaozhi 16 kHz OPUS pipeline.
+    // The prebuilt Agora SDK (v1.9.5) does NOT include a built-in OPUS encoder
+    // (attempting AUDIO_CODEC_TYPE_OPUS causes abort in audio_stream_init).
+    // We disable the SDK codec and send pre-encoded OPUS frames directly.
     rtc_channel_options_t ch_opts{};
     ch_opts.auto_subscribe_audio             = true;
     ch_opts.auto_subscribe_video             = false;
@@ -217,11 +218,9 @@ bool AgoraChannel::SendBinary(const void* data, size_t len) {
         return false;
     }
     audio_frame_info_t info{};
-    info.data_type = AUDIO_DATA_TYPE_OPUS; // 16 kHz OPUS frames
+    info.data_type = AUDIO_DATA_TYPE_OPUS;
     int rc = agora_rtc_send_audio_data(conn_id_, data, len, &info);
     if (rc < 0) {
-        // ERR_NOT_IN_CHANNEL is expected during transient WiFi reconnection;
-        // the SDK is silently trying to rejoin and will fire on_rejoin_channel_success.
         ESP_LOGW(TAG, "agora_rtc_send_audio_data failed: %s", agora_rtc_err_2_str(rc));
         return false;
     }
@@ -290,7 +289,14 @@ void AgoraChannel::OnStreamMessage(const char* data, size_t length) {
 }
 
 void AgoraChannel::OnError(int code, const char* msg) {
-    ESP_LOGE(TAG, "Agora error %d: %s", code, msg ? msg : "");
+    // Error 130 = data stream reliability issue (missed/cached packets from peer).
+    // This is non-fatal and typically happens when the peer's data stream message
+    // arrives slightly out of order or is momentarily delayed. Do NOT disconnect.
+    if (code == 130) {
+        ESP_LOGW(TAG, "Agora non-fatal error %d (data stream): %s", code, msg ? msg : "");
+        return;
+    }
+    ESP_LOGE(TAG, "Agora fatal error %d: %s", code, msg ? msg : "");
     connected_ = false;
     if (on_disconnected_) {
         on_disconnected_();

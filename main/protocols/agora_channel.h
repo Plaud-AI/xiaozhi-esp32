@@ -26,6 +26,8 @@
 //       returning the credentials to the device.)
 //
 // Audio is sent/received as raw OPUS frames (AUDIO_DATA_TYPE_OPUS, 16 kHz).
+// SDK codec is DISABLED because the prebuilt SDK (v1.9.5) lacks an internal
+// OPUS encoder (AUDIO_CODEC_TYPE_OPUS causes abort in audio_stream_init).
 // JSON control messages travel over an Agora data stream.
 class AgoraChannel : public Channel {
 public:

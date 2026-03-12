@@ -12,7 +12,7 @@
 //  - There is no hello / server-hello handshake; the Agora AI Agent manages
 //    conversation flow automatically.
 //  - Audio is sent/received as raw OPUS frames (16 kHz, no BinaryProtocol
-//    wrapping).
+//    wrapping).  SDK codec is disabled (prebuilt SDK lacks OPUS encoder).
 //  - JSON control messages travel over an Agora RTC data stream.
 //  - server_sample_rate_ is fixed at 16000; server_frame_duration_ at 60 ms,
 //    matching the xiaozhi OPUS pipeline.

@@ -417,7 +417,18 @@ void AudioService::OpusCodecTask() {
             task->timestamp = packet->timestamp;
 
             SetDecodeSampleRate(packet->sample_rate, packet->frame_duration);
-            if (opus_decoder_->Decode(std::move(packet->payload), task->pcm)) {
+
+            bool decoded = false;
+            if (packet->is_pcm) {
+                const int16_t* p = reinterpret_cast<const int16_t*>(packet->payload.data());
+                size_t n = packet->payload.size() / sizeof(int16_t);
+                task->pcm.assign(p, p + n);
+                decoded = true;
+            } else {
+                decoded = opus_decoder_->Decode(std::move(packet->payload), task->pcm);
+            }
+
+            if (decoded) {
                 // Resample if the sample rate is different
                 if (opus_decoder_->sample_rate() != codec_->output_sample_rate()) {
                     int target_size = output_resampler_.GetOutputSamples(task->pcm.size());

@@ -7,7 +7,6 @@
 
 #define TAG "AgoraProtocol"
 
-// Agora Conversational AI uses 16 kHz OPUS (same as the xiaozhi pipeline).
 static constexpr int kSampleRate     = 16000;
 static constexpr int kFrameDurationMs = 60;
 
@@ -47,12 +46,15 @@ bool AgoraProtocol::SendText(const std::string& text) {
 
 bool AgoraProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
     if (!channel_ || !channel_->IsConnected()) {
+        ESP_LOGW(TAG, "SendAudio: channel not ready (ch=%p, connected=%d)",
+                 channel_.get(), channel_ ? channel_->IsConnected() : 0);
         return false;
     }
+
     audio_packets_sent_++;
-    if (audio_packets_sent_ <= 3 || audio_packets_sent_ % 50 == 0) {
-        ESP_LOGI(TAG, "SendAudio #%d: %u bytes", audio_packets_sent_,
-                 (unsigned)packet->payload.size());
+    if (audio_packets_sent_ <= 5 || audio_packets_sent_ % 50 == 0) {
+        ESP_LOGI(TAG, "SendAudio #%d: %u bytes (OPUS)",
+                 audio_packets_sent_, (unsigned)packet->payload.size());
     }
     return channel_->SendBinary(packet->payload.data(), packet->payload.size());
 }
@@ -112,6 +114,7 @@ void AgoraProtocol::HandleIncomingData(const char* data, size_t len, bool binary
 
 bool AgoraProtocol::OpenAudioChannel() {
     error_occurred_ = false;
+    audio_packets_sent_ = 0;
 
     auto agora_ch = std::make_unique<AgoraChannel>();
 

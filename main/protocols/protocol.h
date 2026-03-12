@@ -12,6 +12,7 @@ struct AudioStreamPacket {
     int frame_duration = 0;
     uint32_t timestamp = 0;
     std::vector<uint8_t> payload;
+    bool is_pcm = false; // true when payload is raw PCM (int16_t LE), skip OPUS decode
 };
 
 struct BinaryProtocol2 {
