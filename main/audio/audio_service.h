@@ -101,6 +101,9 @@ public:
     void EnableVoiceProcessing(bool enable);
     void EnableAudioTesting(bool enable);
     void EnableDeviceAec(bool enable);
+    // Clear the codec's software-loopback AEC reference buffer.
+    // Called once per TTS round after playback ends and before re-enabling mic.
+    void ClearCodecLoopback();
 
     void SetCallbacks(AudioServiceCallbacks& callbacks);
 

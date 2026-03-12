@@ -1291,6 +1291,10 @@ void Application::EnableVoiceProcessingWhenIdle() {
     if (audio_service_.IsIdle()) {
         ESP_LOGI(TAG, "Audio queue drained — enabling microphone (half-duplex clear)");
 
+        // Discard stale TTS reference samples from the software-loopback buffer
+        // so the AEC filter starts clean for the next listen round.
+        audio_service_.ClearCodecLoopback();
+
         // For Agora: clear the tts_playing_ echo guard now that playback is done.
         if (auto* agora_proto = dynamic_cast<AgoraProtocol*>(protocol_.get())) {
             agora_proto->NotifyPlaybackComplete();

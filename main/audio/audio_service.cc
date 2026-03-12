@@ -679,6 +679,12 @@ void AudioService::EnableDeviceAec(bool enable) {
     audio_processor_->EnableDeviceAec(enable);
 }
 
+void AudioService::ClearCodecLoopback() {
+    if (codec_) {
+        codec_->ClearLoopbackBuffer();
+    }
+}
+
 void AudioService::SetCallbacks(AudioServiceCallbacks& callbacks) {
     callbacks_ = callbacks;
 }

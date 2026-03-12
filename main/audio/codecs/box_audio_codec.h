@@ -6,6 +6,7 @@
 #include <esp_codec_dev.h>
 #include <esp_codec_dev_defaults.h>
 #include <mutex>
+#include <atomic>
 
 
 class BoxAudioCodec : public AudioCodec {
@@ -19,8 +20,24 @@ private:
 
     esp_codec_dev_handle_t output_dev_ = nullptr;
     esp_codec_dev_handle_t input_dev_ = nullptr;
-    std::mutex data_if_mutex_;
-    bool input_device_permanently_open_ = false;  // 双工模式优化：输入设备保持打开
+    bool input_device_permanently_open_ = false;
+
+    // Separate mutexes so Read() and Write() can run concurrently.
+    // (They use different DMA channel handles — rx_handle_ vs tx_handle_ —
+    //  which are independently thread-safe in ESP-IDF duplex mode.)
+    std::mutex read_mutex_;
+    std::mutex write_mutex_;
+
+    // Software-loopback ring buffer used as AEC reference.
+    // Write() pushes decoded TTS PCM into the buffer; Read() pops it and
+    // injects it into the reference channel (slot 1) that is fed to the AFE,
+    // replacing the useless MIC2 data that would otherwise be there.
+    // Size: 4096 samples = 256 ms @ 16 kHz — enough to absorb the I2S DMA
+    // pipeline latency (~120 ms) with comfortable headroom.
+    static constexpr int kLoopbackBufSize = 4096;
+    int16_t loopback_buf_[kLoopbackBufSize] = {};
+    std::atomic<int> loopback_write_idx_{0};
+    std::atomic<int> loopback_read_idx_{0};
 
     void CreateDuplexChannels(gpio_num_t mclk, gpio_num_t bclk, gpio_num_t ws, gpio_num_t dout, gpio_num_t din);
 
@@ -37,6 +54,10 @@ public:
     virtual void EnableInput(bool enable) override;
     virtual void EnableOutput(bool enable) override;
     virtual void Start() override;
+
+    // Drain the loopback buffer (e.g. on tts:stop so stale TTS reference
+    // does not linger into the next listen round).
+    void ClearLoopbackBuffer();
 };
 
 #endif // _BOX_AUDIO_CODEC_H

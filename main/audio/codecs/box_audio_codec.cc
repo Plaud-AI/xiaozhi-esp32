@@ -270,8 +270,16 @@ void BoxAudioCodec::SetOutputVolume(int volume) {
     AudioCodec::SetOutputVolume(volume);
 }
 
+void BoxAudioCodec::ClearLoopbackBuffer() {
+    // Reset both indices atomically-enough for a single-writer context.
+    // Called on tts:stop so stale TTS reference data does not bleed into the
+    // next listen round's AEC filter.
+    loopback_read_idx_.store(0, std::memory_order_seq_cst);
+    loopback_write_idx_.store(0, std::memory_order_seq_cst);
+}
+
 void BoxAudioCodec::EnableInput(bool enable) {
-    std::lock_guard<std::mutex> lock(data_if_mutex_);
+    std::lock_guard<std::mutex> lock(read_mutex_);
     if (enable == input_enabled_) {
         return;
     }
@@ -323,7 +331,7 @@ void BoxAudioCodec::EnableInput(bool enable) {
 }
 
 void BoxAudioCodec::EnableOutput(bool enable) {
-    std::lock_guard<std::mutex> lock(data_if_mutex_);
+    std::lock_guard<std::mutex> lock(write_mutex_);
     if (enable == output_enabled_) {
         return;
     }
@@ -358,32 +366,68 @@ void BoxAudioCodec::EnableOutput(bool enable) {
 }
 
 int BoxAudioCodec::Read(int16_t* dest, int samples) {
-    std::lock_guard<std::mutex> lock(data_if_mutex_);
+    std::lock_guard<std::mutex> lock(read_mutex_);
     if (!input_enabled_) {
-        // 输入未启用，返回静音数据
         memset(dest, 0, samples * sizeof(int16_t));
         return samples;
     }
-    
+
     esp_err_t ret = esp_codec_dev_read(input_dev_, (void*)dest, samples * sizeof(int16_t));
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Read failed: %s (0x%x), input_enabled=%d", 
+        ESP_LOGE(TAG, "Read failed: %s (0x%x), input_enabled=%d",
                  esp_err_to_name(ret), ret, input_enabled_);
         memset(dest, 0, samples * sizeof(int16_t));
+        return samples;
     }
+
+    // Software-loopback AEC reference injection.
+    // The raw TDM read delivers [MIC1, MIC2, MIC1, MIC2, ...] in the dest
+    // buffer (slot 0 = primary mic, slot 1 = a second physical mic that is
+    // NOT the speaker output and therefore useless as an AEC reference).
+    // Replace every slot-1 sample with TTS playback audio captured by
+    // Write() so the AFE/AEC gets a real loudspeaker reference signal.
+    if (input_reference_) {
+        // samples == input_channels_ * mono_count == 2 * mono_count
+        const int mono_count = samples / 2;
+        int ri = loopback_read_idx_.load(std::memory_order_acquire);
+        const int wi = loopback_write_idx_.load(std::memory_order_acquire);
+        for (int i = 0; i < mono_count; i++) {
+            int16_t ref = 0;
+            if (ri != wi) {
+                ref = loopback_buf_[ri];
+                ri = (ri + 1) % kLoopbackBufSize;
+            }
+            dest[i * 2 + 1] = ref;  // overwrite slot-1 (reference channel)
+        }
+        loopback_read_idx_.store(ri, std::memory_order_release);
+    }
+
     return samples;
 }
 
 int BoxAudioCodec::Write(const int16_t* data, int samples) {
-    std::lock_guard<std::mutex> lock(data_if_mutex_);
+    std::lock_guard<std::mutex> lock(write_mutex_);
     if (!output_enabled_) {
-        // 输出未启用，静默丢弃数据
         return samples;
     }
-    
+
+    // Capture outgoing TTS PCM into the software-loopback ring buffer so
+    // Read() can inject it as the AEC reference channel.
+    // If the ring buffer is momentarily full (shouldn't happen in steady
+    // state) we overwrite the oldest samples; a brief AEC misalignment is
+    // preferable to dropping the reference entirely.
+    if (input_reference_) {
+        int wi = loopback_write_idx_.load(std::memory_order_acquire);
+        for (int i = 0; i < samples; i++) {
+            loopback_buf_[wi] = data[i];
+            wi = (wi + 1) % kLoopbackBufSize;
+        }
+        loopback_write_idx_.store(wi, std::memory_order_release);
+    }
+
     esp_err_t ret = esp_codec_dev_write(output_dev_, (void*)data, samples * sizeof(int16_t));
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Write failed: %s (0x%x), output_enabled=%d", 
+        ESP_LOGE(TAG, "Write failed: %s (0x%x), output_enabled=%d",
                  esp_err_to_name(ret), ret, output_enabled_);
     }
     return samples;
