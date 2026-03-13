@@ -212,6 +212,7 @@ void AfeAudioProcessor::Feed(std::vector<int16_t>&& data) {
         if (!is_running_ || !output_callback_) {
             return;
         }
+        passthrough_diag_count_++;
         std::vector<int16_t> mono_frame;
         mono_frame.reserve(frame_samples_);
 
@@ -220,8 +221,41 @@ void AfeAudioProcessor::Feed(std::vector<int16_t>&& data) {
         } else {
             const size_t frames = data.size() / static_cast<size_t>(passthrough_input_channels_);
             mono_frame.reserve(frames);
+            double ch0_sum_sq = 0.0;
+            double ch1_sum_sq = 0.0;
             for (size_t i = 0; i < frames; ++i) {
-                const int16_t mic = data[i * static_cast<size_t>(passthrough_input_channels_)];
+                const int16_t ch0 = data[i * static_cast<size_t>(passthrough_input_channels_)];
+                const int16_t ch1 = data[i * static_cast<size_t>(passthrough_input_channels_) + 1];
+                ch0_sum_sq += static_cast<double>(ch0) * static_cast<double>(ch0);
+                ch1_sum_sq += static_cast<double>(ch1) * static_cast<double>(ch1);
+            }
+
+            const float ch0_rms = frames > 0 ? static_cast<float>(std::sqrt(ch0_sum_sq / static_cast<double>(frames))) : 0.0f;
+            const float ch1_rms = frames > 0 ? static_cast<float>(std::sqrt(ch1_sum_sq / static_cast<double>(frames))) : 0.0f;
+            constexpr float kSwitchRatio = 1.35f;
+            if (passthrough_selected_channel_ == 0) {
+                if (ch1_rms > ch0_rms * kSwitchRatio) {
+                    passthrough_selected_channel_ = 1;
+                }
+            } else {
+                if (ch0_rms > ch1_rms * kSwitchRatio) {
+                    passthrough_selected_channel_ = 0;
+                }
+            }
+
+            if (passthrough_diag_count_ <= 8 || passthrough_diag_count_ % 50 == 0) {
+                ESP_LOGI(
+                    TAG,
+                    "[PT-CH#%u] ch0_rms=%.1f ch1_rms=%.1f selected=%d",
+                    static_cast<unsigned>(passthrough_diag_count_),
+                    ch0_rms,
+                    ch1_rms,
+                    passthrough_selected_channel_
+                );
+            }
+            for (size_t i = 0; i < frames; ++i) {
+                const size_t base = i * static_cast<size_t>(passthrough_input_channels_);
+                const int16_t mic = data[base + static_cast<size_t>(passthrough_selected_channel_)];
                 mono_frame.push_back(mic);
             }
         }
@@ -230,17 +264,28 @@ void AfeAudioProcessor::Feed(std::vector<int16_t>&& data) {
             sample = ApplySoftGainWithLimiter(sample);
         }
 
-        // 轻量能量门控：无 VAD 模型时仅发送疑似人声窗口，避免长时间底噪淹没 ASR。
+        // 噪声场景轻量门控：要求连续起声，降低办公室环境噪声/键盘声误触发。
         const PcmDiagStats frame_stats = CalcPcmDiagStats(mono_frame.data(), mono_frame.size());
-        constexpr float kVoiceRmsThreshold = 180.0f;
-        constexpr int kVoicePeakThreshold = 700;
-        constexpr int kHangoverFrames = 8;  // ~480ms at 60ms/frame
+        constexpr float kVoiceRmsThreshold = 260.0f;
+        constexpr int kVoicePeakThreshold = 1000;
+        constexpr int kVoiceAttackFrames = 3;  // require ~180ms sustained voice
+        constexpr int kHangoverFrames = 6;     // keep ~360ms tail
         const bool voice_like = (frame_stats.rms >= kVoiceRmsThreshold) || (frame_stats.peak >= kVoicePeakThreshold);
 
-        if (voice_like) {
-            passthrough_voice_active_ = true;
+        if (!passthrough_voice_active_) {
+            if (voice_like) {
+                passthrough_voice_attack_frames_++;
+                if (passthrough_voice_attack_frames_ >= kVoiceAttackFrames) {
+                    passthrough_voice_active_ = true;
+                    passthrough_silence_frames_ = 0;
+                    passthrough_voice_attack_frames_ = 0;
+                }
+            } else {
+                passthrough_voice_attack_frames_ = 0;
+            }
+        } else if (voice_like) {
             passthrough_silence_frames_ = 0;
-        } else if (passthrough_voice_active_) {
+        } else {
             passthrough_silence_frames_++;
             if (passthrough_silence_frames_ >= kHangoverFrames) {
                 passthrough_voice_active_ = false;
@@ -262,7 +307,10 @@ void AfeAudioProcessor::Feed(std::vector<int16_t>&& data) {
 void AfeAudioProcessor::Start() {
     if (passthrough_mode_) {
         is_running_ = true;
+        passthrough_selected_channel_ = 0;
+        passthrough_diag_count_ = 0;
         passthrough_voice_active_ = false;
+        passthrough_voice_attack_frames_ = 0;
         passthrough_silence_frames_ = 0;
         return;
     }
@@ -273,7 +321,10 @@ void AfeAudioProcessor::Stop() {
     if (passthrough_mode_) {
         is_running_ = false;
         passthrough_buffer_.clear();
+        passthrough_selected_channel_ = 0;
+        passthrough_diag_count_ = 0;
         passthrough_voice_active_ = false;
+        passthrough_voice_attack_frames_ = 0;
         passthrough_silence_frames_ = 0;
         ESP_LOGI(TAG, "Passthrough processor stopped");
         return;
