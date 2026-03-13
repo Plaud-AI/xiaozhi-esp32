@@ -1,9 +1,48 @@
 #include "afe_audio_processor.h"
 #include <esp_log.h>
+#include <cmath>
+#include <cstdint>
 
 #define PROCESSOR_RUNNING 0x01
 
 #define TAG "AfeAudioProcessor"
+
+namespace {
+struct PcmDiagStats {
+    size_t sample_count = 0;
+    float rms = 0.0f;
+    int peak = 0;
+    uint32_t clip_count = 0;
+    uint32_t near_silence_count = 0;
+};
+
+static PcmDiagStats CalcPcmDiagStats(const int16_t* data, size_t sample_count) {
+    PcmDiagStats stats;
+    if (data == nullptr || sample_count == 0) {
+        return stats;
+    }
+
+    double sum_sq = 0.0;
+    for (size_t i = 0; i < sample_count; ++i) {
+        const int sample = data[i];
+        const int abs_sample = std::abs(sample);
+        sum_sq += static_cast<double>(sample) * static_cast<double>(sample);
+        if (abs_sample > stats.peak) {
+            stats.peak = abs_sample;
+        }
+        if (abs_sample >= 32760) {
+            stats.clip_count++;
+        }
+        if (abs_sample <= 64) {
+            stats.near_silence_count++;
+        }
+    }
+
+    stats.sample_count = sample_count;
+    stats.rms = static_cast<float>(std::sqrt(sum_sq / static_cast<double>(sample_count)));
+    return stats;
+}
+}  // namespace
 
 AfeAudioProcessor::AfeAudioProcessor()
     : afe_data_(nullptr) {
@@ -217,6 +256,28 @@ void AfeAudioProcessor::AudioProcessorTask() {
 
         if (output_callback_) {
             size_t samples = res->data_size / sizeof(int16_t);
+            static uint32_t s_post_afe_diag_count = 0;
+            s_post_afe_diag_count++;
+            if (s_post_afe_diag_count <= 5 || (s_post_afe_diag_count % 100 == 0)) {
+                const PcmDiagStats stats = CalcPcmDiagStats(res->data, samples);
+                const float clip_pct = stats.sample_count > 0
+                    ? (100.0f * static_cast<float>(stats.clip_count) / static_cast<float>(stats.sample_count))
+                    : 0.0f;
+                const float silence_pct = stats.sample_count > 0
+                    ? (100.0f * static_cast<float>(stats.near_silence_count) / static_cast<float>(stats.sample_count))
+                    : 0.0f;
+                ESP_LOGI(TAG,
+                         "[POST-AFE#%u] samples=%u rms=%.1f peak=%d clip=%u(%.2f%%) silence=%u(%.2f%%) vad_state=%d",
+                         static_cast<unsigned>(s_post_afe_diag_count),
+                         static_cast<unsigned>(stats.sample_count),
+                         stats.rms,
+                         stats.peak,
+                         static_cast<unsigned>(stats.clip_count),
+                         clip_pct,
+                         static_cast<unsigned>(stats.near_silence_count),
+                         silence_pct,
+                         static_cast<int>(res->vad_state));
+            }
             
             // Add data to buffer
             output_buffer_.insert(output_buffer_.end(), res->data, res->data + samples);

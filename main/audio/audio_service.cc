@@ -3,6 +3,51 @@
 #include <esp_log.h>
 #include <esp_heap_caps.h>
 #include <cstring>
+#include <cmath>
+#include <cstdint>
+
+namespace {
+struct PcmDiagStats {
+    size_t sample_count = 0;
+    float rms = 0.0f;
+    int peak = 0;
+    uint32_t clip_count = 0;
+    uint32_t near_silence_count = 0;
+};
+
+// For multi-channel interleaved PCM, pick one channel (default: ch0/mic).
+static PcmDiagStats CalcPcmDiagStats(const std::vector<int16_t>& data, int channels, int channel_index = 0) {
+    PcmDiagStats stats;
+    if (data.empty() || channels <= 0 || channel_index < 0 || channel_index >= channels) {
+        return stats;
+    }
+
+    const size_t frames = data.size() / static_cast<size_t>(channels);
+    if (frames == 0) {
+        return stats;
+    }
+
+    double sum_sq = 0.0;
+    for (size_t i = 0; i < frames; ++i) {
+        const int sample = data[i * static_cast<size_t>(channels) + static_cast<size_t>(channel_index)];
+        const int abs_sample = std::abs(sample);
+        sum_sq += static_cast<double>(sample) * static_cast<double>(sample);
+        if (abs_sample > stats.peak) {
+            stats.peak = abs_sample;
+        }
+        if (abs_sample >= 32760) {
+            stats.clip_count++;
+        }
+        if (abs_sample <= 64) {
+            stats.near_silence_count++;
+        }
+    }
+
+    stats.sample_count = frames;
+    stats.rms = static_cast<float>(std::sqrt(sum_sq / static_cast<double>(frames)));
+    return stats;
+}
+}  // namespace
 
 #if CONFIG_USE_AUDIO_PROCESSOR
 #include "processors/afe_audio_processor.h"
@@ -344,6 +389,29 @@ void AudioService::AudioInputTask() {
             int samples = audio_processor_->GetFeedSize();
             if (samples > 0) {
                 if (ReadAudioData(data, 16000, samples)) {
+                    static uint32_t s_pre_afe_diag_count = 0;
+                    s_pre_afe_diag_count++;
+                    if (s_pre_afe_diag_count <= 5 || (s_pre_afe_diag_count % 100 == 0)) {
+                        const int input_channels = codec_->input_channels();
+                        const PcmDiagStats stats = CalcPcmDiagStats(data, input_channels, 0);
+                        const float clip_pct = stats.sample_count > 0
+                            ? (100.0f * static_cast<float>(stats.clip_count) / static_cast<float>(stats.sample_count))
+                            : 0.0f;
+                        const float silence_pct = stats.sample_count > 0
+                            ? (100.0f * static_cast<float>(stats.near_silence_count) / static_cast<float>(stats.sample_count))
+                            : 0.0f;
+                        ESP_LOGI(TAG,
+                                 "[PRE-AFE#%u] ch=%d samples=%u rms=%.1f peak=%d clip=%u(%.2f%%) silence=%u(%.2f%%)",
+                                 static_cast<unsigned>(s_pre_afe_diag_count),
+                                 input_channels,
+                                 static_cast<unsigned>(stats.sample_count),
+                                 stats.rms,
+                                 stats.peak,
+                                 static_cast<unsigned>(stats.clip_count),
+                                 clip_pct,
+                                 static_cast<unsigned>(stats.near_silence_count),
+                                 silence_pct);
+                    }
                     audio_processor_->Feed(std::move(data));
                     continue;
                 }
