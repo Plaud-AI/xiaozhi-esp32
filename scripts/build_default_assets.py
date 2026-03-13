@@ -154,9 +154,9 @@ def copy_directory(src, dst):
         return False
 
 
-def process_sr_models(wakenet_model_dirs, multinet_model_dirs, build_dir, assets_dir, esp_sr_model_path=None):
+def process_sr_models(wakenet_model_dirs, multinet_model_dirs, extra_model_dirs, build_dir, assets_dir, esp_sr_model_path=None):
     """Process SR models (wakenet, multinet, and nsnet) and generate srmodels.bin"""
-    if not wakenet_model_dirs and not multinet_model_dirs:
+    if not wakenet_model_dirs and not multinet_model_dirs and not extra_model_dirs:
         return None
     
     # Create SR models build directory
@@ -184,6 +184,15 @@ def process_sr_models(wakenet_model_dirs, multinet_model_dirs, build_dir, assets
             if copy_directory(multinet_model_dir, multinet_dst):
                 models_processed += 1
                 print(f"Added multinet model: {multinet_name}")
+
+    # Copy additional SR models if available (e.g. VAD/NS for AFE audio processor)
+    if extra_model_dirs:
+        for model_dir in extra_model_dirs:
+            model_name = os.path.basename(model_dir)
+            model_dst = os.path.join(sr_models_build_dir, model_name)
+            if copy_directory(model_dir, model_dst):
+                models_processed += 1
+                print(f"Added extra SR model: {model_name}")
     
     # Copy NSNet2 model if available (for noise suppression)
     if esp_sr_model_path:
@@ -597,6 +606,76 @@ def read_wake_word_type_from_sdkconfig(sdkconfig_path):
     return config_values
 
 
+def read_audio_processor_config_from_sdkconfig(sdkconfig_path):
+    """
+    Read audio processor related configuration from sdkconfig.
+    Returns a dict indicating whether AFE path is expected.
+    """
+    if not os.path.exists(sdkconfig_path):
+        print(f"Warning: sdkconfig file not found: {sdkconfig_path}")
+        return {
+            "use_audio_processor": False,
+            "nsn_webrtc": False,
+            "nsn_nsnet2": False,
+            "vadn_webrtc": False,
+            "vadn_vadnet1_medium": False,
+        }
+
+    cfg = {
+        "use_audio_processor": False,
+        "nsn_webrtc": False,
+        "nsn_nsnet2": False,
+        "vadn_webrtc": False,
+        "vadn_vadnet1_medium": False,
+    }
+
+    with io.open(sdkconfig_path, "r") as f:
+        for line in f:
+            line = line.strip("\n")
+            if line.startswith("#"):
+                continue
+            if "CONFIG_USE_AUDIO_PROCESSOR=y" in line:
+                cfg["use_audio_processor"] = True
+            elif "CONFIG_SR_NSN_WEBRTC=y" in line:
+                cfg["nsn_webrtc"] = True
+            elif "CONFIG_SR_NSN_NSNET2=y" in line:
+                cfg["nsn_nsnet2"] = True
+            elif "CONFIG_SR_VADN_WEBRTC=y" in line:
+                cfg["vadn_webrtc"] = True
+            elif "CONFIG_SR_VADN_VADNET1_MEDIUM=y" in line:
+                cfg["vadn_vadnet1_medium"] = True
+
+    return cfg
+
+
+def get_audio_processor_model_paths(esp_sr_model_path, audio_cfg):
+    """
+    Collect model directories needed by AFE audio processor (VAD/NS).
+    To maximize compatibility across esp-sr versions, collect all subdirs under
+    known NS/VAD model roots instead of hardcoding single folder names.
+    """
+    if not audio_cfg.get("use_audio_processor", False):
+        return []
+
+    parent_dirs = [
+        "nsnet_model",
+        "vad_model",
+        "vadnet_model",
+    ]
+
+    model_paths = []
+    for parent in parent_dirs:
+        root = os.path.join(esp_sr_model_path, parent)
+        if not os.path.isdir(root):
+            continue
+        for name in os.listdir(root):
+            path = os.path.join(root, name)
+            if os.path.isdir(path):
+                model_paths.append(path)
+
+    return model_paths
+
+
 def read_custom_wake_word_from_sdkconfig(sdkconfig_path):
     """
     Read custom wake word configuration from sdkconfig
@@ -748,7 +827,7 @@ def get_emoji_collection_path(default_emoji_collection, xiaozhi_fonts_path):
         return None
 
 
-def build_assets_integrated(wakenet_model_paths, multinet_model_paths, text_font_path, emoji_collection_path, extra_files_path, aaf_animations_path, output_path, multinet_model_info=None):
+def build_assets_integrated(wakenet_model_paths, multinet_model_paths, extra_model_paths, text_font_path, emoji_collection_path, extra_files_path, aaf_animations_path, output_path, multinet_model_info=None, esp_sr_model_path=None):
     """
     Build assets using integrated functions (no external dependencies)
     """
@@ -765,9 +844,26 @@ def build_assets_integrated(wakenet_model_paths, multinet_model_paths, text_font
         
         print("Starting to build assets...")
         
-        # Process each component (pass esp_sr_model_path for NSNet2)
-        esp_sr_path = os.path.dirname(os.path.dirname(wakenet_model_paths[0])) if wakenet_model_paths else (os.path.dirname(os.path.dirname(multinet_model_paths[0])) if multinet_model_paths else None)
-        srmodels = process_sr_models(wakenet_model_paths, multinet_model_paths, temp_build_dir, assets_dir, esp_sr_path) if (wakenet_model_paths or multinet_model_paths) else None
+        # Process each component (pass esp_sr_model_path for NSNet2 fallback)
+        esp_sr_path = esp_sr_model_path
+        if not esp_sr_path:
+            esp_sr_path = (
+                os.path.dirname(os.path.dirname(wakenet_model_paths[0]))
+                if wakenet_model_paths
+                else (
+                    os.path.dirname(os.path.dirname(multinet_model_paths[0]))
+                    if multinet_model_paths
+                    else None
+                )
+            )
+        srmodels = process_sr_models(
+            wakenet_model_paths,
+            multinet_model_paths,
+            extra_model_paths,
+            temp_build_dir,
+            assets_dir,
+            esp_sr_path,
+        ) if (wakenet_model_paths or multinet_model_paths or extra_model_paths) else None
         text_font = process_text_font(text_font_path, assets_dir) if text_font_path else None
         emoji_collection = process_emoji_collection(emoji_collection_path, assets_dir) if emoji_collection_path else None
         extra_files = process_extra_files(extra_files_path, assets_dir) if extra_files_path else None
@@ -845,13 +941,15 @@ def main():
     # Read wake word type configuration from sdkconfig
     wake_word_config = read_wake_word_type_from_sdkconfig(args.sdkconfig)
     
-    # Read SR models from sdkconfig
+    # Read SR models / AFE settings from sdkconfig
     wakenet_model_names = read_wakenet_from_sdkconfig(args.sdkconfig)
     multinet_model_names = read_multinet_from_sdkconfig(args.sdkconfig)
+    audio_processor_config = read_audio_processor_config_from_sdkconfig(args.sdkconfig)
     
     # Apply wake word logic to decide which models to package
     wakenet_model_paths = []
     multinet_model_paths = []
+    extra_model_paths = []
     
     # 1. Only package wakenet models if USE_ESP_WAKE_WORD=y or USE_AFE_WAKE_WORD=y
     if wake_word_config['use_esp_wake_word'] or wake_word_config['use_afe_wake_word']:
@@ -870,6 +968,16 @@ def main():
         multinet_model_paths = get_multinet_model_paths(multinet_model_names, args.esp_sr_model_path)
     elif multinet_model_names:
         print(f"  Note: Found multinet models {multinet_model_names} but USE_CUSTOM_WAKE_WORD is disabled, skipping")
+
+    # 4. If AFE audio processor is enabled, always package VAD/NS models
+    # so runtime can avoid falling back to passthrough mode.
+    if audio_processor_config["use_audio_processor"]:
+        extra_model_paths = get_audio_processor_model_paths(args.esp_sr_model_path, audio_processor_config)
+        if extra_model_paths:
+            extra_names = ", ".join([os.path.basename(p) for p in extra_model_paths])
+            print(f"  AFE extra models: {extra_names} (will be packaged)")
+        else:
+            print("  Warning: USE_AUDIO_PROCESSOR is enabled but no AFE VAD/NS model directories were found")
     
     # Print model information (only for models that will actually be packaged)
     if wakenet_model_paths:
@@ -930,8 +1038,18 @@ def main():
         return
     
     # Build the assets
-    success = build_assets_integrated(wakenet_model_paths, multinet_model_paths, text_font_path, emoji_collection_path, 
-                                     extra_files_path, aaf_animations_path, args.output, multinet_model_info)
+    success = build_assets_integrated(
+        wakenet_model_paths,
+        multinet_model_paths,
+        extra_model_paths,
+        text_font_path,
+        emoji_collection_path,
+        extra_files_path,
+        aaf_animations_path,
+        args.output,
+        multinet_model_info,
+        args.esp_sr_model_path,
+    )
     
     if not success:
         sys.exit(1)
