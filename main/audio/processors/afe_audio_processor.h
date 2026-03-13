@@ -40,6 +40,8 @@ private:
     bool is_speaking_ = false;
     bool is_running_ = false;
     bool passthrough_mode_ = false;
+    bool afe_uplink_active_ = false;
+    int afe_uplink_silence_frames_ = 0;
     int passthrough_input_channels_ = 1;
     int passthrough_selected_channel_ = 0;
     uint32_t passthrough_diag_count_ = 0;

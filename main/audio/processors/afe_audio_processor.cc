@@ -361,6 +361,8 @@ void AfeAudioProcessor::Start() {
         passthrough_silence_frames_ = 0;
         return;
     }
+    afe_uplink_active_ = false;
+    afe_uplink_silence_frames_ = 0;
     xEventGroupSetBits(event_group_, PROCESSOR_RUNNING);
 }
 
@@ -376,6 +378,8 @@ void AfeAudioProcessor::Stop() {
         ESP_LOGI(TAG, "Passthrough processor stopped");
         return;
     }
+    afe_uplink_active_ = false;
+    afe_uplink_silence_frames_ = 0;
     ESP_LOGI(TAG, "Stopping AfeAudioProcessor...");
     
     // 1. 清除事件位，通知任务停止
@@ -447,6 +451,25 @@ void AfeAudioProcessor::AudioProcessorTask() {
                 is_speaking_ = false;
                 vad_state_change_callback_(false);
             }
+        }
+
+        // Segment-level uplink gate:
+        // Only push AFE output during speech and a short silence tail,
+        // so server ASR doesn't receive continuous background noise.
+        constexpr int kUplinkHangoverFrames = 8;  // ~480ms at 60ms/frame
+        if (res->vad_state == VAD_SPEECH) {
+            afe_uplink_active_ = true;
+            afe_uplink_silence_frames_ = 0;
+        } else if (afe_uplink_active_) {
+            afe_uplink_silence_frames_++;
+            if (afe_uplink_silence_frames_ >= kUplinkHangoverFrames) {
+                afe_uplink_active_ = false;
+                afe_uplink_silence_frames_ = 0;
+            }
+        }
+
+        if (!afe_uplink_active_) {
+            continue;
         }
 
         if (output_callback_) {
