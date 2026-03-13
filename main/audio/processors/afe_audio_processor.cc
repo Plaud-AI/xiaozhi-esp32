@@ -105,7 +105,13 @@ void AfeAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms, srm
         char* ns_fallback = nullptr;
         char* vad_fallback = nullptr;
         for (int i = 0; i < models->num; ++i) {
-            char* name = models->model_info[i].model_name;
+            char* name = nullptr;
+            if (models->model_name != nullptr) {
+                name = models->model_name[i];
+            }
+            if (name == nullptr && models->model_info != nullptr) {
+                name = models->model_info[i];
+            }
             if (name == nullptr) {
                 continue;
             }
