@@ -157,7 +157,7 @@ void AfeAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms, srm
     afe_config_t* afe_config = afe_config_init(input_format.c_str(), NULL, AFE_TYPE_VC, AFE_MODE_HIGH_PERF);
     afe_config->aec_mode = AEC_MODE_VOIP_HIGH_PERF;
     afe_config->vad_mode = VAD_MODE_0;
-    afe_config->vad_min_noise_ms = 100;
+    afe_config->vad_min_noise_ms = 180;
     
     // ⚠️ CRITICAL: 只有在找到有效的 VAD 模型时才设置模型名称
     if (vad_model_name != nullptr) {
@@ -460,8 +460,8 @@ void AfeAudioProcessor::AudioProcessorTask() {
         // 1) VAD must say "speech"
         // 2) and signal energy must be high enough
         // This avoids long false-positive uploads when noise keeps VAD active.
-        constexpr float kSpeechRmsThreshold = 140.0f;
-        constexpr int kSpeechPeakThreshold = 520;
+        constexpr float kSpeechRmsThreshold = 160.0f;
+        constexpr int kSpeechPeakThreshold = 600;
         constexpr int kUplinkHangoverFrames = 8;  // ~480ms at 60ms/frame
         const bool speech_like = (res->vad_state == VAD_SPEECH) &&
             (frame_stats.rms >= kSpeechRmsThreshold || frame_stats.peak >= kSpeechPeakThreshold);
