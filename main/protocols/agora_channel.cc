@@ -216,14 +216,20 @@ bool AgoraChannel::IsConnected() const {
 }
 
 bool AgoraChannel::SendBinary(const void* data, size_t len) {
-    if (!connected_ || conn_id_ == CONNECTION_ID_INVALID) {
+    if (!connected_ || conn_id_ == CONNECTION_ID_INVALID || stream_id_ < 0) {
         return false;
     }
-    audio_frame_info_t info{};
-    info.data_type = AUDIO_DATA_TYPE_OPUS;
-    int rc = agora_rtc_send_audio_data(conn_id_, data, len, &info);
+    // Send OPUS via data stream (not audio channel) to bypass Agora SDK codec
+    // mismatch. Prefix 0x01 distinguishes binary audio from JSON text.
+    uint8_t buf[1 + len];
+    buf[0] = 0x01;
+    memcpy(buf + 1, data, len);
+    int rc = agora_rtc_send_stream_message(conn_id_, stream_id_,
+                                           reinterpret_cast<const char*>(buf),
+                                           1 + len);
     if (rc < 0) {
-        ESP_LOGW(TAG, "agora_rtc_send_audio_data failed: %s", agora_rtc_err_2_str(rc));
+        ESP_LOGW(TAG, "agora_rtc_send_stream_message(audio) failed: %s",
+                 agora_rtc_err_2_str(rc));
         return false;
     }
     return true;
