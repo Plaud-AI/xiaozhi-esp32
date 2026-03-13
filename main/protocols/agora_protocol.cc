@@ -10,15 +10,15 @@
 
 static constexpr int kSampleRate     = 16000;
 static constexpr int kFrameDurationMs = 60;
+static constexpr int kProtocolVersion = 3;
 
 AgoraProtocol::AgoraProtocol() {
     server_sample_rate_    = kSampleRate;
     server_frame_duration_ = kFrameDurationMs;
 
-    // Pre-encode OPUS silence with DTX enabled.  DTX (Discontinuous
-    // Transmission) produces minimal 1-byte comfort-noise frames after a few
-    // frames of silence input.  The server's VAD treats these as true silence,
-    // unlike a full 18-byte OPUS frame which may be misread as low-level noise.
+    // Cache a 1-byte DTX comfort-noise frame (server requirement).
+    // The server's VAD specifically expects 1-byte OPUS silence during TTS;
+    // full 18-byte silence frames are misread as low-level noise.
     const int frame_samples = kSampleRate * kFrameDurationMs / 1000; // 960
     OpusEncoderWrapper enc(kSampleRate, 1, kFrameDurationMs);
     enc.SetDtx(true);
@@ -97,6 +97,33 @@ void AgoraProtocol::NotifyPlaybackComplete() {
     StopSilenceSender();
 }
 
+bool AgoraProtocol::SendHello() {
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "hello");
+    cJSON_AddNumberToObject(root, "version", kProtocolVersion);
+
+    cJSON* features = cJSON_CreateObject();
+    cJSON_AddBoolToObject(features, "mcp", true);
+    cJSON_AddItemToObject(root, "features", features);
+
+    cJSON_AddStringToObject(root, "transport", "agora");
+
+    cJSON* audio_params = cJSON_CreateObject();
+    cJSON_AddStringToObject(audio_params, "format", "opus");
+    cJSON_AddNumberToObject(audio_params, "sample_rate", kSampleRate);
+    cJSON_AddNumberToObject(audio_params, "channels", 1);
+    cJSON_AddNumberToObject(audio_params, "frame_duration", kFrameDurationMs);
+    cJSON_AddItemToObject(root, "audio_params", audio_params);
+
+    auto* json_str = cJSON_PrintUnformatted(root);
+    std::string message(json_str);
+    cJSON_free(json_str);
+    cJSON_Delete(root);
+
+    ESP_LOGI(TAG, "Sending hello: %s", message.c_str());
+    return SendText(message);
+}
+
 bool AgoraProtocol::SendText(const std::string& text) {
     if (!channel_ || !channel_->IsConnected()) {
         ESP_LOGW(TAG, "SendText: channel not ready (channel=%p, connected=%d)",
@@ -117,6 +144,10 @@ bool AgoraProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
         ESP_LOGW(TAG, "SendAudio: channel not ready (ch=%p, connected=%d)",
                  channel_.get(), channel_ ? channel_->IsConnected() : 0);
         return false;
+    }
+
+    if (tts_playing_) {
+        return true;
     }
 
     audio_packets_sent_++;
@@ -151,29 +182,57 @@ void AgoraProtocol::HandleIncomingData(const char* data, size_t len, bool binary
         ESP_LOGI(TAG, "Received JSON: %.*s", (int)std::min(len, (size_t)200), data);
         auto* root = cJSON_Parse(data);
         if (root) {
-            // The Agora AI Agent assigns its own session_id and embeds it in
-            // every response message. Unlike the WebSocket protocol (which has
-            // an explicit hello handshake), we must extract and adopt the
-            // server-side session_id from the first incoming JSON so that all
-            // subsequent control messages (listen:start, listen:stop, …) carry
-            // the session_id the server actually recognises.
-            auto* sid_item = cJSON_GetObjectItem(root, "session_id");
-            if (sid_item && cJSON_IsString(sid_item) && sid_item->valuestring) {
-                std::string server_sid = sid_item->valuestring;
-                if (!server_sid.empty() && server_sid != session_id_) {
-                    ESP_LOGI(TAG, "Adopting server session_id: %s -> %s",
-                             session_id_.c_str(), server_sid.c_str());
-                    session_id_ = server_sid;
-                }
-            }
-            // TTS silence sender is DISABLED.  The device mic is already OFF
-            // during TTS (Application disables voice processing in SPEAKING state),
-            // so no echo reaches the server.  Sending silence during TTS actually
-            // causes the AI Agent's VAD to start its listen-timeout prematurely,
-            // making it miss the user's speech after TTS ends.
+            auto* type_item = cJSON_GetObjectItem(root, "type");
+            const char* msg_type = (type_item && cJSON_IsString(type_item))
+                                       ? type_item->valuestring : "";
 
-            if (on_incoming_json_) {
-                on_incoming_json_(root);
+            if (strcmp(msg_type, "hello") == 0) {
+                // Server hello — parse session_id and audio params (same
+                // semantics as WebsocketProtocol::ParseServerHello).
+                auto* sid = cJSON_GetObjectItem(root, "session_id");
+                if (cJSON_IsString(sid) && sid->valuestring[0]) {
+                    ESP_LOGI(TAG, "Server hello session_id: %s", sid->valuestring);
+                    session_id_ = sid->valuestring;
+                }
+                auto* ap = cJSON_GetObjectItem(root, "audio_params");
+                if (cJSON_IsObject(ap)) {
+                    auto* sr = cJSON_GetObjectItem(ap, "sample_rate");
+                    if (cJSON_IsNumber(sr)) server_sample_rate_ = sr->valueint;
+                    auto* fd = cJSON_GetObjectItem(ap, "frame_duration");
+                    if (cJSON_IsNumber(fd)) server_frame_duration_ = fd->valueint;
+                }
+                ESP_LOGI(TAG, "Server hello parsed (sr=%d, fd=%d)",
+                         server_sample_rate_, server_frame_duration_);
+                // Don't forward hello to Application.
+            } else {
+                // Adopt session_id from any server message (fallback if
+                // server doesn't send a hello response).
+                auto* sid_item = cJSON_GetObjectItem(root, "session_id");
+                if (sid_item && cJSON_IsString(sid_item) && sid_item->valuestring) {
+                    std::string server_sid = sid_item->valuestring;
+                    if (!server_sid.empty() && server_sid != session_id_) {
+                        ESP_LOGI(TAG, "Adopting server session_id: %s -> %s",
+                                 session_id_.c_str(), server_sid.c_str());
+                        session_id_ = server_sid;
+                    }
+                }
+
+                // Drive silence sender on tts:start / tts:stop.
+                if (strcmp(msg_type, "tts") == 0) {
+                    auto* state_item = cJSON_GetObjectItem(root, "state");
+                    if (state_item && cJSON_IsString(state_item)) {
+                        if (strcmp(state_item->valuestring, "start") == 0) {
+                            tts_stop_pending_ = false;
+                            StartSilenceSender();
+                        } else if (strcmp(state_item->valuestring, "stop") == 0) {
+                            StopSilenceSender();
+                        }
+                    }
+                }
+
+                if (on_incoming_json_) {
+                    on_incoming_json_(root);
+                }
             }
             cJSON_Delete(root);
         } else {
@@ -208,15 +267,17 @@ bool AgoraProtocol::OpenAudioChannel() {
         return false;
     }
 
-    // session_id_ is not used in Agora's conversation model (the AI Agent
-    // manages the session server-side), but Protocol's default JSON helpers
-    // embed it; set it to the channel name as a stable identifier.
     session_id_ = agora_ch->channel();
-
     channel_ = std::move(agora_ch);
 
-    // Agora Conversational AI manages the conversation automatically;
-    // no hello / server-hello exchange is needed.
+    // Send the same hello handshake that WebSocket uses so the server can
+    // initialise its STT/TTS session with the correct audio parameters.
+    // Without this the server has no codec/format context for the Agora
+    // channel and may fail to process audio in Round 2+.
+    if (!SendHello()) {
+        ESP_LOGE(TAG, "Failed to send hello to server");
+    }
+
     if (on_audio_channel_opened_) {
         on_audio_channel_opened_();
     }

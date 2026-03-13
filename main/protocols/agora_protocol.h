@@ -33,8 +33,6 @@ public:
     bool IsAudioChannelOpened() const override;
 
     // Called by Application after the audio decode/playback queue is empty.
-    // Finalises the TTS→Listening transition: clears tts_playing_ so that
-    // real microphone packets are no longer dropped.
     void NotifyPlaybackComplete();
 
 private:
@@ -52,6 +50,7 @@ private:
     static void SilenceTimerCallback(TimerHandle_t timer);
 
     bool SendText(const std::string& text) override;
+    bool SendHello();
     void HandleIncomingData(const char* data, size_t len, bool binary);
 
     // tts:stop has been received but we are still waiting for the local
