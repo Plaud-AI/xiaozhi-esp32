@@ -453,11 +453,20 @@ void AfeAudioProcessor::AudioProcessorTask() {
             }
         }
 
+        const size_t samples = res->data_size / sizeof(int16_t);
+        const PcmDiagStats frame_stats = CalcPcmDiagStats(res->data, samples);
+
         // Segment-level uplink gate:
-        // Only push AFE output during speech and a short silence tail,
-        // so server ASR doesn't receive continuous background noise.
+        // 1) VAD must say "speech"
+        // 2) and signal energy must be high enough
+        // This avoids long false-positive uploads when noise keeps VAD active.
+        constexpr float kSpeechRmsThreshold = 140.0f;
+        constexpr int kSpeechPeakThreshold = 520;
         constexpr int kUplinkHangoverFrames = 8;  // ~480ms at 60ms/frame
-        if (res->vad_state == VAD_SPEECH) {
+        const bool speech_like = (res->vad_state == VAD_SPEECH) &&
+            (frame_stats.rms >= kSpeechRmsThreshold || frame_stats.peak >= kSpeechPeakThreshold);
+
+        if (speech_like) {
             afe_uplink_active_ = true;
             afe_uplink_silence_frames_ = 0;
         } else if (afe_uplink_active_) {
@@ -473,28 +482,27 @@ void AfeAudioProcessor::AudioProcessorTask() {
         }
 
         if (output_callback_) {
-            size_t samples = res->data_size / sizeof(int16_t);
             static uint32_t s_post_afe_diag_count = 0;
             s_post_afe_diag_count++;
             if (s_post_afe_diag_count <= 5 || (s_post_afe_diag_count % 100 == 0)) {
-                const PcmDiagStats stats = CalcPcmDiagStats(res->data, samples);
-                const float clip_pct = stats.sample_count > 0
-                    ? (100.0f * static_cast<float>(stats.clip_count) / static_cast<float>(stats.sample_count))
+                const float clip_pct = frame_stats.sample_count > 0
+                    ? (100.0f * static_cast<float>(frame_stats.clip_count) / static_cast<float>(frame_stats.sample_count))
                     : 0.0f;
-                const float silence_pct = stats.sample_count > 0
-                    ? (100.0f * static_cast<float>(stats.near_silence_count) / static_cast<float>(stats.sample_count))
+                const float silence_pct = frame_stats.sample_count > 0
+                    ? (100.0f * static_cast<float>(frame_stats.near_silence_count) / static_cast<float>(frame_stats.sample_count))
                     : 0.0f;
                 ESP_LOGI(TAG,
-                         "[POST-AFE#%u] samples=%u rms=%.1f peak=%d clip=%u(%.2f%%) silence=%u(%.2f%%) vad_state=%d",
+                         "[POST-AFE#%u] samples=%u rms=%.1f peak=%d clip=%u(%.2f%%) silence=%u(%.2f%%) vad_state=%d gate=%d",
                          static_cast<unsigned>(s_post_afe_diag_count),
-                         static_cast<unsigned>(stats.sample_count),
-                         stats.rms,
-                         stats.peak,
-                         static_cast<unsigned>(stats.clip_count),
+                         static_cast<unsigned>(frame_stats.sample_count),
+                         frame_stats.rms,
+                         frame_stats.peak,
+                         static_cast<unsigned>(frame_stats.clip_count),
                          clip_pct,
-                         static_cast<unsigned>(stats.near_silence_count),
+                         static_cast<unsigned>(frame_stats.near_silence_count),
                          silence_pct,
-                         static_cast<int>(res->vad_state));
+                         static_cast<int>(res->vad_state),
+                         afe_uplink_active_ ? 1 : 0);
             }
             
             // Add data to buffer
