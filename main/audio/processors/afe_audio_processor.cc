@@ -458,11 +458,12 @@ void AfeAudioProcessor::AudioProcessorTask() {
         const size_t samples = res->data_size / sizeof(int16_t);
         const PcmDiagStats frame_stats = CalcPcmDiagStats(res->data, samples);
 
-        // Uplink gate: VAD + minimal energy floor to reject false positives.
-        // VAD_MODE_3 occasionally triggers on digital silence (rms < 10).
-        constexpr int kUplinkHangoverFrames = 12; // ~384ms at 32ms/frame
-        constexpr float kMinSpeechRms = 25.0f;
-        constexpr int kMinSpeechPeak = 60;
+        // Uplink gate: VAD + energy floor to reject false positives.
+        // Observed in office environment: false positives have rms < 30, peak < 130;
+        // real speech starts at rms ~100, peak ~250. Thresholds chosen at midpoint.
+        constexpr int kUplinkHangoverFrames = 12; // ~720ms at 60ms/frame
+        constexpr float kMinSpeechRms = 80.0f;
+        constexpr int kMinSpeechPeak = 200;
         const bool vad_speech = (res->vad_state == VAD_SPEECH) &&
             (frame_stats.rms >= kMinSpeechRms || frame_stats.peak >= kMinSpeechPeak);
 
