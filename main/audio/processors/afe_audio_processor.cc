@@ -264,16 +264,23 @@ void AfeAudioProcessor::Feed(std::vector<int16_t>&& data) {
             sample = ApplySoftGainWithLimiter(sample);
         }
 
-        // 噪声场景轻量门控：要求连续起声，降低办公室环境噪声/键盘声误触发。
+        // 噪声场景轻量门控：使用“双阈值”避免语音被切碎。
+        // 1) 起声阈值较高，降低噪声误触发；
+        // 2) 进入语音态后使用更低的维持阈值，保留轻声/尾音连续性。
         const PcmDiagStats frame_stats = CalcPcmDiagStats(mono_frame.data(), mono_frame.size());
-        constexpr float kVoiceRmsThreshold = 260.0f;
-        constexpr int kVoicePeakThreshold = 1000;
+        constexpr float kVoiceRmsStartThreshold = 260.0f;
+        constexpr int kVoicePeakStartThreshold = 1000;
+        constexpr float kVoiceRmsKeepThreshold = 130.0f;
+        constexpr int kVoicePeakKeepThreshold = 520;
         constexpr int kVoiceAttackFrames = 3;  // require ~180ms sustained voice
-        constexpr int kHangoverFrames = 6;     // keep ~360ms tail
-        const bool voice_like = (frame_stats.rms >= kVoiceRmsThreshold) || (frame_stats.peak >= kVoicePeakThreshold);
+        constexpr int kHangoverFrames = 10;    // keep ~600ms tail
+        const bool voice_like_start =
+            (frame_stats.rms >= kVoiceRmsStartThreshold) || (frame_stats.peak >= kVoicePeakStartThreshold);
+        const bool voice_like_keep =
+            (frame_stats.rms >= kVoiceRmsKeepThreshold) || (frame_stats.peak >= kVoicePeakKeepThreshold);
 
         if (!passthrough_voice_active_) {
-            if (voice_like) {
+            if (voice_like_start) {
                 passthrough_voice_attack_frames_++;
                 if (passthrough_voice_attack_frames_ >= kVoiceAttackFrames) {
                     passthrough_voice_active_ = true;
@@ -283,7 +290,7 @@ void AfeAudioProcessor::Feed(std::vector<int16_t>&& data) {
             } else {
                 passthrough_voice_attack_frames_ = 0;
             }
-        } else if (voice_like) {
+        } else if (voice_like_keep) {
             passthrough_silence_frames_ = 0;
         } else {
             passthrough_silence_frames_++;
