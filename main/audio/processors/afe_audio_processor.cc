@@ -458,25 +458,29 @@ void AfeAudioProcessor::AudioProcessorTask() {
         const size_t samples = res->data_size / sizeof(int16_t);
         const PcmDiagStats frame_stats = CalcPcmDiagStats(res->data, samples);
 
-        // Segment-level uplink gate: rely on AFE VAD (MODE_3 + NS) only.
-        // NS already suppresses noise; VAD_MODE_3 is the most aggressive mode.
-        // No additional energy threshold — it was blocking real speech.
-        constexpr int kUplinkHangoverFrames = 20; // ~640ms tail after VAD_SILENCE
-        const bool vad_speech = (res->vad_state == VAD_SPEECH);
+        // Uplink gate: VAD + minimal energy floor to reject false positives.
+        // VAD_MODE_3 occasionally triggers on digital silence (rms < 10).
+        constexpr int kUplinkHangoverFrames = 12; // ~384ms at 32ms/frame
+        constexpr float kMinSpeechRms = 25.0f;
+        constexpr int kMinSpeechPeak = 60;
+        const bool vad_speech = (res->vad_state == VAD_SPEECH) &&
+            (frame_stats.rms >= kMinSpeechRms || frame_stats.peak >= kMinSpeechPeak);
 
         if (vad_speech) {
             afe_uplink_silence_frames_ = 0;
-            afe_uplink_attack_frames_ = 0;
             if (!afe_uplink_active_) {
-                ESP_LOGI(TAG, "Gate OPEN (VAD): rms=%.1f peak=%d", frame_stats.rms, frame_stats.peak);
+                ESP_LOGI(TAG, "Gate OPEN: rms=%.1f peak=%d vad=%d",
+                         frame_stats.rms, frame_stats.peak, res->vad_state);
                 afe_uplink_active_ = true;
+                output_buffer_.clear();
             }
         } else if (afe_uplink_active_) {
             afe_uplink_silence_frames_++;
             if (afe_uplink_silence_frames_ >= kUplinkHangoverFrames) {
-                ESP_LOGI(TAG, "Gate CLOSE (silence %d frames)", afe_uplink_silence_frames_);
+                ESP_LOGI(TAG, "Gate CLOSE (%d silent frames)", afe_uplink_silence_frames_);
                 afe_uplink_active_ = false;
                 afe_uplink_silence_frames_ = 0;
+                output_buffer_.clear();
             }
         }
 
@@ -512,17 +516,28 @@ void AfeAudioProcessor::AudioProcessorTask() {
             output_buffer_.insert(output_buffer_.end(), res->data, res->data + samples);
             
             // Output complete frames when buffer has enough data
+            static uint32_t s_output_cb_count = 0;
             while (output_buffer_.size() >= frame_samples_) {
+                std::vector<int16_t> frame_to_send(output_buffer_.begin(),
+                    output_buffer_.begin() + frame_samples_);
                 if (output_buffer_.size() == frame_samples_) {
-                    // If buffer size equals frame size, copy the entire buffer and clear
-                    output_callback_(std::vector<int16_t>(output_buffer_.begin(), output_buffer_.end()));
                     output_buffer_.clear();
                     output_buffer_.reserve(frame_samples_);
                 } else {
-                    // If buffer size exceeds frame size, copy one frame and remove it
-                    output_callback_(std::vector<int16_t>(output_buffer_.begin(), output_buffer_.begin() + frame_samples_));
-                    output_buffer_.erase(output_buffer_.begin(), output_buffer_.begin() + frame_samples_);
+                    output_buffer_.erase(output_buffer_.begin(),
+                        output_buffer_.begin() + frame_samples_);
                 }
+
+                s_output_cb_count++;
+                if (s_output_cb_count <= 5 || (s_output_cb_count % 50 == 0)) {
+                    auto cb_stats = CalcPcmDiagStats(frame_to_send.data(), frame_to_send.size());
+                    ESP_LOGI(TAG, "[OUTPUT-CB#%u] samples=%u rms=%.1f peak=%d",
+                             static_cast<unsigned>(s_output_cb_count),
+                             static_cast<unsigned>(cb_stats.sample_count),
+                             cb_stats.rms, cb_stats.peak);
+                }
+
+                output_callback_(std::move(frame_to_send));
             }
         }
     }
