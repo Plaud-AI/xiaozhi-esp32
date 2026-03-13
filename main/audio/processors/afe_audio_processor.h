@@ -38,8 +38,12 @@ private:
     AudioCodec* codec_ = nullptr;
     int frame_samples_ = 0;
     bool is_speaking_ = false;
+    bool is_running_ = false;
+    bool passthrough_mode_ = false;
+    int passthrough_input_channels_ = 1;
     // Use PSRAM allocator for output buffer to save SRAM
     std::vector<int16_t, micro_wake_word::ExternalRAMAllocator<int16_t>> output_buffer_;
+    std::vector<int16_t, micro_wake_word::ExternalRAMAllocator<int16_t>> passthrough_buffer_;
     TaskHandle_t task_handle_ = nullptr;
     StackType_t* task_stack_ = nullptr;
     StaticTask_t* task_buffer_ = nullptr;

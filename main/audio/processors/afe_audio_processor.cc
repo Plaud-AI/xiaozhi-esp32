@@ -42,6 +42,22 @@ static PcmDiagStats CalcPcmDiagStats(const int16_t* data, size_t sample_count) {
     stats.rms = static_cast<float>(std::sqrt(sum_sq / static_cast<double>(sample_count)));
     return stats;
 }
+
+static inline int16_t ApplySoftGainWithLimiter(int16_t sample) {
+    constexpr float kGain = 2.5f;
+    constexpr int kNoiseFloor = 24;
+    const int abs_sample = std::abs(static_cast<int>(sample));
+    if (abs_sample <= kNoiseFloor) {
+        return sample;
+    }
+    int boosted = static_cast<int>(static_cast<float>(sample) * kGain);
+    if (boosted > 32767) {
+        boosted = 32767;
+    } else if (boosted < -32768) {
+        boosted = -32768;
+    }
+    return static_cast<int16_t>(boosted);
+}
 }  // namespace
 
 AfeAudioProcessor::AfeAudioProcessor()
@@ -82,6 +98,22 @@ void AfeAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms, srm
     char* ns_model_name = esp_srmodel_filter(models, ESP_NSNET_PREFIX, NULL);
     char* vad_model_name = esp_srmodel_filter(models, ESP_VADN_PREFIX, NULL);
     
+    // 无 VAD/NS 模型且未开启 AEC 时，AFE 实际不会提供有效增强，
+    // 反而可能引入额外缓冲/衰减；此时退化为直通 mic 模式。
+#if CONFIG_USE_DEVICE_AEC
+    constexpr bool kDeviceAecEnabled = true;
+#else
+    constexpr bool kDeviceAecEnabled = false;
+#endif
+    if (vad_model_name == nullptr && ns_model_name == nullptr && !kDeviceAecEnabled) {
+        passthrough_mode_ = true;
+        passthrough_input_channels_ = codec_->input_channels();
+        passthrough_buffer_.clear();
+        passthrough_buffer_.reserve(frame_samples_);
+        ESP_LOGW(TAG, "⚠️ No VAD/NS models, fallback to passthrough mic mode (skip AFE fetch)");
+        return;
+    }
+
     afe_config_t* afe_config = afe_config_init(input_format.c_str(), NULL, AFE_TYPE_VC, AFE_MODE_HIGH_PERF);
     afe_config->aec_mode = AEC_MODE_VOIP_HIGH_PERF;
     afe_config->vad_mode = VAD_MODE_0;
@@ -166,6 +198,9 @@ AfeAudioProcessor::~AfeAudioProcessor() {
 }
 
 size_t AfeAudioProcessor::GetFeedSize() {
+    if (passthrough_mode_) {
+        return frame_samples_;
+    }
     if (afe_data_ == nullptr) {
         return 0;
     }
@@ -173,6 +208,36 @@ size_t AfeAudioProcessor::GetFeedSize() {
 }
 
 void AfeAudioProcessor::Feed(std::vector<int16_t>&& data) {
+    if (passthrough_mode_) {
+        if (!is_running_ || !output_callback_) {
+            return;
+        }
+
+        if (passthrough_input_channels_ <= 1) {
+            for (auto& sample : data) {
+                sample = ApplySoftGainWithLimiter(sample);
+            }
+            output_callback_(std::move(data));
+            return;
+        }
+
+        const size_t frames = data.size() / static_cast<size_t>(passthrough_input_channels_);
+        for (size_t i = 0; i < frames; ++i) {
+            const int16_t mic = data[i * static_cast<size_t>(passthrough_input_channels_)];
+            passthrough_buffer_.push_back(ApplySoftGainWithLimiter(mic));
+            if (passthrough_buffer_.size() >= static_cast<size_t>(frame_samples_)) {
+                output_callback_(std::vector<int16_t>(
+                    passthrough_buffer_.begin(),
+                    passthrough_buffer_.begin() + frame_samples_
+                ));
+                passthrough_buffer_.erase(
+                    passthrough_buffer_.begin(),
+                    passthrough_buffer_.begin() + frame_samples_
+                );
+            }
+        }
+        return;
+    }
     if (afe_data_ == nullptr) {
         return;
     }
@@ -180,10 +245,20 @@ void AfeAudioProcessor::Feed(std::vector<int16_t>&& data) {
 }
 
 void AfeAudioProcessor::Start() {
+    if (passthrough_mode_) {
+        is_running_ = true;
+        return;
+    }
     xEventGroupSetBits(event_group_, PROCESSOR_RUNNING);
 }
 
 void AfeAudioProcessor::Stop() {
+    if (passthrough_mode_) {
+        is_running_ = false;
+        passthrough_buffer_.clear();
+        ESP_LOGI(TAG, "Passthrough processor stopped");
+        return;
+    }
     ESP_LOGI(TAG, "Stopping AfeAudioProcessor...");
     
     // 1. 清除事件位，通知任务停止
@@ -206,6 +281,9 @@ void AfeAudioProcessor::Stop() {
 }
 
 bool AfeAudioProcessor::IsRunning() {
+    if (passthrough_mode_) {
+        return is_running_;
+    }
     return xEventGroupGetBits(event_group_) & PROCESSOR_RUNNING;
 }
 
@@ -300,6 +378,10 @@ void AfeAudioProcessor::AudioProcessorTask() {
 }
 
 void AfeAudioProcessor::EnableDeviceAec(bool enable) {
+    if (passthrough_mode_) {
+        ESP_LOGW(TAG, "EnableDeviceAec ignored in passthrough mode");
+        return;
+    }
     if (enable) {
 #if CONFIG_USE_DEVICE_AEC
         afe_iface_->disable_vad(afe_data_);
