@@ -363,6 +363,7 @@ void AfeAudioProcessor::Start() {
     }
     afe_uplink_active_ = false;
     afe_uplink_silence_frames_ = 0;
+    afe_uplink_attack_frames_ = 0;
     xEventGroupSetBits(event_group_, PROCESSOR_RUNNING);
 }
 
@@ -380,6 +381,7 @@ void AfeAudioProcessor::Stop() {
     }
     afe_uplink_active_ = false;
     afe_uplink_silence_frames_ = 0;
+    afe_uplink_attack_frames_ = 0;
     ESP_LOGI(TAG, "Stopping AfeAudioProcessor...");
     
     // 1. 清除事件位，通知任务停止
@@ -462,22 +464,30 @@ void AfeAudioProcessor::AudioProcessorTask() {
         // This avoids long false-positive uploads when noise keeps VAD active.
         constexpr float kSpeechRmsThreshold = 160.0f;
         constexpr int kSpeechPeakThreshold = 600;
-        constexpr int kUplinkHangoverFrames = 8;  // ~480ms at 60ms/frame
+        constexpr int kUplinkHangoverFrames = 15; // ~480ms at 32ms/frame
+        constexpr int kUplinkAttackFrames = 3;    // ~96ms at 32ms/frame
         const bool speech_like = (res->vad_state == VAD_SPEECH) &&
             (frame_stats.rms >= kSpeechRmsThreshold || frame_stats.peak >= kSpeechPeakThreshold);
 
         if (speech_like) {
-            if (!afe_uplink_active_) {
-                ESP_LOGI(TAG, "Gate OPEN: rms=%.1f peak=%d", frame_stats.rms, frame_stats.peak);
-            }
-            afe_uplink_active_ = true;
             afe_uplink_silence_frames_ = 0;
-        } else if (afe_uplink_active_) {
-            afe_uplink_silence_frames_++;
-            if (afe_uplink_silence_frames_ >= kUplinkHangoverFrames) {
-                ESP_LOGI(TAG, "Gate CLOSE");
-                afe_uplink_active_ = false;
-                afe_uplink_silence_frames_ = 0;
+            if (!afe_uplink_active_) {
+                afe_uplink_attack_frames_++;
+                if (afe_uplink_attack_frames_ >= kUplinkAttackFrames) {
+                    ESP_LOGI(TAG, "Gate OPEN: rms=%.1f peak=%d", frame_stats.rms, frame_stats.peak);
+                    afe_uplink_active_ = true;
+                    afe_uplink_attack_frames_ = 0;
+                }
+            }
+        } else {
+            afe_uplink_attack_frames_ = 0;
+            if (afe_uplink_active_) {
+                afe_uplink_silence_frames_++;
+                if (afe_uplink_silence_frames_ >= kUplinkHangoverFrames) {
+                    ESP_LOGI(TAG, "Gate CLOSE");
+                    afe_uplink_active_ = false;
+                    afe_uplink_silence_frames_ = 0;
+                }
             }
         }
 
