@@ -156,7 +156,7 @@ void AfeAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms, srm
 
     afe_config_t* afe_config = afe_config_init(input_format.c_str(), NULL, AFE_TYPE_VC, AFE_MODE_HIGH_PERF);
     afe_config->aec_mode = AEC_MODE_VOIP_HIGH_PERF;
-    afe_config->vad_mode = VAD_MODE_0;
+    afe_config->vad_mode = VAD_MODE_3;
     afe_config->vad_min_noise_ms = 180;
     
     // ⚠️ CRITICAL: 只有在找到有效的 VAD 模型时才设置模型名称
@@ -467,11 +467,15 @@ void AfeAudioProcessor::AudioProcessorTask() {
             (frame_stats.rms >= kSpeechRmsThreshold || frame_stats.peak >= kSpeechPeakThreshold);
 
         if (speech_like) {
+            if (!afe_uplink_active_) {
+                ESP_LOGI(TAG, "Gate OPEN: rms=%.1f peak=%d", frame_stats.rms, frame_stats.peak);
+            }
             afe_uplink_active_ = true;
             afe_uplink_silence_frames_ = 0;
         } else if (afe_uplink_active_) {
             afe_uplink_silence_frames_++;
             if (afe_uplink_silence_frames_ >= kUplinkHangoverFrames) {
+                ESP_LOGI(TAG, "Gate CLOSE");
                 afe_uplink_active_ = false;
                 afe_uplink_silence_frames_ = 0;
             }
