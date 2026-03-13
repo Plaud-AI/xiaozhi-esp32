@@ -130,7 +130,14 @@ void AudioService::Initialize(AudioCodec* codec) {
     /* Setup the audio codec */
     opus_decoder_ = std::make_unique<OpusDecoderWrapper>(codec->output_sample_rate(), 1, OPUS_FRAME_DURATION_MS);
     opus_encoder_ = std::make_unique<OpusEncoderWrapper>(16000, 1, OPUS_FRAME_DURATION_MS);
-    opus_encoder_->SetComplexity(0);
+    // ASR 上行优先保证语音可懂度：
+    // 1) 关闭 DTX，避免轻声被编码为 1-byte 静音包；
+    // 2) 提升编码复杂度/码率，减少语音细节损失。
+    opus_encoder_->SetDtx(false);
+    opus_encoder_->SetComplexity(5);
+    opus_encoder_->SetBitrate(24000);
+    opus_encoder_->SetVbr(true);
+    opus_encoder_->SetInbandFec(false);
 
     if (codec->input_sample_rate() != 16000) {
         input_resampler_.Configure(codec->input_sample_rate(), 16000);

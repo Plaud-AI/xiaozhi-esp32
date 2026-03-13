@@ -107,3 +107,24 @@ void OpusEncoderWrapper::SetComplexity(int complexity) {
         opus_encoder_ctl(audio_enc_, OPUS_SET_COMPLEXITY(complexity));
     }
 }
+
+void OpusEncoderWrapper::SetBitrate(int bitrate) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (audio_enc_ != nullptr) {
+        opus_encoder_ctl(audio_enc_, OPUS_SET_BITRATE(bitrate));
+    }
+}
+
+void OpusEncoderWrapper::SetVbr(bool enable) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (audio_enc_ != nullptr) {
+        opus_encoder_ctl(audio_enc_, OPUS_SET_VBR(enable ? 1 : 0));
+    }
+}
+
+void OpusEncoderWrapper::SetInbandFec(bool enable) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (audio_enc_ != nullptr) {
+        opus_encoder_ctl(audio_enc_, OPUS_SET_INBAND_FEC(enable ? 1 : 0));
+    }
+}
