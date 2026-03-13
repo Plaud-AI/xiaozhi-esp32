@@ -2,6 +2,8 @@
 #include "settings.h"
 
 #include <esp_log.h>
+#include <esp_timer.h>
+#include <algorithm>
 
 #define TAG "AgoraChannel"
 
@@ -231,11 +233,42 @@ bool AgoraChannel::SendText(const std::string& text) {
     if (!connected_ || stream_id_ < 0) {
         return false;
     }
-    int rc = agora_rtc_send_stream_message(conn_id_, stream_id_,
-                                           text.c_str(), text.size());
-    if (rc < 0) {
-        ESP_LOGE(TAG, "agora_rtc_send_stream_message failed: %s", agora_rtc_err_2_str(rc));
-        return false;
+    // Agora data stream payload has a strict upper bound. For larger JSON
+    // payloads (e.g. MCP tools/list response), split into chunks so the server
+    // can reassemble with "<message_id>|<index>|<total>|<content>".
+    constexpr size_t kMaxStreamMessageBytes = 1024;
+    constexpr size_t kChunkPayloadBytes = 900;
+
+    if (text.size() <= kMaxStreamMessageBytes) {
+        int rc = agora_rtc_send_stream_message(conn_id_, stream_id_,
+                                               text.c_str(), text.size());
+        if (rc < 0) {
+            ESP_LOGE(TAG, "agora_rtc_send_stream_message failed: %s", agora_rtc_err_2_str(rc));
+            return false;
+        }
+        return true;
+    }
+
+    const std::string message_id = std::to_string((long long)esp_timer_get_time());
+    const size_t total_parts = (text.size() + kChunkPayloadBytes - 1) / kChunkPayloadBytes;
+    ESP_LOGW(TAG, "SendText too large (%u bytes), chunking into %u parts",
+             (unsigned)text.size(), (unsigned)total_parts);
+
+    size_t offset = 0;
+    for (size_t i = 0; i < total_parts; ++i) {
+        const size_t chunk_len = std::min(kChunkPayloadBytes, text.size() - offset);
+        std::string chunk = message_id + "|" + std::to_string(i) + "|" +
+                            std::to_string(total_parts) + "|" +
+                            text.substr(offset, chunk_len);
+        offset += chunk_len;
+
+        int rc = agora_rtc_send_stream_message(conn_id_, stream_id_,
+                                               chunk.c_str(), chunk.size());
+        if (rc < 0) {
+            ESP_LOGE(TAG, "agora_rtc_send_stream_message chunk %u/%u failed: %s",
+                     (unsigned)(i + 1), (unsigned)total_parts, agora_rtc_err_2_str(rc));
+            return false;
+        }
     }
     return true;
 }
