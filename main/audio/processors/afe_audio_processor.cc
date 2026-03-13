@@ -1,6 +1,7 @@
 #include "afe_audio_processor.h"
 #include <esp_log.h>
 #include <cmath>
+#include <cstring>
 #include <cstdint>
 
 #define PROCESSOR_RUNNING 0x01
@@ -97,6 +98,39 @@ void AfeAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms, srm
 
     char* ns_model_name = esp_srmodel_filter(models, ESP_NSNET_PREFIX, NULL);
     char* vad_model_name = esp_srmodel_filter(models, ESP_VADN_PREFIX, NULL);
+    // 兼容不同 ESP-SR 版本/模型命名：
+    // 当前仓库中常见名称为 nsnet1/nsnet2/vadnet1_medium，若前缀过滤未命中，
+    // 则从 models_list 里按关键字兜底挑选，避免错误退化到 passthrough。
+    if (models != nullptr && (ns_model_name == nullptr || vad_model_name == nullptr)) {
+        char* ns_fallback = nullptr;
+        char* vad_fallback = nullptr;
+        for (int i = 0; i < models->num; ++i) {
+            char* name = models->model_info[i].model_name;
+            if (name == nullptr) {
+                continue;
+            }
+            if (ns_fallback == nullptr && std::strstr(name, "nsnet") != nullptr) {
+                ns_fallback = name;
+            }
+            // Prefer nsnet2 when available.
+            if (std::strstr(name, "nsnet2") != nullptr) {
+                ns_fallback = name;
+            }
+            if (vad_fallback == nullptr && std::strstr(name, "vad") != nullptr) {
+                vad_fallback = name;
+            }
+            // Prefer vadnet1_medium when available.
+            if (std::strstr(name, "vadnet1_medium") != nullptr) {
+                vad_fallback = name;
+            }
+        }
+        if (ns_model_name == nullptr) {
+            ns_model_name = ns_fallback;
+        }
+        if (vad_model_name == nullptr) {
+            vad_model_name = vad_fallback;
+        }
+    }
     
     // 无 VAD/NS 模型且未开启 AEC 时，AFE 实际不会提供有效增强，
     // 反而可能引入额外缓冲/衰减；此时退化为直通 mic 模式。
