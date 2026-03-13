@@ -212,29 +212,44 @@ void AfeAudioProcessor::Feed(std::vector<int16_t>&& data) {
         if (!is_running_ || !output_callback_) {
             return;
         }
+        std::vector<int16_t> mono_frame;
+        mono_frame.reserve(frame_samples_);
 
         if (passthrough_input_channels_ <= 1) {
-            for (auto& sample : data) {
-                sample = ApplySoftGainWithLimiter(sample);
+            mono_frame = std::move(data);
+        } else {
+            const size_t frames = data.size() / static_cast<size_t>(passthrough_input_channels_);
+            mono_frame.reserve(frames);
+            for (size_t i = 0; i < frames; ++i) {
+                const int16_t mic = data[i * static_cast<size_t>(passthrough_input_channels_)];
+                mono_frame.push_back(mic);
             }
-            output_callback_(std::move(data));
-            return;
         }
 
-        const size_t frames = data.size() / static_cast<size_t>(passthrough_input_channels_);
-        for (size_t i = 0; i < frames; ++i) {
-            const int16_t mic = data[i * static_cast<size_t>(passthrough_input_channels_)];
-            passthrough_buffer_.push_back(ApplySoftGainWithLimiter(mic));
-            if (passthrough_buffer_.size() >= static_cast<size_t>(frame_samples_)) {
-                output_callback_(std::vector<int16_t>(
-                    passthrough_buffer_.begin(),
-                    passthrough_buffer_.begin() + frame_samples_
-                ));
-                passthrough_buffer_.erase(
-                    passthrough_buffer_.begin(),
-                    passthrough_buffer_.begin() + frame_samples_
-                );
+        for (auto& sample : mono_frame) {
+            sample = ApplySoftGainWithLimiter(sample);
+        }
+
+        // 轻量能量门控：无 VAD 模型时仅发送疑似人声窗口，避免长时间底噪淹没 ASR。
+        const PcmDiagStats frame_stats = CalcPcmDiagStats(mono_frame.data(), mono_frame.size());
+        constexpr float kVoiceRmsThreshold = 180.0f;
+        constexpr int kVoicePeakThreshold = 700;
+        constexpr int kHangoverFrames = 8;  // ~480ms at 60ms/frame
+        const bool voice_like = (frame_stats.rms >= kVoiceRmsThreshold) || (frame_stats.peak >= kVoicePeakThreshold);
+
+        if (voice_like) {
+            passthrough_voice_active_ = true;
+            passthrough_silence_frames_ = 0;
+        } else if (passthrough_voice_active_) {
+            passthrough_silence_frames_++;
+            if (passthrough_silence_frames_ >= kHangoverFrames) {
+                passthrough_voice_active_ = false;
+                passthrough_silence_frames_ = 0;
             }
+        }
+
+        if (passthrough_voice_active_) {
+            output_callback_(std::move(mono_frame));
         }
         return;
     }
@@ -247,6 +262,8 @@ void AfeAudioProcessor::Feed(std::vector<int16_t>&& data) {
 void AfeAudioProcessor::Start() {
     if (passthrough_mode_) {
         is_running_ = true;
+        passthrough_voice_active_ = false;
+        passthrough_silence_frames_ = 0;
         return;
     }
     xEventGroupSetBits(event_group_, PROCESSOR_RUNNING);
@@ -256,6 +273,8 @@ void AfeAudioProcessor::Stop() {
     if (passthrough_mode_) {
         is_running_ = false;
         passthrough_buffer_.clear();
+        passthrough_voice_active_ = false;
+        passthrough_silence_frames_ = 0;
         ESP_LOGI(TAG, "Passthrough processor stopped");
         return;
     }

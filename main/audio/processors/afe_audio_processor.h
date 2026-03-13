@@ -41,6 +41,8 @@ private:
     bool is_running_ = false;
     bool passthrough_mode_ = false;
     int passthrough_input_channels_ = 1;
+    bool passthrough_voice_active_ = false;
+    int passthrough_silence_frames_ = 0;
     // Use PSRAM allocator for output buffer to save SRAM
     std::vector<int16_t, micro_wake_word::ExternalRAMAllocator<int16_t>> output_buffer_;
     std::vector<int16_t, micro_wake_word::ExternalRAMAllocator<int16_t>> passthrough_buffer_;
