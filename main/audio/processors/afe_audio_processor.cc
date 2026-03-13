@@ -44,7 +44,7 @@ static PcmDiagStats CalcPcmDiagStats(const int16_t* data, size_t sample_count) {
 }
 
 static inline int16_t ApplySoftGainWithLimiter(int16_t sample) {
-    constexpr float kGain = 2.5f;
+    constexpr float kGain = 2.0f;
     constexpr int kNoiseFloor = 24;
     const int abs_sample = std::abs(static_cast<int>(sample));
     if (abs_sample <= kNoiseFloor) {
@@ -270,8 +270,8 @@ void AfeAudioProcessor::Feed(std::vector<int16_t>&& data) {
         const PcmDiagStats frame_stats = CalcPcmDiagStats(mono_frame.data(), mono_frame.size());
         constexpr float kVoiceRmsStartThreshold = 260.0f;
         constexpr int kVoicePeakStartThreshold = 1000;
-        constexpr float kVoiceRmsKeepThreshold = 130.0f;
-        constexpr int kVoicePeakKeepThreshold = 520;
+        constexpr float kVoiceRmsKeepThreshold = 170.0f;
+        constexpr int kVoicePeakKeepThreshold = 700;
         constexpr int kVoiceAttackFrames = 3;  // require ~180ms sustained voice
         constexpr int kHangoverFrames = 10;    // keep ~600ms tail
         const bool voice_like_start =
