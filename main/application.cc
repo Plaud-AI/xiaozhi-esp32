@@ -470,8 +470,9 @@ void Application::Start() {
 
     // Protocol priority: Agora (WebRTC) > WebSocket > MQTT > default WebSocket
     if (ota.HasAgoraConfig()) {
-        ESP_LOGI(TAG, "Using Agora WebRTC protocol");
+        ESP_LOGI(TAG, "Using Agora WebRTC protocol (G722, skip OPUS encode)");
         protocol_ = std::make_unique<AgoraProtocol>();
+        audio_service_.SetSkipOpusEncode(true);
     } else if (ota.HasWebsocketConfig()) {
         ESP_LOGI(TAG, "Using WebSocket protocol");
         protocol_ = std::make_unique<WebsocketProtocol>();

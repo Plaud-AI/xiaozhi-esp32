@@ -24,7 +24,7 @@ AgoraProtocol::AgoraProtocol() {
     ESP_LOGI(TAG, "Cached 20ms PCM silence: %u bytes", (unsigned)pcm_silence_20ms_.size());
 
     opus_decoder_ = std::make_unique<OpusDecoderWrapper>(kSampleRate, 1, kFrameDurationMs);
-    ESP_LOGI(TAG, "OPUS decoder ready (for OPUS→PCM→G722 pipeline)");
+    ESP_LOGI(TAG, "OPUS decoder ready (fallback for wake-word packets)");
 }
 
 AgoraProtocol::~AgoraProtocol() {
@@ -173,24 +173,42 @@ bool AgoraProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
         gap_dtx_count_ = 0;
     }
 
-    // Decode OPUS→PCM so the Agora SDK can re-encode as G722
-    std::vector<int16_t> pcm;
-    if (!opus_decoder_->Decode(std::move(packet->payload), pcm)) {
-        ESP_LOGW(TAG, "SendAudio: OPUS decode failed, dropping frame");
-        return false;
-    }
-
     audio_packets_sent_++;
-    if (audio_packets_sent_ <= 5 || audio_packets_sent_ % 50 == 0) {
-        ESP_LOGI(TAG, "SendAudio #%d: %u PCM samples → SDK G722",
-                 audio_packets_sent_, (unsigned)pcm.size());
-    }
 
     auto* agora_ch = static_cast<AgoraChannel*>(channel_.get());
-    for (size_t off = 0; off + kPcmFrameSamples <= pcm.size(); off += kPcmFrameSamples) {
-        if (!agora_ch->SendNativeAudio(&pcm[off], kPcmFrameBytes, AUDIO_DATA_TYPE_PCM)) {
-            ESP_LOGW(TAG, "SendNativeAudio failed at offset %u", (unsigned)off);
+
+    if (packet->is_pcm) {
+        const int16_t* pcm = reinterpret_cast<const int16_t*>(packet->payload.data());
+        size_t total_samples = packet->payload.size() / sizeof(int16_t);
+
+        if (audio_packets_sent_ <= 5 || audio_packets_sent_ % 50 == 0) {
+            ESP_LOGI(TAG, "SendAudio #%d: %u PCM samples → SDK G722 (direct)",
+                     audio_packets_sent_, (unsigned)total_samples);
+        }
+
+        for (size_t off = 0; off + kPcmFrameSamples <= total_samples; off += kPcmFrameSamples) {
+            if (!agora_ch->SendNativeAudio(&pcm[off], kPcmFrameBytes, AUDIO_DATA_TYPE_PCM)) {
+                ESP_LOGW(TAG, "SendNativeAudio failed at offset %u", (unsigned)off);
+                return false;
+            }
+        }
+    } else {
+        std::vector<int16_t> pcm;
+        if (!opus_decoder_->Decode(std::move(packet->payload), pcm)) {
+            ESP_LOGW(TAG, "SendAudio: OPUS decode failed, dropping frame");
             return false;
+        }
+
+        if (audio_packets_sent_ <= 5 || audio_packets_sent_ % 50 == 0) {
+            ESP_LOGI(TAG, "SendAudio #%d: %u PCM samples → SDK G722 (via OPUS decode)",
+                     audio_packets_sent_, (unsigned)pcm.size());
+        }
+
+        for (size_t off = 0; off + kPcmFrameSamples <= pcm.size(); off += kPcmFrameSamples) {
+            if (!agora_ch->SendNativeAudio(&pcm[off], kPcmFrameBytes, AUDIO_DATA_TYPE_PCM)) {
+                ESP_LOGW(TAG, "SendNativeAudio failed at offset %u", (unsigned)off);
+                return false;
+            }
         }
     }
     return true;

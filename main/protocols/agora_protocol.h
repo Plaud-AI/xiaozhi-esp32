@@ -12,10 +12,10 @@
 
 // Agora WebRTC implementation of the Protocol interface.
 //
-// Audio path: upstream AudioService encodes PCM→OPUS; this protocol decodes
-// OPUS→PCM and feeds it to the Agora RTSA SDK which re-encodes as G722 for
-// transmission. The extra decode step is necessary because AudioService always
-// outputs OPUS, but the SDK's G722 encoder needs raw PCM input.
+// Audio path: AudioService passes raw PCM (skip_opus_encode_ = true) directly
+// to this protocol, which feeds 20ms PCM frames to the Agora RTSA SDK.
+// The SDK encodes PCM→G722 internally using libiot-audio-codec.a.
+// OPUS fallback is kept for wake-word packets (encoded before skip flag is set).
 //
 // During silence (TTS playback or AFE gate-close), the device sends PCM
 // silence frames via the SDK to keep the server's ASR pipeline continuous
@@ -40,8 +40,8 @@ private:
     std::unique_ptr<Channel> channel_;
     int audio_packets_sent_ = 0;
 
-    // OPUS decoder for converting AudioService's OPUS packets back to PCM
-    // so the Agora SDK can re-encode as G722 for transmission.
+    // OPUS decoder — only used as fallback for wake-word packets that were
+    // OPUS-encoded before AudioService's skip flag was set.
     std::unique_ptr<OpusDecoderWrapper> opus_decoder_;
 
     // Continuous silence sender: keeps the RTC audio stream alive with

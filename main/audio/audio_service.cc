@@ -533,7 +533,12 @@ void AudioService::OpusCodecTask() {
             packet->frame_duration = OPUS_FRAME_DURATION_MS;
             packet->sample_rate = 16000;
             packet->timestamp = task->timestamp;
-            if (!opus_encoder_->Encode(std::move(task->pcm), packet->payload)) {
+
+            if (skip_opus_encode_) {
+                packet->is_pcm = true;
+                packet->payload.resize(task->pcm.size() * sizeof(int16_t));
+                memcpy(packet->payload.data(), task->pcm.data(), packet->payload.size());
+            } else if (!opus_encoder_->Encode(std::move(task->pcm), packet->payload)) {
                 ESP_LOGE(TAG, "Failed to encode audio");
                 continue;
             }
