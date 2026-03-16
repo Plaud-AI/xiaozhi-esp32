@@ -11,15 +11,15 @@
 
 // Agora WebRTC implementation of the Protocol interface.
 //
-// Differs from WebsocketProtocol in that:
-//  - Audio is sent via Agora's native audio channel (agora_rtc_send_audio_data)
-//    as pre-encoded OPUS frames (AUDIO_DATA_TYPE_OPUS). This provides FEC,
-//    jitter buffer, and proper RTP pacing — unlike data stream.
-//  - JSON control messages travel over an Agora RTC data stream.
-//  - During TTS playback the device sends OPUS silence frames (half-duplex)
-//    to prevent echo from reaching the server's VAD/STT.
-//  - server_sample_rate_ is fixed at 16000; server_frame_duration_ at 60 ms,
-//    matching the xiaozhi OPUS pipeline.
+// Audio is sent as pre-encoded OPUS frames via Agora data stream (0x01 prefix).
+// The native audio channel (AUDIO_CODEC_DISABLED) is used only for receiving
+// server TTS audio. Using data stream for uplink because the server's Agora
+// Python SDK cannot decode raw OPUS from AUDIO_CODEC_DISABLED senders.
+// JSON control messages share the same data stream (no prefix).
+//
+// During silence (TTS playback or AFE gate-close), the device sends DTX
+// comfort-noise frames via data stream to keep the server's ASR pipeline
+// continuous for proper endpointing.
 class AgoraProtocol : public Protocol {
 public:
     AgoraProtocol();
