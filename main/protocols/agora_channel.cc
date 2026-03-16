@@ -219,8 +219,6 @@ bool AgoraChannel::SendBinary(const void* data, size_t len) {
     if (!connected_ || conn_id_ == CONNECTION_ID_INVALID || stream_id_ < 0) {
         return false;
     }
-    // Send OPUS via data stream (not audio channel) to bypass Agora SDK codec
-    // mismatch. Prefix 0x01 distinguishes binary audio from JSON text.
     uint8_t buf[1 + len];
     buf[0] = 0x01;
     memcpy(buf + 1, data, len);
@@ -228,8 +226,23 @@ bool AgoraChannel::SendBinary(const void* data, size_t len) {
                                            reinterpret_cast<const char*>(buf),
                                            1 + len);
     if (rc < 0) {
-        ESP_LOGW(TAG, "agora_rtc_send_stream_message(audio) failed: %s",
+        ESP_LOGW(TAG, "agora_rtc_send_stream_message(binary) failed: %s",
                  agora_rtc_err_2_str(rc));
+        return false;
+    }
+    return true;
+}
+
+bool AgoraChannel::SendNativeAudio(const void* data, size_t len, int data_type) {
+    if (!connected_ || conn_id_ == CONNECTION_ID_INVALID) {
+        return false;
+    }
+    audio_frame_info_t info{};
+    info.data_type = static_cast<audio_data_type_e>(data_type);
+    int rc = agora_rtc_send_audio_data(conn_id_, data, len, &info);
+    if (rc < 0) {
+        ESP_LOGW(TAG, "agora_rtc_send_audio_data failed: %s (type=%d, len=%u)",
+                 agora_rtc_err_2_str(rc), data_type, (unsigned)len);
         return false;
     }
     return true;

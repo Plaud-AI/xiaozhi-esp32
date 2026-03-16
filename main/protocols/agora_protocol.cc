@@ -4,6 +4,7 @@
 #include <cJSON.h>
 #include <esp_log.h>
 #include <opus_encoder.h>
+#include <agora_rtc_api.h>
 #include "assets/lang_config.h"
 
 #define TAG "AgoraProtocol"
@@ -61,8 +62,10 @@ void AgoraProtocol::SilenceTimerCallback(TimerHandle_t timer) {
     if (!self || !self->tts_playing_ || !self->channel_ || !self->channel_->IsConnected()) {
         return;
     }
-    self->channel_->SendBinary(self->opus_silence_frame_.data(),
-                               self->opus_silence_frame_.size());
+    auto* agora_ch = static_cast<AgoraChannel*>(self->channel_.get());
+    agora_ch->SendNativeAudio(self->opus_silence_frame_.data(),
+                              self->opus_silence_frame_.size(),
+                              AUDIO_DATA_TYPE_OPUS);
 }
 
 void AgoraProtocol::StartSilenceSender() {
@@ -113,6 +116,7 @@ bool AgoraProtocol::SendHello() {
     cJSON_AddNumberToObject(audio_params, "sample_rate", kSampleRate);
     cJSON_AddNumberToObject(audio_params, "channels", 1);
     cJSON_AddNumberToObject(audio_params, "frame_duration", kFrameDurationMs);
+    cJSON_AddStringToObject(audio_params, "audio_channel", "native");
     cJSON_AddItemToObject(root, "audio_params", audio_params);
 
     auto* json_str = cJSON_PrintUnformatted(root);
@@ -152,10 +156,12 @@ bool AgoraProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
 
     audio_packets_sent_++;
     if (audio_packets_sent_ <= 5 || audio_packets_sent_ % 50 == 0) {
-        ESP_LOGI(TAG, "SendAudio #%d: %u bytes (OPUS)",
+        ESP_LOGI(TAG, "SendAudio #%d: %u bytes (OPUS via native audio)",
                  audio_packets_sent_, (unsigned)packet->payload.size());
     }
-    return channel_->SendBinary(packet->payload.data(), packet->payload.size());
+    auto* agora_ch = static_cast<AgoraChannel*>(channel_.get());
+    return agora_ch->SendNativeAudio(packet->payload.data(), packet->payload.size(),
+                                     AUDIO_DATA_TYPE_OPUS);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

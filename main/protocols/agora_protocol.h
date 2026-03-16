@@ -12,10 +12,9 @@
 // Agora WebRTC implementation of the Protocol interface.
 //
 // Differs from WebsocketProtocol in that:
-//  - There is no hello / server-hello handshake; the Agora AI Agent manages
-//    conversation flow automatically.
-//  - Audio is sent/received as raw OPUS frames (16 kHz, no BinaryProtocol
-//    wrapping).  SDK codec is disabled (prebuilt SDK lacks OPUS encoder).
+//  - Audio is sent via Agora's native audio channel (agora_rtc_send_audio_data)
+//    as pre-encoded OPUS frames (AUDIO_DATA_TYPE_OPUS). This provides FEC,
+//    jitter buffer, and proper RTP pacing — unlike data stream.
 //  - JSON control messages travel over an Agora RTC data stream.
 //  - During TTS playback the device sends OPUS silence frames (half-duplex)
 //    to prevent echo from reaching the server's VAD/STT.
