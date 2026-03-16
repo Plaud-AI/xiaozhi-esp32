@@ -222,7 +222,7 @@ void AgoraProtocol::HandleIncomingData(const char* data, size_t len, bool binary
     last_incoming_time_ = std::chrono::steady_clock::now();
 
     if (binary) {
-        // Incoming OPUS audio frame from the AI agent.
+        // Native audio channel: SDK already decoded G722 → PCM
         if (on_incoming_audio_) {
             on_incoming_audio_(std::make_unique<AudioStreamPacket>(AudioStreamPacket{
                 .sample_rate    = server_sample_rate_,
@@ -230,7 +230,8 @@ void AgoraProtocol::HandleIncomingData(const char* data, size_t len, bool binary
                 .timestamp      = 0,
                 .payload        = std::vector<uint8_t>(
                                       reinterpret_cast<const uint8_t*>(data),
-                                      reinterpret_cast<const uint8_t*>(data) + len)
+                                      reinterpret_cast<const uint8_t*>(data) + len),
+                .is_pcm         = true,
             }));
         }
     } else {
