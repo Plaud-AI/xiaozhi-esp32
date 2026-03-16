@@ -130,13 +130,16 @@ bool AgoraChannel::Connect() {
         return false;
     }
 
-    // The prebuilt Agora SDK (v1.9.5) does NOT include a built-in OPUS encoder
-    // (attempting AUDIO_CODEC_TYPE_OPUS causes abort in audio_stream_init).
-    // We disable the SDK codec and send pre-encoded OPUS frames directly.
+    // Use G722 codec (16kHz wideband) for uplink encoding.
+    // SDK encodes PCM→G722 internally using libiot-audio-codec.a;
+    // the server's Agora SDK decodes G722→PCM and delivers via audio callback.
+    // OPUS codec is unavailable (causes abort), but G722 works correctly.
     rtc_channel_options_t ch_opts{};
     ch_opts.auto_subscribe_audio             = true;
     ch_opts.auto_subscribe_video             = false;
-    ch_opts.audio_codec_opt.audio_codec_type = AUDIO_CODEC_DISABLED;
+    ch_opts.audio_codec_opt.audio_codec_type = AUDIO_CODEC_TYPE_G722;
+    ch_opts.audio_codec_opt.pcm_sample_rate  = 16000;
+    ch_opts.audio_codec_opt.pcm_channel_num  = 1;
 
     const char* token_ptr = token_.empty() ? nullptr : token_.c_str();
 
@@ -219,8 +222,6 @@ bool AgoraChannel::SendBinary(const void* data, size_t len) {
     if (!connected_ || conn_id_ == CONNECTION_ID_INVALID || stream_id_ < 0) {
         return false;
     }
-    // Send OPUS via data stream (not audio channel) to bypass Agora SDK codec
-    // mismatch. Prefix 0x01 distinguishes binary audio from JSON text.
     uint8_t buf[1 + len];
     buf[0] = 0x01;
     memcpy(buf + 1, data, len);
@@ -228,8 +229,23 @@ bool AgoraChannel::SendBinary(const void* data, size_t len) {
                                            reinterpret_cast<const char*>(buf),
                                            1 + len);
     if (rc < 0) {
-        ESP_LOGW(TAG, "agora_rtc_send_stream_message(audio) failed: %s",
+        ESP_LOGW(TAG, "agora_rtc_send_stream_message(binary) failed: %s",
                  agora_rtc_err_2_str(rc));
+        return false;
+    }
+    return true;
+}
+
+bool AgoraChannel::SendNativeAudio(const void* data, size_t len, int data_type) {
+    if (!connected_ || conn_id_ == CONNECTION_ID_INVALID) {
+        return false;
+    }
+    audio_frame_info_t info{};
+    info.data_type = static_cast<audio_data_type_e>(data_type);
+    int rc = agora_rtc_send_audio_data(conn_id_, data, len, &info);
+    if (rc < 0) {
+        ESP_LOGW(TAG, "agora_rtc_send_audio_data failed: %s (type=%d, len=%u)",
+                 agora_rtc_err_2_str(rc), data_type, (unsigned)len);
         return false;
     }
     return true;

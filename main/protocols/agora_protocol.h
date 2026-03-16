@@ -8,19 +8,20 @@
 #include <vector>
 #include <freertos/FreeRTOS.h>
 #include <freertos/timers.h>
+#include <opus_decoder.h>
 
 // Agora WebRTC implementation of the Protocol interface.
 //
-// Differs from WebsocketProtocol in that:
-//  - There is no hello / server-hello handshake; the Agora AI Agent manages
-//    conversation flow automatically.
-//  - Audio is sent/received as raw OPUS frames (16 kHz, no BinaryProtocol
-//    wrapping).  SDK codec is disabled (prebuilt SDK lacks OPUS encoder).
-//  - JSON control messages travel over an Agora RTC data stream.
-//  - During TTS playback the device sends OPUS silence frames (half-duplex)
-//    to prevent echo from reaching the server's VAD/STT.
-//  - server_sample_rate_ is fixed at 16000; server_frame_duration_ at 60 ms,
-//    matching the xiaozhi OPUS pipeline.
+// Audio path: AudioService passes raw PCM (skip_opus_encode_ = true) directly
+// to this protocol, which feeds 20ms PCM frames to the Agora RTSA SDK.
+// The SDK encodes PCM→G722 internally using libiot-audio-codec.a.
+// OPUS fallback is kept for wake-word packets (encoded before skip flag is set).
+//
+// During silence (TTS playback or AFE gate-close), the device sends PCM
+// silence frames via the SDK to keep the server's ASR pipeline continuous
+// for proper endpointing.
+//
+// JSON control messages travel over an Agora RTC data stream.
 class AgoraProtocol : public Protocol {
 public:
     AgoraProtocol();
@@ -39,11 +40,21 @@ private:
     std::unique_ptr<Channel> channel_;
     int audio_packets_sent_ = 0;
 
-    // TTS silence sender: keeps the RTC audio stream alive with silence
-    // during TTS playback so the AI Agent's VAD stays in a clean state.
-    std::vector<uint8_t> opus_silence_frame_;
+    // OPUS decoder — only used as fallback for wake-word packets that were
+    // OPUS-encoded before AudioService's skip flag was set.
+    std::unique_ptr<OpusDecoderWrapper> opus_decoder_;
+
+    // Continuous silence sender: keeps the RTC audio stream alive with
+    // PCM silence in two scenarios:
+    //  1. During TTS playback (tts_playing_ = true) — prevents echo.
+    //  2. During listening when AFE gate is closed — fills the audio gap
+    //     so the server's Deepgram ASR can properly endpoint utterances.
+    // The timer runs for the entire lifetime of the audio channel.
+    std::vector<uint8_t> pcm_silence_20ms_;   // 20ms zero PCM (640 bytes at 16kHz)
     TimerHandle_t silence_timer_ = nullptr;
     bool tts_playing_ = false;
+    int64_t last_audio_send_us_ = 0;   // esp_timer_get_time() of last real audio or TTS-end
+    uint32_t gap_dtx_count_ = 0;
 
     void StartSilenceSender();
     void StopSilenceSender();

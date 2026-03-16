@@ -25,9 +25,10 @@
 //      (The AI Agent has already been started by the business server before
 //       returning the credentials to the device.)
 //
-// Audio is sent/received as raw OPUS frames (AUDIO_DATA_TYPE_OPUS, 16 kHz).
-// SDK codec is DISABLED because the prebuilt SDK (v1.9.5) lacks an internal
-// OPUS encoder (AUDIO_CODEC_TYPE_OPUS causes abort in audio_stream_init).
+// Audio is sent via Agora's native audio channel using agora_rtc_send_audio_data()
+// with raw PCM (AUDIO_DATA_TYPE_PCM). The SDK internally encodes PCM→G722 using
+// libiot-audio-codec.a and handles transmission with FEC, jitter buffer, and RTP.
+// The server's Agora SDK decodes G722→PCM and delivers to the ASR pipeline.
 // JSON control messages travel over an Agora data stream.
 class AgoraChannel : public Channel {
 public:
@@ -39,6 +40,11 @@ public:
     bool IsConnected() const override;
     bool SendText(const std::string& text) override;
     bool SendBinary(const void* data, size_t len) override;
+
+    // Send audio via Agora's native audio channel (agora_rtc_send_audio_data).
+    // data_type: AUDIO_DATA_TYPE_OPUS for pre-encoded OPUS,
+    //            AUDIO_DATA_TYPE_PCM  for raw PCM (requires SDK codec enabled).
+    bool SendNativeAudio(const void* data, size_t len, int data_type = 1 /*AUDIO_DATA_TYPE_OPUS*/);
 
     // Available after Connect() succeeds.
     const std::string& channel() const { return channel_; }

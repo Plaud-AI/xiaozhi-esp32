@@ -32,6 +32,14 @@ if(EXISTS "${AGORA_LIB_DIR}/librtsa.a")
         "${AGORA_LIB_DIR}/libahpl.a"
         "${AGORA_LIB_DIR}/libagora-cjson.a"
     )
+    # G722/G711 codec implementations required by librtsa.a when using
+    # AUDIO_CODEC_TYPE_G722 or AUDIO_CODEC_TYPE_G711x.
+    # Sourced from ag-iot-device-demo-esp32-master reference project.
+    if(EXISTS "${AGORA_LIB_DIR}/libiot-audio-codec.a")
+        target_link_libraries(${COMPONENT_LIB} INTERFACE
+            "${AGORA_LIB_DIR}/libiot-audio-codec.a"
+        )
+    endif()
 else()
     message(WARNING
         "Agora SDK libraries not found in ${AGORA_LIB_DIR}. "
