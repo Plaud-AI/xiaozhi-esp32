@@ -38,11 +38,17 @@ private:
     std::unique_ptr<Channel> channel_;
     int audio_packets_sent_ = 0;
 
-    // TTS silence sender: keeps the RTC audio stream alive with silence
-    // during TTS playback so the AI Agent's VAD stays in a clean state.
+    // Continuous silence sender: keeps the RTC audio stream alive with
+    // DTX silence in two scenarios:
+    //  1. During TTS playback (tts_playing_ = true) — prevents echo.
+    //  2. During listening when AFE gate is closed — fills the audio gap
+    //     so the server's Deepgram ASR can properly endpoint utterances.
+    // The timer runs for the entire lifetime of the audio channel.
     std::vector<uint8_t> opus_silence_frame_;
     TimerHandle_t silence_timer_ = nullptr;
     bool tts_playing_ = false;
+    int64_t last_audio_send_us_ = 0;   // esp_timer_get_time() of last real audio or TTS-end
+    uint32_t gap_dtx_count_ = 0;
 
     void StartSilenceSender();
     void StopSilenceSender();

@@ -3,6 +3,7 @@
 
 #include <cJSON.h>
 #include <esp_log.h>
+#include <esp_timer.h>
 #include <opus_encoder.h>
 #include <agora_rtc_api.h>
 #include "assets/lang_config.h"
@@ -31,8 +32,9 @@ AgoraProtocol::AgoraProtocol() {
 }
 
 AgoraProtocol::~AgoraProtocol() {
-    StopSilenceSender();
+    tts_playing_ = false;
     if (silence_timer_) {
+        xTimerStop(silence_timer_, 0);
         xTimerDelete(silence_timer_, 0);
         silence_timer_ = nullptr;
     }
@@ -49,48 +51,60 @@ bool AgoraProtocol::IsAudioChannelOpened() const {
 }
 
 void AgoraProtocol::CloseAudioChannel() {
-    StopSilenceSender();
+    tts_playing_ = false;
+    if (silence_timer_) {
+        xTimerStop(silence_timer_, 0);
+    }
+    last_audio_send_us_ = 0;
+    gap_dtx_count_ = 0;
     channel_.reset();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TTS silence sender
+// Continuous silence sender (TTS + listening gap-fill)
 // ─────────────────────────────────────────────────────────────────────────────
 
 void AgoraProtocol::SilenceTimerCallback(TimerHandle_t timer) {
     auto* self = static_cast<AgoraProtocol*>(pvTimerGetTimerID(timer));
-    if (!self || !self->tts_playing_ || !self->channel_ || !self->channel_->IsConnected()) {
+    if (!self || !self->channel_ || !self->channel_->IsConnected()) {
         return;
     }
-    auto* agora_ch = static_cast<AgoraChannel*>(self->channel_.get());
-    agora_ch->SendNativeAudio(self->opus_silence_frame_.data(),
-                              self->opus_silence_frame_.size(),
-                              AUDIO_DATA_TYPE_OPUS);
+
+    bool should_send = false;
+    if (self->tts_playing_) {
+        should_send = true;
+    } else if (self->last_audio_send_us_ > 0) {
+        int64_t gap_us = esp_timer_get_time() - self->last_audio_send_us_;
+        static constexpr int64_t kMaxGapUs = 30000000LL; // 30s safety cap
+        if (gap_us > kFrameDurationMs * 1000 && gap_us < kMaxGapUs) {
+            should_send = true;
+            self->gap_dtx_count_++;
+            if (self->gap_dtx_count_ == 1 || self->gap_dtx_count_ % 50 == 0) {
+                ESP_LOGI(TAG, "Gap-fill DTX #%u (gap=%lldms)",
+                         (unsigned)self->gap_dtx_count_, (long long)(gap_us / 1000));
+            }
+        }
+    }
+
+    if (should_send) {
+        auto* agora_ch = static_cast<AgoraChannel*>(self->channel_.get());
+        agora_ch->SendNativeAudio(self->opus_silence_frame_.data(),
+                                  self->opus_silence_frame_.size(),
+                                  AUDIO_DATA_TYPE_OPUS);
+    }
 }
 
 void AgoraProtocol::StartSilenceSender() {
     if (tts_playing_) return;
     tts_playing_ = true;
-
-    if (!silence_timer_) {
-        silence_timer_ = xTimerCreate("agora_sil", pdMS_TO_TICKS(kFrameDurationMs),
-                                      pdTRUE, this, SilenceTimerCallback);
-    }
-    if (silence_timer_) {
-        xTimerStart(silence_timer_, 0);
-        ESP_LOGI(TAG, "Silence sender started (TTS playing, %d ms interval)",
-                 kFrameDurationMs);
-    }
+    ESP_LOGI(TAG, "TTS silence mode ON");
 }
 
 void AgoraProtocol::StopSilenceSender() {
     if (!tts_playing_) return;
     tts_playing_ = false;
-
-    if (silence_timer_) {
-        xTimerStop(silence_timer_, 0);
-    }
-    ESP_LOGI(TAG, "Silence sender stopped (TTS ended)");
+    last_audio_send_us_ = esp_timer_get_time();
+    ESP_LOGI(TAG, "TTS silence mode OFF — gap-fill DTX will take over");
 }
 
 void AgoraProtocol::NotifyPlaybackComplete() {
@@ -152,6 +166,13 @@ bool AgoraProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
 
     if (tts_playing_) {
         return true;
+    }
+
+    last_audio_send_us_ = esp_timer_get_time();
+    if (gap_dtx_count_ > 0) {
+        ESP_LOGI(TAG, "Real audio resumed after %u gap-fill DTX frames",
+                 (unsigned)gap_dtx_count_);
+        gap_dtx_count_ = 0;
     }
 
     audio_packets_sent_++;
@@ -282,6 +303,18 @@ bool AgoraProtocol::OpenAudioChannel() {
     // channel and may fail to process audio in Round 2+.
     if (!SendHello()) {
         ESP_LOGE(TAG, "Failed to send hello to server");
+    }
+
+    last_audio_send_us_ = 0;
+    gap_dtx_count_ = 0;
+    if (!silence_timer_) {
+        silence_timer_ = xTimerCreate("agora_sil", pdMS_TO_TICKS(kFrameDurationMs),
+                                      pdTRUE, this, SilenceTimerCallback);
+    }
+    if (silence_timer_) {
+        xTimerStart(silence_timer_, 0);
+        ESP_LOGI(TAG, "Silence timer started (%dms interval, covers TTS + gap-fill)",
+                 kFrameDurationMs);
     }
 
     if (on_audio_channel_opened_) {
