@@ -130,13 +130,16 @@ bool AgoraChannel::Connect() {
         return false;
     }
 
-    // The prebuilt Agora SDK (v1.9.5) does NOT include a built-in OPUS encoder
-    // (attempting AUDIO_CODEC_TYPE_OPUS causes abort in audio_stream_init).
-    // We disable the SDK codec and send pre-encoded OPUS frames directly.
+    // Use G722 codec (16kHz wideband) for uplink encoding.
+    // SDK encodes PCM→G722 internally using libiot-audio-codec.a;
+    // the server's Agora SDK decodes G722→PCM and delivers via audio callback.
+    // OPUS codec is unavailable (causes abort), but G722 works correctly.
     rtc_channel_options_t ch_opts{};
     ch_opts.auto_subscribe_audio             = true;
     ch_opts.auto_subscribe_video             = false;
-    ch_opts.audio_codec_opt.audio_codec_type = AUDIO_CODEC_DISABLED;
+    ch_opts.audio_codec_opt.audio_codec_type = AUDIO_CODEC_TYPE_G722;
+    ch_opts.audio_codec_opt.pcm_sample_rate  = 16000;
+    ch_opts.audio_codec_opt.pcm_channel_num  = 1;
 
     const char* token_ptr = token_.empty() ? nullptr : token_.c_str();
 

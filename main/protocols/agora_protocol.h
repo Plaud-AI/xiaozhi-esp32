@@ -8,18 +8,20 @@
 #include <vector>
 #include <freertos/FreeRTOS.h>
 #include <freertos/timers.h>
+#include <opus_decoder.h>
 
 // Agora WebRTC implementation of the Protocol interface.
 //
-// Audio is sent as pre-encoded OPUS frames via Agora data stream (0x01 prefix).
-// The native audio channel (AUDIO_CODEC_DISABLED) is used only for receiving
-// server TTS audio. Using data stream for uplink because the server's Agora
-// Python SDK cannot decode raw OPUS from AUDIO_CODEC_DISABLED senders.
-// JSON control messages share the same data stream (no prefix).
+// Audio path: upstream AudioService encodes PCM→OPUS; this protocol decodes
+// OPUS→PCM and feeds it to the Agora RTSA SDK which re-encodes as G722 for
+// transmission. The extra decode step is necessary because AudioService always
+// outputs OPUS, but the SDK's G722 encoder needs raw PCM input.
 //
-// During silence (TTS playback or AFE gate-close), the device sends DTX
-// comfort-noise frames via data stream to keep the server's ASR pipeline
-// continuous for proper endpointing.
+// During silence (TTS playback or AFE gate-close), the device sends PCM
+// silence frames via the SDK to keep the server's ASR pipeline continuous
+// for proper endpointing.
+//
+// JSON control messages travel over an Agora RTC data stream.
 class AgoraProtocol : public Protocol {
 public:
     AgoraProtocol();
@@ -38,13 +40,17 @@ private:
     std::unique_ptr<Channel> channel_;
     int audio_packets_sent_ = 0;
 
+    // OPUS decoder for converting AudioService's OPUS packets back to PCM
+    // so the Agora SDK can re-encode as G722 for transmission.
+    std::unique_ptr<OpusDecoderWrapper> opus_decoder_;
+
     // Continuous silence sender: keeps the RTC audio stream alive with
-    // DTX silence in two scenarios:
+    // PCM silence in two scenarios:
     //  1. During TTS playback (tts_playing_ = true) — prevents echo.
     //  2. During listening when AFE gate is closed — fills the audio gap
     //     so the server's Deepgram ASR can properly endpoint utterances.
     // The timer runs for the entire lifetime of the audio channel.
-    std::vector<uint8_t> opus_silence_frame_;
+    std::vector<uint8_t> pcm_silence_20ms_;   // 20ms zero PCM (640 bytes at 16kHz)
     TimerHandle_t silence_timer_ = nullptr;
     bool tts_playing_ = false;
     int64_t last_audio_send_us_ = 0;   // esp_timer_get_time() of last real audio or TTS-end

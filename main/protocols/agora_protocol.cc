@@ -1,34 +1,30 @@
 #include "agora_protocol.h"
-#include "agora_channel.h"    // Still needed for AgoraChannel::Connect() cast
+#include "agora_channel.h"
 
 #include <cJSON.h>
 #include <esp_log.h>
 #include <esp_timer.h>
-#include <opus_encoder.h>
 #include <agora_rtc_api.h>
 #include "assets/lang_config.h"
 
 #define TAG "AgoraProtocol"
 
-static constexpr int kSampleRate     = 16000;
-static constexpr int kFrameDurationMs = 60;
-static constexpr int kProtocolVersion = 3;
+static constexpr int kSampleRate       = 16000;
+static constexpr int kFrameDurationMs  = 60;
+static constexpr int kPcmFrameMs       = 20;   // SDK G722 expects 20ms PCM frames
+static constexpr int kPcmFrameSamples  = kSampleRate * kPcmFrameMs / 1000;   // 320
+static constexpr int kPcmFrameBytes    = kPcmFrameSamples * sizeof(int16_t);  // 640
+static constexpr int kProtocolVersion  = 3;
 
 AgoraProtocol::AgoraProtocol() {
     server_sample_rate_    = kSampleRate;
     server_frame_duration_ = kFrameDurationMs;
 
-    // Cache a 1-byte DTX comfort-noise frame (server requirement).
-    // The server's VAD specifically expects 1-byte OPUS silence during TTS;
-    // full 18-byte silence frames are misread as low-level noise.
-    const int frame_samples = kSampleRate * kFrameDurationMs / 1000; // 960
-    OpusEncoderWrapper enc(kSampleRate, 1, kFrameDurationMs);
-    enc.SetDtx(true);
-    for (int i = 0; i < 10; i++) {
-        std::vector<int16_t> silence(frame_samples, 0);
-        enc.Encode(std::move(silence), opus_silence_frame_);
-    }
-    ESP_LOGI(TAG, "Cached OPUS silence frame (DTX): %u bytes", (unsigned)opus_silence_frame_.size());
+    pcm_silence_20ms_.resize(kPcmFrameBytes, 0);
+    ESP_LOGI(TAG, "Cached 20ms PCM silence: %u bytes", (unsigned)pcm_silence_20ms_.size());
+
+    opus_decoder_ = std::make_unique<OpusDecoderWrapper>(kSampleRate, 1, kFrameDurationMs);
+    ESP_LOGI(TAG, "OPUS decoder ready (for OPUS→PCM→G722 pipeline)");
 }
 
 AgoraProtocol::~AgoraProtocol() {
@@ -87,8 +83,12 @@ void AgoraProtocol::SilenceTimerCallback(TimerHandle_t timer) {
     }
 
     if (should_send) {
-        self->channel_->SendBinary(self->opus_silence_frame_.data(),
-                                   self->opus_silence_frame_.size());
+        auto* agora_ch = static_cast<AgoraChannel*>(self->channel_.get());
+        for (int i = 0; i < 3; ++i) {
+            agora_ch->SendNativeAudio(self->pcm_silence_20ms_.data(),
+                                      self->pcm_silence_20ms_.size(),
+                                      AUDIO_DATA_TYPE_PCM);
+        }
     }
 }
 
@@ -128,6 +128,7 @@ bool AgoraProtocol::SendHello() {
     cJSON_AddNumberToObject(audio_params, "sample_rate", kSampleRate);
     cJSON_AddNumberToObject(audio_params, "channels", 1);
     cJSON_AddNumberToObject(audio_params, "frame_duration", kFrameDurationMs);
+    cJSON_AddStringToObject(audio_params, "audio_channel", "native");
     cJSON_AddItemToObject(root, "audio_params", audio_params);
 
     auto* json_str = cJSON_PrintUnformatted(root);
@@ -172,12 +173,27 @@ bool AgoraProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
         gap_dtx_count_ = 0;
     }
 
+    // Decode OPUS→PCM so the Agora SDK can re-encode as G722
+    std::vector<int16_t> pcm;
+    if (!opus_decoder_->Decode(std::move(packet->payload), pcm)) {
+        ESP_LOGW(TAG, "SendAudio: OPUS decode failed, dropping frame");
+        return false;
+    }
+
     audio_packets_sent_++;
     if (audio_packets_sent_ <= 5 || audio_packets_sent_ % 50 == 0) {
-        ESP_LOGI(TAG, "SendAudio #%d: %u bytes (OPUS via data stream)",
-                 audio_packets_sent_, (unsigned)packet->payload.size());
+        ESP_LOGI(TAG, "SendAudio #%d: %u PCM samples → SDK G722",
+                 audio_packets_sent_, (unsigned)pcm.size());
     }
-    return channel_->SendBinary(packet->payload.data(), packet->payload.size());
+
+    auto* agora_ch = static_cast<AgoraChannel*>(channel_.get());
+    for (size_t off = 0; off + kPcmFrameSamples <= pcm.size(); off += kPcmFrameSamples) {
+        if (!agora_ch->SendNativeAudio(&pcm[off], kPcmFrameBytes, AUDIO_DATA_TYPE_PCM)) {
+            ESP_LOGW(TAG, "SendNativeAudio failed at offset %u", (unsigned)off);
+            return false;
+        }
+    }
+    return true;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

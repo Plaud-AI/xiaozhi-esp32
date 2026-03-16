@@ -26,10 +26,9 @@
 //       returning the credentials to the device.)
 //
 // Audio is sent via Agora's native audio channel using agora_rtc_send_audio_data()
-// with pre-encoded OPUS frames (AUDIO_DATA_TYPE_OPUS, 16 kHz).
-// SDK codec is DISABLED because we provide pre-encoded OPUS data directly.
-// This gives us the benefits of Agora's native transport: FEC, jitter buffer,
-// and proper RTP pacing — unlike data stream which has 1KB limits and no FEC.
+// with raw PCM (AUDIO_DATA_TYPE_PCM). The SDK internally encodes PCM→G722 using
+// libiot-audio-codec.a and handles transmission with FEC, jitter buffer, and RTP.
+// The server's Agora SDK decodes G722→PCM and delivers to the ASR pipeline.
 // JSON control messages travel over an Agora data stream.
 class AgoraChannel : public Channel {
 public:
