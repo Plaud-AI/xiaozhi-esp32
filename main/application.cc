@@ -766,26 +766,28 @@ void Application::OnWakeWordDetected() {
         auto wake_word = audio_service_.GetLastWakeWord();
         ESP_LOGI(TAG, "*** Wake word detected: %s ***", wake_word.c_str());
 #if CONFIG_SEND_WAKE_WORD_DATA
-        // Encode and send the wake word data to the server
+        // Send detect event first so the server can start greeting TTS immediately,
+        // before the slow wake-word audio trickle below.
+        ESP_LOGI(TAG, "📡 Sending wake word detected event: '%s'", wake_word.c_str());
+        protocol_->SendWakeWordDetected(wake_word);
+
         ESP_LOGI(TAG, "📤 Sending wake word packets...");
         int packet_count = 0;
-        // Throttle the sending speed to avoid starving WiFi driver buffers
-        const int THROTTLE_DELAY_MS = 20; 
+        // Each OPUS packet decodes to 960 samples = 3 × 20ms sub-frames.
+        // The Agora SDK encodes each sub-frame to G722 and queues it in an
+        // internal UDP send buffer. Sending faster than real-time overflows
+        // that buffer (error: "Not enough space").
+        // 60ms per packet = 3 sub-frames × 20ms = real-time pacing.
+        const int THROTTLE_DELAY_MS = 60;
         while (auto packet = audio_service_.PopWakeWordPacket()) {
             packet_count++;
-            ESP_LOGD(TAG, "  Sending packet #%d, size=%u", packet_count, (unsigned int)packet->payload.size());
             if (!protocol_->SendAudio(std::move(packet))) {
                 ESP_LOGE(TAG, "❌ Failed to send wake word packet #%d", packet_count);
                 break;
             }
-            // Wait a bit to let WiFi driver process the packet
             vTaskDelay(pdMS_TO_TICKS(THROTTLE_DELAY_MS));
         }
         ESP_LOGI(TAG, "✅ Sent %d wake word packets", packet_count);
-        
-        // Set the chat state to wake word detected
-        ESP_LOGI(TAG, "📡 Sending wake word detected event: '%s'", wake_word.c_str());
-        protocol_->SendWakeWordDetected(wake_word);
         
         ESP_LOGI(TAG, "🎤 Setting listening mode...");
         SetListeningMode(aec_mode_ == kAecOff ? kListeningModeAutoStop : kListeningModeRealtime);

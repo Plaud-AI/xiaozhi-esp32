@@ -1,6 +1,7 @@
 #include "agora_protocol.h"
 #include "agora_channel.h"
 
+#include <cinttypes>
 #include <cJSON.h>
 #include <esp_log.h>
 #include <esp_timer.h>
@@ -76,8 +77,8 @@ void AgoraProtocol::SilenceTimerCallback(TimerHandle_t timer) {
             should_send = true;
             self->gap_dtx_count_++;
             if (self->gap_dtx_count_ == 1 || self->gap_dtx_count_ % 50 == 0) {
-                ESP_LOGI(TAG, "Gap-fill DTX #%u (gap=%lldms)",
-                         (unsigned)self->gap_dtx_count_, (long long)(gap_us / 1000));
+                ESP_LOGI(TAG, "Gap-fill DTX #%u (gap=%" PRId64 "ms)",
+                         (unsigned)self->gap_dtx_count_, gap_us / 1000);
             }
         }
     }
