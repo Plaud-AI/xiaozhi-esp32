@@ -180,7 +180,12 @@ bool AgoraChannel::Connect() {
 
 bool AgoraChannel::CreateDataStream() {
     stream_id_ = -1;
-    int rc = agora_rtc_create_data_stream(conn_id_, &stream_id_, false, false);
+    // reliable=true:  SDK retransmits on loss, guarantees delivery within 5s.
+    //                 Ensures detect/start/stop JSON reaches the server.
+    // ordered=false:  No head-of-line blocking; if one packet is delayed,
+    //                 subsequent ones are delivered immediately.
+    int rc = agora_rtc_create_data_stream(conn_id_, &stream_id_,
+                                          /*reliable=*/true, /*ordered=*/false);
     if (rc < 0) {
         ESP_LOGW(TAG, "Data stream creation failed (%s); JSON messages unavailable",
                  agora_rtc_err_2_str(rc));
