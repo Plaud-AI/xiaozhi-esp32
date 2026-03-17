@@ -1,7 +1,6 @@
 #include "agora_protocol.h"
 #include "agora_channel.h"
 
-#include <cinttypes>
 #include <cJSON.h>
 #include <esp_log.h>
 #include <esp_timer.h>
@@ -67,18 +66,25 @@ void AgoraProtocol::SilenceTimerCallback(TimerHandle_t timer) {
         return;
     }
 
+    // During listening, natural within-utterance pauses (100-200ms) can cause
+    // the AFE gate to briefly close. If we inject PCM zeros immediately, Deepgram
+    // receives [speech][zeros][speech] which degrades recognition.
+    // Wait 300ms (matching Deepgram endpointing) before gap-filling; this lets
+    // brief pauses pass through without artificial silence insertion.
+    static constexpr int64_t kSpeechGuardUs = 300000LL;  // 300ms
+    static constexpr int64_t kMaxGapUs      = 30000000LL; // 30s safety cap
+
     bool should_send = false;
     if (self->tts_playing_) {
         should_send = true;
     } else if (self->last_audio_send_us_ > 0) {
         int64_t gap_us = esp_timer_get_time() - self->last_audio_send_us_;
-        static constexpr int64_t kMaxGapUs = 30000000LL; // 30s safety cap
-        if (gap_us > kFrameDurationMs * 1000 && gap_us < kMaxGapUs) {
+        if (gap_us > kSpeechGuardUs && gap_us < kMaxGapUs) {
             should_send = true;
             self->gap_dtx_count_++;
             if (self->gap_dtx_count_ == 1 || self->gap_dtx_count_ % 50 == 0) {
-                ESP_LOGI(TAG, "Gap-fill DTX #%u (gap=%" PRId64 "ms)",
-                         (unsigned)self->gap_dtx_count_, gap_us / 1000);
+                ESP_LOGI(TAG, "Gap-fill DTX #%u (gap=%ldms)",
+                         (unsigned)self->gap_dtx_count_, (long)(gap_us / 1000));
             }
         }
     }

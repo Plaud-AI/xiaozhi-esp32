@@ -46,9 +46,11 @@ private:
 
     // Continuous silence sender: keeps the RTC audio stream alive with
     // PCM silence in two scenarios:
-    //  1. During TTS playback (tts_playing_ = true) — prevents echo.
-    //  2. During listening when AFE gate is closed — fills the audio gap
-    //     so the server's Deepgram ASR can properly endpoint utterances.
+    //  1. During TTS playback (tts_playing_ = true) — keeps stream alive.
+    //  2. During listening when AFE gate is closed for >300ms — fills the
+    //     audio gap for proper Deepgram endpointing. The 300ms guard
+    //     window prevents injecting zeros during natural within-utterance
+    //     pauses that would degrade ASR recognition quality.
     // The timer runs for the entire lifetime of the audio channel.
     std::vector<uint8_t> pcm_silence_20ms_;   // 20ms zero PCM (640 bytes at 16kHz)
     TimerHandle_t silence_timer_ = nullptr;
