@@ -50,6 +50,10 @@ void AgoraChannel::S_OnError(connection_id_t /*conn_id*/, int code, const char* 
     if (s_instance_) s_instance_->OnError(code, msg);
 }
 
+void AgoraChannel::S_OnTokenExpire(connection_id_t /*conn_id*/, const char* token) {
+    if (s_instance_) s_instance_->OnTokenExpire(token);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Constructor / Destructor
 // ─────────────────────────────────────────────────────────────────────────────
@@ -107,8 +111,9 @@ bool AgoraChannel::Connect() {
     handler.on_reconnecting           = S_OnReconnecting;
     handler.on_rejoin_channel_success = S_OnRejoinSuccess;
     handler.on_audio_data             = S_OnAudioData;
-    handler.on_stream_message         = S_OnStreamMessage;
-    handler.on_error                  = S_OnError;
+    handler.on_stream_message                = S_OnStreamMessage;
+    handler.on_error                         = S_OnError;
+    handler.on_token_privilege_will_expire   = S_OnTokenExpire;
 
     rtc_service_option_t service_opt{};
     service_opt.area_code           = AREA_CODE_GLOB;
@@ -137,6 +142,7 @@ bool AgoraChannel::Connect() {
     rtc_channel_options_t ch_opts{};
     ch_opts.auto_subscribe_audio             = true;
     ch_opts.auto_subscribe_video             = false;
+    ch_opts.enable_audio_jitter_buffer       = true;
     ch_opts.audio_codec_opt.audio_codec_type = AUDIO_CODEC_TYPE_G722;
     ch_opts.audio_codec_opt.pcm_sample_rate  = 16000;
     ch_opts.audio_codec_opt.pcm_channel_num  = 1;
@@ -180,12 +186,10 @@ bool AgoraChannel::Connect() {
 
 bool AgoraChannel::CreateDataStream() {
     stream_id_ = -1;
-    // reliable=true:  SDK retransmits on loss, guarantees delivery within 5s.
-    //                 Ensures detect/start/stop JSON reaches the server.
-    // ordered=false:  No head-of-line blocking; if one packet is delayed,
-    //                 subsequent ones are delivered immediately.
+    // API doc requires reliable and ordered to be the same value.
+    // reliable=true, ordered=true: SDK retransmits on loss, delivers in order.
     int rc = agora_rtc_create_data_stream(conn_id_, &stream_id_,
-                                          /*reliable=*/true, /*ordered=*/false);
+                                          /*reliable=*/true, /*ordered=*/true);
     if (rc < 0) {
         ESP_LOGW(TAG, "Data stream creation failed (%s); JSON messages unavailable",
                  agora_rtc_err_2_str(rc));
@@ -348,12 +352,19 @@ void AgoraChannel::OnStreamMessage(const char* data, size_t length) {
     }
 }
 
+void AgoraChannel::OnTokenExpire(const char* /*token*/) {
+    ESP_LOGW(TAG, "Agora token will expire soon — session may disconnect if not renewed");
+    // Token renewal requires re-negotiation with the business server.
+    // Current sessions are short-lived; this warning helps diagnose
+    // long-session failures.
+}
+
 void AgoraChannel::OnError(int code, const char* msg) {
-    // Error 130 = data stream reliability issue (missed/cached packets from peer).
-    // This is non-fatal and typically happens when the peer's data stream message
-    // arrives slightly out of order or is momentarily delayed. Do NOT disconnect.
+    // Error 130 (ERR_DATA_STREAM_TIME_OUT): ordered data stream packet delayed.
+    // With reliable=true, ordered=true, the SDK buffers until the missing packet
+    // is retransmitted. Non-fatal — subsequent messages arrive once resolved.
     if (code == 130) {
-        ESP_LOGW(TAG, "Agora non-fatal error %d (data stream): %s", code, msg ? msg : "");
+        ESP_LOGW(TAG, "Agora data stream timeout (error %d): %s", code, msg ? msg : "");
         return;
     }
     ESP_LOGE(TAG, "Agora fatal error %d: %s", code, msg ? msg : "");

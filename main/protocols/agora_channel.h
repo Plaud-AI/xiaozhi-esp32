@@ -71,6 +71,7 @@ private:
     void OnAudioData(const void* data, size_t len, const audio_frame_info_t* info);
     void OnStreamMessage(const char* data, size_t length);
     void OnError(int code, const char* msg);
+    void OnTokenExpire(const char* token);
 
     bool CreateDataStream();
 
@@ -85,6 +86,7 @@ private:
     static void S_OnStreamMessage(connection_id_t, uint32_t, int,
                                   const char*, size_t, uint64_t);
     static void S_OnError(connection_id_t, int, const char*);
+    static void S_OnTokenExpire(connection_id_t, const char*);
 };
 
 #endif // AGORA_CHANNEL_H
