@@ -85,7 +85,11 @@ void AgoraProtocol::SilenceTimerCallback(TimerHandle_t timer) {
 
     if (should_send) {
         auto* agora_ch = static_cast<AgoraChannel*>(self->channel_.get());
-        for (int i = 0; i < 3; ++i) {
+        // During TTS the SDK is busy receiving downlink audio; sending 3 uplink
+        // frames per tick overwhelms the UDP send buffer ("Not enough space").
+        // 1 frame keeps the stream alive without competing for buffer space.
+        const int frames = self->tts_playing_ ? 1 : 3;
+        for (int i = 0; i < frames; ++i) {
             agora_ch->SendNativeAudio(self->pcm_silence_20ms_.data(),
                                       self->pcm_silence_20ms_.size(),
                                       AUDIO_DATA_TYPE_PCM);

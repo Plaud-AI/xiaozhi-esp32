@@ -497,17 +497,15 @@ void Application::Start() {
 
         if (device_state_ == kDeviceStateSpeaking) {
             audio_service_.PushPacketToDecodeQueue(std::move(packet));
+        } else if (device_state_ == kDeviceStateConnecting) {
+            // TTS audio arrived while wake-word packets are still being sent.
+            // Buffer it for immediate playback; the TTS-start Schedule callback
+            // will handle the state transition on the main task later.
+            audio_service_.PushPacketToDecodeQueue(std::move(packet));
         } else if (device_state_ == kDeviceStateListening) {
             if (esp_timer_is_active(enable_mic_timer_)) {
-                // Echo-decay timer is running: we just came from SPEAKING and
-                // the 1-second post-TTS silence window is still in progress.
-                // This audio is a stale TTS packet still in-flight through Agora's
-                // network buffer — play it without changing state.
                 audio_service_.PushPacketToDecodeQueue(std::move(packet));
             } else {
-                // Timer has expired (mic is already enabled or was never started).
-                // A new TTS is starting and its audio arrived before the tts:start
-                // JSON due to Agora's dual-channel latency difference.
                 ESP_LOGI(TAG, "Audio arrived in listening state, auto-transitioning to speaking");
                 aborted_ = false;
                 SetDeviceState(kDeviceStateSpeaking);
@@ -515,7 +513,7 @@ void Application::Start() {
             }
         } else {
             dropped_audio_packets++;
-            ESP_LOGW(TAG, "Dropped audio #%d: state=%s (not SPEAKING/LISTENING), total_dropped=%d",
+            ESP_LOGW(TAG, "Dropped audio #%d: state=%s (not SPEAKING/LISTENING/CONNECTING), total_dropped=%d",
                      total_audio_packets, STATE_STRINGS[device_state_], dropped_audio_packets);
         }
     });
@@ -547,7 +545,8 @@ void Application::Start() {
                     ESP_LOGI(TAG, "🔄 Schedule callback executing for TTS start, current state: %s", 
                              STATE_STRINGS[device_state_]);
                     aborted_ = false;
-                    if (device_state_ == kDeviceStateIdle || device_state_ == kDeviceStateListening) {
+                    if (device_state_ == kDeviceStateIdle || device_state_ == kDeviceStateListening
+                        || device_state_ == kDeviceStateConnecting) {
                         ESP_LOGI(TAG, "✅ Condition met, calling SetDeviceState(kDeviceStateSpeaking)");
                         SetDeviceState(kDeviceStateSpeaking);
                     } else {
@@ -771,6 +770,12 @@ void Application::OnWakeWordDetected() {
         ESP_LOGI(TAG, "📡 Sending wake word detected event: '%s'", wake_word.c_str());
         protocol_->SendWakeWordDetected(wake_word);
 
+        // Enter LISTENING *before* the slow wake-word trickle so that TTS
+        // audio arriving from the server is accepted (not dropped as
+        // "state=connecting").  The TTS-start Schedule callback will
+        // transition to SPEAKING on the main task when it runs.
+        SetListeningMode(aec_mode_ == kAecOff ? kListeningModeAutoStop : kListeningModeRealtime);
+
         ESP_LOGI(TAG, "📤 Sending wake word packets...");
         int packet_count = 0;
         // Each OPUS packet decodes to 960 samples = 3 × 20ms sub-frames.
@@ -787,11 +792,7 @@ void Application::OnWakeWordDetected() {
             }
             vTaskDelay(pdMS_TO_TICKS(THROTTLE_DELAY_MS));
         }
-        ESP_LOGI(TAG, "✅ Sent %d wake word packets", packet_count);
-        
-        ESP_LOGI(TAG, "🎤 Setting listening mode...");
-        SetListeningMode(aec_mode_ == kAecOff ? kListeningModeAutoStop : kListeningModeRealtime);
-        ESP_LOGI(TAG, "✅ Wake word processing complete");
+        ESP_LOGI(TAG, "✅ Sent %d wake word packets, wake word processing complete", packet_count);
 #else
         SetListeningMode(aec_mode_ == kAecOff ? kListeningModeAutoStop : kListeningModeRealtime);
         // Play the pop up sound to indicate the wake word is detected
