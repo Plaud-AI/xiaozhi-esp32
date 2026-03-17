@@ -539,7 +539,6 @@ void Application::Start() {
             auto state = cJSON_GetObjectItem(root, "state");
             ESP_LOGI(TAG, "📢 TTS event: state=%s", state->valuestring);
             if (strcmp(state->valuestring, "start") == 0) {
-                ESP_LOGI(TAG, "📢 TTS event: state=start");
                 ESP_LOGI(TAG, "🎙️  TTS started, switching to SPEAKING state");
                 Schedule([this]() {
                     ESP_LOGI(TAG, "🔄 Schedule callback executing for TTS start, current state: %s", 
