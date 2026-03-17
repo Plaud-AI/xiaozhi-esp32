@@ -64,23 +64,15 @@ Application::Application() {
     };
     esp_timer_create(&clock_timer_args, &clock_timer_handle_);
 
-    // Timer used to enforce an echo-decay pause between SPEAKING and LISTENING.
-    // The timer is ALWAYS started unconditionally when the device transitions from
-    // SPEAKING → LISTENING, so the 1-second window is counted from that moment —
-    // not from when IsIdle() first returns true (the queue may already be empty
-    // before tts:stop even arrives via the Agora data stream).
+    // Echo-decay pause between SPEAKING → LISTENING.
+    // 10 ticks × 50ms = 500ms: sufficient for echo decay with AFE AEC enabled,
+    // while keeping the mic-enable latency low for responsive conversation.
     esp_timer_create_args_t mic_timer_args = {
         .callback = [](void* arg) {
             Application* app = static_cast<Application*>(arg);
-            // Increment unconditionally — counts elapsed time since timer start.
             ++app->mic_echo_wait_count_;
 
-            // Enable the mic only when BOTH conditions hold:
-            //   1. At least 20 ticks (1 second) have elapsed since the timer started.
-            //   2. The audio playback queue is empty (IsIdle).
-            // Condition 1 prevents echo even when the queue drains before tts:stop.
-            // Condition 2 prevents enabling while delayed audio frames are still playing.
-            if (app->mic_echo_wait_count_ >= 20 && app->audio_service_.IsIdle()) {
+            if (app->mic_echo_wait_count_ >= 10 && app->audio_service_.IsIdle()) {
                 esp_timer_stop(app->enable_mic_timer_);
                 app->mic_echo_wait_count_ = 0;
                 app->Schedule([app]() {
