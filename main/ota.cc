@@ -51,6 +51,7 @@ static const char* DEPRECATED_OTA_IPS[] = {
     "34.221.190.98",
     "44.228.155.146",
     "54.218.11.250",
+    ":8003/xiaozhi/ota",
     nullptr
 };
 
