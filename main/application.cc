@@ -496,6 +496,7 @@ void Application::Start() {
         }
 
         if (device_state_ == kDeviceStateSpeaking) {
+            speaking_activity_tick_.store(xTaskGetTickCount(), std::memory_order_relaxed);
             audio_service_.PushPacketToDecodeQueue(std::move(packet));
         } else if (device_state_ == kDeviceStateConnecting) {
             // TTS audio arrived while wake-word packets are still being sent.
@@ -533,6 +534,9 @@ void Application::Start() {
         });
     });
     protocol_->OnIncomingJson([this, display](const cJSON* root) {
+        if (device_state_ == kDeviceStateSpeaking) {
+            speaking_activity_tick_.store(xTaskGetTickCount(), std::memory_order_relaxed);
+        }
         // Parse JSON data
         auto type = cJSON_GetObjectItem(root, "type");
         if (strcmp(type->valuestring, "tts") == 0) {
@@ -733,6 +737,18 @@ void Application::MainEventLoop() {
                 // SystemInfo::PrintTaskCpuUsage(pdMS_TO_TICKS(1000));
                 // SystemInfo::PrintTaskList();
                 SystemInfo::PrintHeapStats();
+            }
+
+            // Speaking watchdog: recover if server stops sending data
+            static constexpr uint32_t kSpeakingTimeoutTicks = pdMS_TO_TICKS(15000);
+            if (device_state_ == kDeviceStateSpeaking) {
+                auto last = speaking_activity_tick_.load(std::memory_order_relaxed);
+                auto now = xTaskGetTickCount();
+                if (last > 0 && (now - last) > kSpeakingTimeoutTicks) {
+                    ESP_LOGW(TAG, "Speaking watchdog: no server activity for %ld ms, forcing idle",
+                             (long)((now - last) * portTICK_PERIOD_MS));
+                    SetDeviceState(kDeviceStateIdle);
+                }
             }
         }
     }
@@ -948,6 +964,7 @@ void Application::SetDeviceState(DeviceState state) {
             // Cancel any pending mic-enable timer when we start speaking again.
             esp_timer_stop(enable_mic_timer_);
             mic_echo_wait_count_ = 0;
+            speaking_activity_tick_.store(xTaskGetTickCount(), std::memory_order_relaxed);
 
             display->SetStatus(Lang::Strings::SPEAKING);
 
