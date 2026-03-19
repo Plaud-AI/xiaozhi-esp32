@@ -11,7 +11,7 @@
 #define OFFICIAL_OTA_DOMAIN   "api.tenclass.net"
 #define OFFICIAL_OTA_DOMAIN_2 "2662r3426b.vicp.fun"
 #define OFFICIAL_OTA_IP       "44.228.155.146"
-#define OFFICIAL_OTA_IP_2     "54.218.11.250"
+#define OFFICIAL_OTA_IP_2     "52.24.30.160"
 
 WebsocketChannel::WebsocketChannel() = default;
 
