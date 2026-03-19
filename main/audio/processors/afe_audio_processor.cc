@@ -424,6 +424,15 @@ void AfeAudioProcessor::AudioProcessorTask() {
     ESP_LOGI(TAG, "Audio communication task started, feed size: %d fetch size: %d",
         feed_size, fetch_size);
 
+    constexpr int kPrefixFrames = 8; // ~256ms lookback at 32ms/frame
+    prefix_frame_size_ = fetch_size;
+    prefix_write_pos_ = 0;
+    prefix_count_ = 0;
+    prefix_ring_.resize(kPrefixFrames * prefix_frame_size_, 0);
+    ESP_LOGI(TAG, "Prefix buffer: %d frames x %d samples = %zu bytes (PSRAM)",
+             kPrefixFrames, prefix_frame_size_,
+             prefix_ring_.size() * sizeof(int16_t));
+
     int loop_count = 0;
     while (true) {
         xEventGroupWaitBits(event_group_, PROCESSOR_RUNNING, pdFALSE, pdTRUE, portMAX_DELAY);
@@ -467,13 +476,38 @@ void AfeAudioProcessor::AudioProcessorTask() {
         const bool vad_speech = (res->vad_state == VAD_SPEECH) &&
             (frame_stats.rms >= kMinSpeechRms || frame_stats.peak >= kMinSpeechPeak);
 
+        // Maintain prefix ring buffer when gate is closed (rolling window)
+        if (!afe_uplink_active_ && prefix_frame_size_ > 0) {
+            int offset = prefix_write_pos_ * prefix_frame_size_;
+            std::memcpy(prefix_ring_.data() + offset, res->data,
+                        prefix_frame_size_ * sizeof(int16_t));
+            prefix_write_pos_ = (prefix_write_pos_ + 1) % kPrefixFrames;
+            if (prefix_count_ < kPrefixFrames) prefix_count_++;
+        }
+
         if (vad_speech) {
             afe_uplink_silence_frames_ = 0;
             if (!afe_uplink_active_) {
-                ESP_LOGI(TAG, "Gate OPEN: rms=%.1f peak=%d vad=%d",
-                         frame_stats.rms, frame_stats.peak, res->vad_state);
                 afe_uplink_active_ = true;
                 output_buffer_.clear();
+                // Flush prefix buffer (oldest first) to recover speech onset
+                if (prefix_count_ > 0 && prefix_frame_size_ > 0) {
+                    int read_pos = (prefix_write_pos_ - prefix_count_ + kPrefixFrames)
+                                   % kPrefixFrames;
+                    for (int i = 0; i < prefix_count_; i++) {
+                        int off = read_pos * prefix_frame_size_;
+                        output_buffer_.insert(output_buffer_.end(),
+                            prefix_ring_.data() + off,
+                            prefix_ring_.data() + off + prefix_frame_size_);
+                        read_pos = (read_pos + 1) % kPrefixFrames;
+                    }
+                }
+                ESP_LOGI(TAG, "Gate OPEN: rms=%.1f peak=%d vad=%d prefix=%d frames (~%dms)",
+                         frame_stats.rms, frame_stats.peak, res->vad_state,
+                         prefix_count_,
+                         prefix_count_ * prefix_frame_size_ * 1000 / 16000);
+                prefix_count_ = 0;
+                prefix_write_pos_ = 0;
             }
         } else if (afe_uplink_active_) {
             afe_uplink_silence_frames_++;
