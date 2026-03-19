@@ -255,37 +255,41 @@ void MicroWakeWord::EncodeWakeWordData() {
       wake_word_opus_.clear();
   }
 
+  encode_task_done_ = false;
+
   wake_word_encode_task_ = xTaskCreateStatic([](void* arg) {
     auto* this_ = static_cast<MicroWakeWord*>(arg);
-    
-    std::vector<int16_t> pcm_data;
-    pcm_data = std::move(this_->wake_word_pcm_);
-    
-    auto start_time = esp_timer_get_time();
-    auto encoder = std::make_unique<OpusEncoderWrapper>(16000, 1, OPUS_FRAME_DURATION_MS);
-    
-    int packets = 0;
-    if (encoder) {
-        encoder->SetComplexity(0);
-        encoder->Encode(std::move(pcm_data), [this_, &packets](std::vector<uint8_t>&& opus) {
-            std::lock_guard<std::mutex> lock(this_->wake_word_mutex_);
-            this_->wake_word_opus_.emplace_back(std::move(opus));
-            this_->wake_word_cv_.notify_all();
-            packets++;
-        });
-    }
-    
-    // Push empty packet as sentinel
-    {
-        std::lock_guard<std::mutex> lock(this_->wake_word_mutex_);
-        this_->wake_word_opus_.emplace_back(std::vector<uint8_t>());
-        this_->wake_word_cv_.notify_all();
-    }
-    
-    auto end_time = esp_timer_get_time();
-    ESP_LOGI(TAG, "Encoded %d wake word packets in %ld ms", packets, (long)((end_time - start_time) / 1000));
 
-    vTaskDelete(NULL);
+    {
+      std::vector<int16_t> pcm_data;
+      pcm_data = std::move(this_->wake_word_pcm_);
+
+      auto start_time = esp_timer_get_time();
+      auto encoder = std::make_unique<OpusEncoderWrapper>(16000, 1, OPUS_FRAME_DURATION_MS);
+
+      int packets = 0;
+      if (encoder) {
+          encoder->SetComplexity(0);
+          encoder->Encode(std::move(pcm_data), [this_, &packets](std::vector<uint8_t>&& opus) {
+              std::lock_guard<std::mutex> lock(this_->wake_word_mutex_);
+              this_->wake_word_opus_.emplace_back(std::move(opus));
+              this_->wake_word_cv_.notify_all();
+              packets++;
+          });
+      }
+
+      {
+          std::lock_guard<std::mutex> lock(this_->wake_word_mutex_);
+          this_->wake_word_opus_.emplace_back(std::vector<uint8_t>());
+          this_->wake_word_cv_.notify_all();
+      }
+
+      auto end_time = esp_timer_get_time();
+      ESP_LOGI(TAG, "Encoded %d wake word packets in %ld ms", packets, (long)((end_time - start_time) / 1000));
+    }
+
+    this_->encode_task_done_ = true;
+    vTaskSuspend(NULL);
   }, "mw_encode", stack_size, this, 2, wake_word_encode_task_stack_, wake_word_encode_task_buffer_);
 }
 
@@ -537,6 +541,22 @@ void MicroWakeWord::deallocate_buffers_() {
     audio_samples_allocator.deallocate(this->ring_buffer_, this->ring_buffer_size_);
     this->ring_buffer_ = nullptr;
     this->ring_buffer_size_ = 0;
+  }
+
+  if (wake_word_encode_task_ != nullptr) {
+    if (!encode_task_done_) {
+      ESP_LOGW(TAG, "Waiting for encode task to finish before cleanup...");
+      int timeout_ms = 5000;
+      while (!encode_task_done_ && timeout_ms > 0) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+        timeout_ms -= 10;
+      }
+      if (!encode_task_done_) {
+        ESP_LOGE(TAG, "Encode task did not finish in time, force deleting");
+      }
+    }
+    vTaskDelete(wake_word_encode_task_);
+    wake_word_encode_task_ = nullptr;
   }
 
   if (wake_word_encode_task_stack_) {

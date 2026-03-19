@@ -17,6 +17,7 @@
 #include <string>
 #include <mutex>
 #include <condition_variable>
+#include <atomic>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
@@ -135,6 +136,7 @@ class MicroWakeWord : public WakeWord {
   TaskHandle_t wake_word_encode_task_ = nullptr;
   StackType_t* wake_word_encode_task_stack_ = nullptr;
   StaticTask_t* wake_word_encode_task_buffer_ = nullptr;
+  std::atomic<bool> encode_task_done_{true};
 
   void set_state_(State state);
 
