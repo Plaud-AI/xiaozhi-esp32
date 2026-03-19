@@ -55,6 +55,12 @@ void AgoraProtocol::CloseAudioChannel() {
     last_audio_send_us_ = 0;
     gap_dtx_count_ = 0;
     channel_.reset();
+    // Agora SDK doesn't fire OnConnectionLost during intentional disconnect
+    // (unlike WebSocket which fires on_disconnected_ from its destructor),
+    // so we must explicitly notify the application to transition to idle.
+    if (on_audio_channel_closed_) {
+        on_audio_channel_closed_();
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
