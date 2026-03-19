@@ -1,5 +1,6 @@
 #include "agora_protocol.h"
 #include "agora_channel.h"
+#include "application.h"
 
 #include <cJSON.h>
 #include <esp_log.h>
@@ -272,6 +273,15 @@ void AgoraProtocol::HandleIncomingData(const char* data, size_t len, bool binary
                 ESP_LOGI(TAG, "Server hello parsed (sr=%d, fd=%d)",
                          server_sample_rate_, server_frame_duration_);
                 // Don't forward hello to Application.
+            } else if (strcmp(msg_type, "goodbye") == 0) {
+                auto* sid = cJSON_GetObjectItem(root, "session_id");
+                ESP_LOGI(TAG, "Received goodbye message, session_id: %s",
+                         (sid && cJSON_IsString(sid)) ? sid->valuestring : "null");
+                if (!sid || !cJSON_IsString(sid) || session_id_ == sid->valuestring) {
+                    Application::GetInstance().Schedule([this]() {
+                        CloseAudioChannel();
+                    });
+                }
             } else {
                 // Adopt session_id from any server message (fallback if
                 // server doesn't send a hello response).
