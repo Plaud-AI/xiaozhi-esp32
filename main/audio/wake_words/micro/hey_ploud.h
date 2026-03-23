@@ -1,4 +1,4 @@
-// Hey Ploud wake word model
+// Hey plaud wake word model
 // Custom model for Plaud AI
 // Model parameters (adjust after testing):
 //   - probability_cutoff: 0.55 (recommended for 24kHz->16kHz resampling)

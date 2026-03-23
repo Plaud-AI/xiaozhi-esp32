@@ -66,7 +66,7 @@ static PcmDiagStats CalcPcmDiagStats(const std::vector<int16_t>& data, int chann
 // ESPHome official v2 model "Okay Nabu" (always enabled)
 #include "wake_words/micro/okay_nabu.h"
 
-// Custom "Hey Ploud" model (default enabled)
+// Custom "Hey plaud" model (default enabled)
 #include "wake_words/micro/hey_ploud.h"
 
 // Custom "Hey HelloKitty" model
@@ -967,15 +967,15 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
         model_count++;
 
         // ═══════════════════════════════════════════════════════════════
-        // Model: Hey Ploud - Default enabled
+        // Model: Hey plaud - Default enabled
         // ═══════════════════════════════════════════════════════════════
-        ESP_LOGI(TAG, "📦 Loading: Hey Ploud [default: enabled]");
+        ESP_LOGI(TAG, "📦 Loading: Hey plaud [default: enabled]");
         ESP_LOGI(TAG, "   - Threshold: %.2f, Tensor Arena: %u bytes", default_threshold, (unsigned int)default_tensor_arena);
         micro_ww->add_wake_word_model(
             hey_ploud_tflite,
             default_threshold,
             sliding_window,
-            "hey ploud",
+            "hey plaud",
             default_tensor_arena,
             "hey_ploud",      // model_id
             false,            // always_enabled = false (can be disabled)
