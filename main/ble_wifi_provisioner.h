@@ -40,7 +40,7 @@ public:
      * @param device_name 设备名称
      * @return true 初始化成功，false 初始化失败
      */
-    bool Initialize(const std::string& device_name = "XiaoZhi-AI");
+    bool Initialize(const std::string& device_name = "Plaud-AI");
 
     /**
      * @brief 启动BLE WiFi配网服务

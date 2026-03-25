@@ -166,7 +166,7 @@ void WifiBoard::EnterWifiConfigMode() {
         
         // 初始化并启动 BLE WiFi 配网
         // BLE 配网会自动使用 WifiStation 缓存的扫描结果
-        if (provisioner.Initialize("ESP32-OKAY-NABU")) {
+        if (provisioner.Initialize("Plaud-AI")) {
             if (provisioner.Start()) {
                 ESP_LOGI(TAG, "✓ BLE配网服务已启动");
                 ESP_LOGI(TAG, "✓ BLE将复用Soft AP的WiFi扫描结果");
@@ -400,13 +400,13 @@ void WifiBoard::EnterBleConfigMode() {
     // 步骤3: 初始化 BLE 服务
     GetDisplay()->ShowNotification("启动 BLE 配置...");
     
-    if (provisioner.Initialize("ESP32-OKAY-NABU")) {
+    if (provisioner.Initialize("Plaud-AI")) {
         ESP_LOGI(TAG, "✓ BLE 服务初始化成功");
         
         // 启动 BLE 广播
         if (provisioner.Start()) {
             ESP_LOGI(TAG, "✅ BLE 配置服务已启动");
-            ESP_LOGI(TAG, "✓ 设备名称: ESP32-OKAY-NABU");
+            ESP_LOGI(TAG, "✓ 设备名称: Plaud-AI");
             ESP_LOGI(TAG, "✓ 可通过 BLE 进行设备配置");
             GetDisplay()->ShowNotification("BLE 配置模式就绪");
         } else {
