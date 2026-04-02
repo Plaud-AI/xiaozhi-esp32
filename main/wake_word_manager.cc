@@ -554,3 +554,166 @@ std::vector<WakeWordConfig> WakeWordManager::GetDefaultWakeWords() {
     return defaults;
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LoadCustomModel — 热加载云端训练的 .tflite 模型（v2.2）
+// ─────────────────────────────────────────────────────────────────────────────
+#include "application.h"
+#include "audio/wake_words/tf_custom_wake_word.h"
+#include <esp_heap_caps.h>
+#include <esp_vfs_spiffs.h>
+#include <cstdio>
+
+bool WakeWordManager::LoadCustomModel(const std::string& wakeword_id,
+                                      const std::string& wake_word_text,
+                                      const std::string& display_name) {
+    ESP_LOGI(TAG, "LoadCustomModel: wakeword_id=%s text=%s",
+             wakeword_id.c_str(), wake_word_text.c_str());
+
+    // ── 1. 挂载 model SPIFFS（若尚未挂载）─────────────────────────────
+    if (!esp_spiffs_mounted("model")) {
+        esp_vfs_spiffs_conf_t conf = {
+            .base_path = "/model",
+            .partition_label = "model",
+            .max_files = 4,
+            .format_if_mount_failed = true,
+        };
+        esp_err_t ret = esp_vfs_spiffs_register(&conf);
+        if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+            ESP_LOGE(TAG, "挂载 model SPIFFS 失败: %s", esp_err_to_name(ret));
+            return false;
+        }
+    }
+
+    // ── 2. 读取 .tflite 文件到 SPIRAM ───────────────────────────────────
+    std::string path = std::string("/model/") + wakeword_id + ".tflite";
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) {
+        ESP_LOGE(TAG, "文件不存在: %s", path.c_str());
+        return false;
+    }
+    fseek(f, 0, SEEK_END);
+    size_t size = (size_t)ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    uint8_t* buf = static_cast<uint8_t*>(
+        heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!buf) {
+        ESP_LOGE(TAG, "SPIRAM 分配失败: %d bytes", (int)size);
+        fclose(f);
+        return false;
+    }
+    size_t n = fread(buf, 1, size, f);
+    fclose(f);
+    if (n != size) {
+        ESP_LOGE(TAG, "文件读取不完整: %d/%d", (int)n, (int)size);
+        heap_caps_free(buf);
+        return false;
+    }
+    ESP_LOGI(TAG, "✅ 模型文件读取完成: %d bytes", (int)size);
+
+    // ── 3. 获取 TFCustomWakeWord 并热加载 ────────────────────────────────
+    auto& app = Application::GetInstance();
+    WakeWord* ww = app.GetAudioService().GetWakeWord();
+    TFCustomWakeWord* tf_ww = dynamic_cast<TFCustomWakeWord*>(ww);
+    if (!tf_ww) {
+        ESP_LOGE(TAG, "WakeWord 不是 TFCustomWakeWord 类型，无法热加载");
+        heap_caps_free(buf);
+        return false;
+    }
+
+    if (!tf_ww->ReinitWithCustomModel(buf, size, wake_word_text)) {
+        ESP_LOGE(TAG, "TFCustomWakeWord 热加载失败");
+        heap_caps_free(buf);
+        return false;
+    }
+
+    // ── 4. 释放旧缓冲区，记录新缓冲区 ────────────────────────────────────
+    if (custom_model_data_ != nullptr) {
+        heap_caps_free(custom_model_data_);
+    }
+    custom_model_data_ = buf;
+    custom_model_size_ = size;
+
+    // ── 5. 保存元数据到 NVS ──────────────────────────────────────────────
+    SaveInstalledModelMeta(wakeword_id, wake_word_text, display_name);
+
+    ESP_LOGI(TAG, "✅ LoadCustomModel 完成: '%s'", wake_word_text.c_str());
+    return true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SaveInstalledModelMeta
+// ─────────────────────────────────────────────────────────────────────────────
+void WakeWordManager::SaveInstalledModelMeta(const std::string& wakeword_id,
+                                              const std::string& wake_word_text,
+                                              const std::string& display_name) {
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_MODEL_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "NVS open 失败: %s", esp_err_to_name(err));
+        return;
+    }
+
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "wakeword_id", wakeword_id.c_str());
+    cJSON_AddStringToObject(root, "wake_word_text", wake_word_text.c_str());
+    cJSON_AddStringToObject(root, "display", display_name.c_str());
+    char* json_str = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+
+    err = nvs_set_str(handle, NVS_MODEL_KEY, json_str);
+    free(json_str);
+    if (err == ESP_OK) {
+        nvs_commit(handle);
+        ESP_LOGI(TAG, "✅ 自定义模型元数据已保存到 NVS");
+    } else {
+        ESP_LOGE(TAG, "NVS 写入失败: %s", esp_err_to_name(err));
+    }
+    nvs_close(handle);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LoadOnBoot — 启动时恢复已安装的自定义模型（若有）
+// ─────────────────────────────────────────────────────────────────────────────
+void WakeWordManager::LoadOnBoot() {
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_MODEL_NAMESPACE, NVS_READONLY, &handle);
+    if (err != ESP_OK) {
+        // 没有元数据记录，使用默认模型
+        ESP_LOGI(TAG, "LoadOnBoot: 无自定义模型记录，使用默认模型");
+        return;
+    }
+
+    size_t len = 0;
+    err = nvs_get_str(handle, NVS_MODEL_KEY, nullptr, &len);
+    if (err != ESP_OK || len == 0) {
+        nvs_close(handle);
+        return;
+    }
+
+    std::string json_str(len, '\0');
+    err = nvs_get_str(handle, NVS_MODEL_KEY, &json_str[0], &len);
+    nvs_close(handle);
+    if (err != ESP_OK) return;
+
+    cJSON* root = cJSON_Parse(json_str.c_str());
+    if (!root) return;
+
+    cJSON* id_item   = cJSON_GetObjectItem(root, "wakeword_id");
+    cJSON* text_item = cJSON_GetObjectItem(root, "wake_word_text");
+    cJSON* disp_item = cJSON_GetObjectItem(root, "display");
+
+    if (!id_item || !text_item) {
+        cJSON_Delete(root);
+        return;
+    }
+
+    std::string wakeword_id   = id_item->valuestring;
+    std::string wake_word_text = text_item->valuestring;
+    std::string display       = disp_item ? disp_item->valuestring : wake_word_text;
+    cJSON_Delete(root);
+
+    ESP_LOGI(TAG, "LoadOnBoot: 检测到已安装模型 '%s'，开始加载...", wake_word_text.c_str());
+    LoadCustomModel(wakeword_id, wake_word_text, display);
+}

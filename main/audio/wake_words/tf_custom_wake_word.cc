@@ -251,3 +251,44 @@ bool TFCustomWakeWord::GetWakeWordOpus(std::vector<uint8_t>& opus) {
     wake_word_opus_.pop_front();
     return true;
 }
+
+bool TFCustomWakeWord::ReinitWithCustomModel(const uint8_t* model_data, size_t model_size,
+                                              const std::string& wake_word_text) {
+    ESP_LOGI(TAG, "热加载自定义唤醒词模型: '%s' (%d bytes)", wake_word_text.c_str(), (int)model_size);
+
+    bool was_running = running_.load();
+    if (was_running) {
+        Stop();
+    }
+
+    // 重新初始化推理引擎
+    plaud::PlaudSRCommand::Config config;
+    config.num_bins           = 40;
+    config.sample_rate        = 16000;
+    config.frame_length       = 400;
+    config.frame_shift        = 160;
+    config.batch_size         = 40;
+    config.default_threshold  = 0.7f;
+    config.detection_frames   = 2;
+    config.timeout_ms         = 5000;
+    config.model_data         = model_data;
+    config.model_size         = model_size;
+    config.tensor_arena_size  = 100 * 1024;
+
+    if (!sr_engine_.Initialize(config)) {
+        ESP_LOGE(TAG, "自定义模型初始化失败");
+        return false;
+    }
+
+    // 训练服务产出的模型输出固定为：0=silence, 1=unknown, 2=目标唤醒词
+    sr_engine_.AddCommand(plaud::PlaudSRCommand::Command(0, "silence", 0.0f));
+    sr_engine_.AddCommand(plaud::PlaudSRCommand::Command(1, "unknown", 0.0f));
+    sr_engine_.AddCommand(plaud::PlaudSRCommand::Command(2, wake_word_text, 0.65f));
+
+    ESP_LOGI(TAG, "✅ 自定义模型热加载成功，已注册唤醒词: '%s'", wake_word_text.c_str());
+
+    if (was_running) {
+        Start();
+    }
+    return true;
+}

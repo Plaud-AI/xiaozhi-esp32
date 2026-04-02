@@ -5,6 +5,7 @@
 #include "settings.h"
 #include "clear_wifi_helper.h"
 #include "wake_word_manager.h"
+#include "wake_word_downloader.h"
 #include "application.h"
 #include "ota.h"
 #include "display/display.h"
@@ -458,6 +459,13 @@ void BLEWiFiProvisioner::HandleReceivedData(const std::string& data) {
     else if (cmd == "unbind_device") {
         ESP_LOGI(TAG, "➜ 执行: 解绑设备命令");
         HandleUnbindDeviceCommand();
+    }
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 自定义唤醒词模型下载（v2.2 新增）
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    else if (cmd == "download_wake_word_model") {
+        ESP_LOGI(TAG, "➜ 执行: 下载唤醒词模型命令");
+        HandleDownloadWakeWordModelCommand(root);
     }
     else {
         ESP_LOGW(TAG, "⚠️  未知命令: %s", cmd.c_str());
@@ -2142,3 +2150,97 @@ void BLEWiFiProvisioner::HandleUnbindDeviceCommand() {
     ESP_LOGI(TAG, "========================================");
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// HandleDownloadWakeWordModelCommand (v2.2: custom wake word model download)
+// ─────────────────────────────────────────────────────────────────────────────
+void BLEWiFiProvisioner::HandleDownloadWakeWordModelCommand(cJSON* root) {
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "📥 下载唤醒词模型");
+    ESP_LOGI(TAG, "========================================");
+
+    cJSON* data = cJSON_GetObjectItem(root, "data");
+    if (!data || !cJSON_IsObject(data)) {
+        SendErrorResponse("download_wake_word_model", -1, "data 字段缺失");
+        return;
+    }
+
+    auto get_str = [&](const char* key, std::string& out, bool required = true) -> bool {
+        cJSON* item = cJSON_GetObjectItem(data, key);
+        if (!item || !cJSON_IsString(item)) {
+            if (required) {
+                SendErrorResponse("download_wake_word_model", -1,
+                                  std::string(key) + " 字段缺失");
+            }
+            return false;
+        }
+        out = item->valuestring;
+        return true;
+    };
+
+    std::string wakeword_id, url, file_md5, wake_word_text, display;
+    int file_size = 0;
+    if (!get_str("wakeword_id", wakeword_id)) return;
+    if (!get_str("url", url)) return;
+    get_str("file_md5", file_md5, false);
+    if (!get_str("wake_word_text", wake_word_text)) return;
+    if (!get_str("display", display, false)) display = wake_word_text;
+    cJSON* sz = cJSON_GetObjectItem(data, "file_size");
+    if (sz && cJSON_IsNumber(sz)) file_size = sz->valueint;
+
+    ESP_LOGI(TAG, "wakeword_id: %s  wake_word_text: %s  size: %d",
+             wakeword_id.c_str(), wake_word_text.c_str(), file_size);
+
+    // ACK
+    SendResponse(R"({"cmd":"download_wake_word_model","status":"ok","message":"download started"})");
+
+    // 异步下载
+    WakeWordDownloader::GetInstance().StartDownload(
+        wakeword_id, url, file_md5, file_size, wake_word_text, display,
+        [wakeword_id](int progress, int downloaded, int total) {
+            cJSON* m = cJSON_CreateObject();
+            cJSON_AddStringToObject(m, "cmd", "wake_word_download_progress");
+            cJSON* d = cJSON_AddObjectToObject(m, "data");
+            cJSON_AddStringToObject(d, "wakeword_id", wakeword_id.c_str());
+            cJSON_AddNumberToObject(d, "progress", progress);
+            cJSON_AddNumberToObject(d, "downloaded_bytes", downloaded);
+            cJSON_AddNumberToObject(d, "total_bytes", total);
+            char* s = cJSON_PrintUnformatted(m);
+            BluetoothService::GetInstance().SendData(s);
+            free(s); cJSON_Delete(m);
+        },
+        [wakeword_id, wake_word_text, display](bool success, const std::string& error) {
+            if (success) {
+                bool loaded = WakeWordManager::GetInstance().LoadCustomModel(
+                    wakeword_id, wake_word_text, display);
+                const char* result_cmd = loaded
+                    ? "wake_word_download_complete"
+                    : "wake_word_download_error";
+                cJSON* m = cJSON_CreateObject();
+                cJSON_AddStringToObject(m, "cmd", result_cmd);
+                cJSON* d = cJSON_AddObjectToObject(m, "data");
+                cJSON_AddStringToObject(d, "wakeword_id", wakeword_id.c_str());
+                if (loaded) {
+                    cJSON_AddStringToObject(d, "wake_word_text", wake_word_text.c_str());
+                } else {
+                    cJSON_AddNumberToObject(d, "error_code", -2);
+                    cJSON_AddStringToObject(d, "error_message", "模型加载失败");
+                }
+                char* s = cJSON_PrintUnformatted(m);
+                BluetoothService::GetInstance().SendData(s);
+                free(s); cJSON_Delete(m);
+            } else {
+                cJSON* m = cJSON_CreateObject();
+                cJSON_AddStringToObject(m, "cmd", "wake_word_download_error");
+                cJSON* d = cJSON_AddObjectToObject(m, "data");
+                cJSON_AddStringToObject(d, "wakeword_id", wakeword_id.c_str());
+                cJSON_AddNumberToObject(d, "error_code", -1);
+                cJSON_AddStringToObject(d, "error_message", error.c_str());
+                char* s = cJSON_PrintUnformatted(m);
+                BluetoothService::GetInstance().SendData(s);
+                free(s); cJSON_Delete(m);
+            }
+        }
+    );
+
+    ESP_LOGI(TAG, "========================================");
+}

@@ -25,6 +25,17 @@ public:
     void OnWakeWordDetected(std::function<void(const std::string& wake_word)> callback);
     void Start();
     void Stop();
+
+    /**
+     * 热加载自定义 .tflite 模型（运行时替换，无需重启）
+     *
+     * @param model_data  指向 .tflite 文件内容的指针（调用方持有内存，生命周期必须长于推理引擎）
+     * @param model_size  模型字节数
+     * @param wake_word_text 要注册的唤醒词文字（对应模型输出 class 2）
+     * @return true 成功，false 失败
+     */
+    bool ReinitWithCustomModel(const uint8_t* model_data, size_t model_size,
+                               const std::string& wake_word_text);
     size_t GetFeedSize();
     void EncodeWakeWordData();
     bool GetWakeWordOpus(std::vector<uint8_t>& opus);

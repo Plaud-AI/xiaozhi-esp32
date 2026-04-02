@@ -97,17 +97,54 @@ public:
      * 获取当前阈值
      */
     float GetThreshold() const { return threshold_; }
-    
+
     /**
      * 获取唤醒词数量
      */
     size_t GetCount() const { return wake_words_.size(); }
-    
+
     /**
      * 是否为空
      */
     bool IsEmpty() const { return wake_words_.empty(); }
-    
+
+    // ──────────────────────────────────────────────────────────────────────
+    // 自定义训练模型相关（v2.2 新增）
+    // ──────────────────────────────────────────────────────────────────────
+
+    /**
+     * 从 SPIFFS /model/{wakeword_id}.tflite 加载已下载的模型，热替换当前推理引擎。
+     *
+     * 步骤：
+     *   1. 将文件读入 SPIRAM 堆内存
+     *   2. 调用 TFCustomWakeWord::ReinitWithCustomModel(...)
+     *   3. 保存已安装模型元数据到 NVS
+     *   4. 释放旧自定义模型内存（若有）
+     *
+     * @param wakeword_id    训练服务分配的模型 ID
+     * @param wake_word_text 唤醒词文字（注册为 class 2）
+     * @param display_name   显示名称
+     * @return true 成功，false 失败
+     */
+    bool LoadCustomModel(const std::string& wakeword_id,
+                         const std::string& wake_word_text,
+                         const std::string& display_name);
+
+    /**
+     * 将已安装的自定义模型元数据持久化到 NVS，重启后可恢复。
+     * namespace: "ww_model", key: "installed"
+     * 格式: {"wakeword_id":"...","wake_word_text":"...","display":"..."}
+     */
+    void SaveInstalledModelMeta(const std::string& wakeword_id,
+                                const std::string& wake_word_text,
+                                const std::string& display_name);
+
+    /**
+     * 启动时调用：若 NVS 中有已安装的自定义模型记录，则从 SPIFFS 加载；
+     * 否则使用编译期默认模型（不修改任何配置）。
+     */
+    void LoadOnBoot();
+
 private:
     WakeWordManager();
     ~WakeWordManager() = default;
@@ -120,11 +157,18 @@ private:
     
     std::vector<WakeWordConfig> wake_words_;
     float threshold_ = DEFAULT_WAKE_WORD_THRESHOLD;
-    
+
+    // 自定义模型缓冲区（从 SPIFFS 读入 SPIRAM，由 WakeWordManager 持有）
+    uint8_t* custom_model_data_ = nullptr;
+    size_t   custom_model_size_ = 0;
+
     static constexpr const char* TAG = "WakeWordManager";
     static constexpr const char* NVS_NAMESPACE = "wake_words";
     static constexpr const char* NVS_KEY_CONFIG = "config";
-    static constexpr size_t MAX_WAKE_WORDS = 10;  // 最多支持 10 个唤醒词
+    // 自定义已安装模型元数据使用独立的 namespace
+    static constexpr const char* NVS_MODEL_NAMESPACE = "ww_model";
+    static constexpr const char* NVS_MODEL_KEY        = "installed";
+    static constexpr size_t MAX_WAKE_WORDS = 10;
 };
 
 #endif // WAKE_WORD_MANAGER_H

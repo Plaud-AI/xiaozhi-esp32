@@ -175,6 +175,14 @@ private:
     void HandleUnbindDeviceCommand();
 
     /**
+     * @brief 处理下载唤醒词模型命令（v2.2 新增）
+     *
+     * 解析 wakeword_id / url / file_md5 / file_size / wake_word_text / display，
+     * 立即回 ACK，然后异步下载并向 App 上报进度/完成/失败。
+     */
+    void HandleDownloadWakeWordModelCommand(cJSON* root);
+
+    /**
      * @brief 发送响应数据到手机
      * @param json_response JSON响应字符串
      * @return true 发送成功，false 发送失败
