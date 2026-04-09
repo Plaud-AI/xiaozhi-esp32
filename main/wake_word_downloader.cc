@@ -21,24 +21,21 @@ WakeWordDownloader& WakeWordDownloader::GetInstance() {
 }
 
 // ──────────────────────────────────────────────────────────
-// 内部：确保 "assets" SPIFFS 分区已挂载（幂等）
-// 模型文件存入 /assets/ww/ 前缀，与其它 assets 共用同一分区
+// 内部：挂载 "model" SPIFFS 分区（幂等，多次调用无副作用）
 // ──────────────────────────────────────────────────────────
 static bool EnsureModelSpiffsMounted() {
-    // assets 分区通常在 Board 初始化时已挂载，直接复用
-    if (esp_spiffs_mounted("assets")) {
+    if (esp_spiffs_mounted("model")) {
         return true;
     }
-    // 若尚未挂载（极少情况），尝试挂载；format_if_mount_failed=false 防止擦除现有 assets
     esp_vfs_spiffs_conf_t conf = {
-        .base_path = "/assets",
-        .partition_label = "assets",
-        .max_files = 10,
-        .format_if_mount_failed = false,
+        .base_path = "/model",
+        .partition_label = "model",
+        .max_files = 8,
+        .format_if_mount_failed = true,
     };
     esp_err_t ret = esp_vfs_spiffs_register(&conf);
     if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
-        ESP_LOGE("WakeWordDownloader", "挂载 assets SPIFFS 失败: %s", esp_err_to_name(ret));
+        ESP_LOGE("WakeWordDownloader", "挂载 model SPIFFS 失败: %s", esp_err_to_name(ret));
         return false;
     }
     return true;
@@ -121,7 +118,7 @@ void WakeWordDownloader::DownloadTaskFunc(void* arg) {
     }
 
     // 3. 打开目标文件
-    std::string spiffs_path = std::string("/assets/ww/") + task->wakeword_id + ".tflite";
+    std::string spiffs_path = std::string("/model/") + task->wakeword_id + ".tflite";
     FILE* f = fopen(spiffs_path.c_str(), "wb");
     if (!f) {
         ESP_LOGE(TAG, "无法创建文件: %s", spiffs_path.c_str());
