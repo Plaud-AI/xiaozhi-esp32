@@ -561,7 +561,7 @@ std::vector<WakeWordConfig> WakeWordManager::GetDefaultWakeWords() {
 #include "application.h"
 #include "audio/wake_words/tf_custom_wake_word.h"
 #include <esp_heap_caps.h>
-#include <esp_vfs_spiffs.h>
+#include <esp_spiffs.h>
 #include <cstdio>
 
 bool WakeWordManager::LoadCustomModel(const std::string& wakeword_id,

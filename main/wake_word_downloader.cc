@@ -3,7 +3,7 @@
 
 #include <cJSON.h>
 #include <esp_log.h>
-#include <esp_vfs_spiffs.h>
+#include <esp_spiffs.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
