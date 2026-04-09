@@ -21,21 +21,21 @@ WakeWordDownloader& WakeWordDownloader::GetInstance() {
 }
 
 // ──────────────────────────────────────────────────────────
-// 内部：挂载 "model" SPIFFS 分区（幂等，多次调用无副作用）
+// 内部：挂载 "ww_store" SPIFFS 分区（幂等，多次调用无副作用）
 // ──────────────────────────────────────────────────────────
 static bool EnsureModelSpiffsMounted() {
-    if (esp_spiffs_mounted("model")) {
+    if (esp_spiffs_mounted("ww_store")) {
         return true;
     }
     esp_vfs_spiffs_conf_t conf = {
-        .base_path = "/model",
-        .partition_label = "model",
+        .base_path = "/ww",
+        .partition_label = "ww_store",
         .max_files = 8,
         .format_if_mount_failed = true,
     };
     esp_err_t ret = esp_vfs_spiffs_register(&conf);
     if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
-        ESP_LOGE("WakeWordDownloader", "挂载 model SPIFFS 失败: %s", esp_err_to_name(ret));
+        ESP_LOGE("WakeWordDownloader", "挂载 ww_store SPIFFS 失败: %s", esp_err_to_name(ret));
         return false;
     }
     return true;
@@ -82,7 +82,7 @@ void WakeWordDownloader::DownloadTaskFunc(void* arg) {
 
     // 1. 挂载 SPIFFS
     if (!EnsureModelSpiffsMounted()) {
-        task->on_complete(false, "挂载 model SPIFFS 失败");
+        task->on_complete(false, "挂载 ww_store SPIFFS 失败");
         delete task;
         self.is_downloading_ = false;
         vTaskDelete(nullptr);
@@ -118,7 +118,7 @@ void WakeWordDownloader::DownloadTaskFunc(void* arg) {
     }
 
     // 3. 打开目标文件
-    std::string spiffs_path = std::string("/model/") + task->wakeword_id + ".tflite";
+    std::string spiffs_path = std::string("/ww/") + task->wakeword_id + ".tflite";
     FILE* f = fopen(spiffs_path.c_str(), "wb");
     if (!f) {
         ESP_LOGE(TAG, "无法创建文件: %s", spiffs_path.c_str());

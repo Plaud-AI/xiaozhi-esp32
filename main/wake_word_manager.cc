@@ -570,23 +570,23 @@ bool WakeWordManager::LoadCustomModel(const std::string& wakeword_id,
     ESP_LOGI(TAG, "LoadCustomModel: wakeword_id=%s text=%s",
              wakeword_id.c_str(), wake_word_text.c_str());
 
-    // ── 1. 挂载 model SPIFFS（若尚未挂载）─────────────────────────────
-    if (!esp_spiffs_mounted("model")) {
+    // ── 1. 挂载 ww_store SPIFFS（若尚未挂载）────────────────────────────
+    if (!esp_spiffs_mounted("ww_store")) {
         esp_vfs_spiffs_conf_t conf = {
-            .base_path = "/model",
-            .partition_label = "model",
+            .base_path = "/ww",
+            .partition_label = "ww_store",
             .max_files = 8,
             .format_if_mount_failed = true,
         };
         esp_err_t ret = esp_vfs_spiffs_register(&conf);
         if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
-            ESP_LOGE(TAG, "挂载 model SPIFFS 失败: %s", esp_err_to_name(ret));
+            ESP_LOGE(TAG, "挂载 ww_store SPIFFS 失败: %s", esp_err_to_name(ret));
             return false;
         }
     }
 
     // ── 2. 读取 .tflite 文件到 SPIRAM ───────────────────────────────────
-    std::string path = std::string("/model/") + wakeword_id + ".tflite";
+    std::string path = std::string("/ww/") + wakeword_id + ".tflite";
     FILE* f = fopen(path.c_str(), "rb");
     if (!f) {
         ESP_LOGE(TAG, "文件不存在: %s", path.c_str());
