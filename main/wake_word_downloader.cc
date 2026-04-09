@@ -89,13 +89,27 @@ void WakeWordDownloader::DownloadTaskFunc(void* arg) {
         return;
     }
 
-    // 2. 打开 HTTP 连接
+    // 2. 打开 HTTP 连接（最多重试 3 次，应对 WiFi 短暂断连）
     auto network = Board::GetInstance().GetNetwork();
-    auto http = network->CreateHttp(0);
-    http->SetTimeout(30000);
 
-    if (!http->Open("GET", task->url)) {
-        task->on_complete(false, "HTTP 连接失败");
+    std::unique_ptr<Http> http;
+    bool connected = false;
+    for (int attempt = 0; attempt < 3 && !self.cancel_requested_; attempt++) {
+        if (attempt > 0) {
+            ESP_LOGW(TAG, "HTTP 连接失败，5 秒后重试 (%d/3)...", attempt + 1);
+            vTaskDelay(pdMS_TO_TICKS(5000));
+        }
+        http = network->CreateHttp(0);
+        http->SetTimeout(30000);
+        if (http->Open("GET", task->url)) {
+            connected = true;
+            break;
+        }
+        ESP_LOGE(TAG, "HTTP 连接失败 (attempt %d)", attempt + 1);
+    }
+
+    if (!connected) {
+        task->on_complete(false, "HTTP 连接失败（已重试 3 次）");
         delete task;
         self.is_downloading_ = false;
         vTaskDelete(nullptr);
@@ -244,7 +258,7 @@ void WakeWordDownloader::StartDownload(
         std::move(on_complete),
     };
 
-    xTaskCreate(DownloadTaskFunc, "ww_download", 8192, task, 5, nullptr);
+    xTaskCreate(DownloadTaskFunc, "ww_download", 16384, task, 5, nullptr);
 }
 
 void WakeWordDownloader::Cancel() {
