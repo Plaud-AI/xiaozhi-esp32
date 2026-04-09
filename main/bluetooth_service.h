@@ -163,7 +163,7 @@ private:
     bool process_task_running_;        // 处理任务运行标志
     
     static constexpr size_t MESSAGE_QUEUE_SIZE = 8;      // 队列容量
-    static constexpr size_t MAX_MESSAGE_LENGTH = 1024;   // 单条消息最大长度
+    static constexpr size_t MAX_MESSAGE_LENGTH = 4096;   // 单条消息最大长度（需支持含 AWS 预签名 URL 的下载命令，约 1500 字节）
     static constexpr size_t PROCESS_TASK_STACK = 6144;   // 处理任务栈大小
     
     /**
