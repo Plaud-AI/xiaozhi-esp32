@@ -8,6 +8,7 @@
 #include <nvs_flash.h>
 #include <cmath>
 #include <algorithm>
+#include <cctype>
 
 // OPUS frame duration (defined in audio_service.h)
 #ifndef OPUS_FRAME_DURATION_MS
@@ -316,7 +317,8 @@ void MicroWakeWord::add_wake_word_model(const uint8_t *model_start, float probab
                                         size_t sliding_window_average_size, const std::string &wake_word,
                                         size_t tensor_arena_size, const std::string &model_id,
                                         bool always_enabled, bool initial_enabled) {
-  auto model = std::make_unique<WakeWordModel>(model_start, probability_cutoff, sliding_window_average_size, 
+  std::lock_guard<std::recursive_mutex> lock(this->models_mutex_);
+  auto model = std::make_unique<WakeWordModel>(model_start, probability_cutoff, sliding_window_average_size,
                                                 wake_word, tensor_arena_size, model_id);
   model->set_always_enabled(always_enabled);
   model->set_enabled(always_enabled ? true : initial_enabled);
@@ -332,6 +334,7 @@ void MicroWakeWord::add_wake_word_model(const uint8_t *model_start, float probab
 }
 
 std::vector<std::string> MicroWakeWord::get_model_ids() const {
+  std::lock_guard<std::recursive_mutex> lock(this->models_mutex_);
   std::vector<std::string> ids;
   for (const auto &model : this->wake_word_models_) {
     auto *ww_model = static_cast<WakeWordModel *>(model.get());
@@ -341,6 +344,7 @@ std::vector<std::string> MicroWakeWord::get_model_ids() const {
 }
 
 std::vector<MicroWakeWord::ModelInfo> MicroWakeWord::get_models_info() const {
+  std::lock_guard<std::recursive_mutex> lock(this->models_mutex_);
   std::vector<ModelInfo> infos;
   for (const auto &model : this->wake_word_models_) {
     auto *ww_model = static_cast<WakeWordModel *>(model.get());
@@ -356,6 +360,7 @@ std::vector<MicroWakeWord::ModelInfo> MicroWakeWord::get_models_info() const {
 }
 
 bool MicroWakeWord::enable_model(const std::string &model_id) {
+  std::lock_guard<std::recursive_mutex> lock(this->models_mutex_);
   for (auto &model : this->wake_word_models_) {
     auto *ww_model = static_cast<WakeWordModel *>(model.get());
     if (ww_model->get_model_id() == model_id) {
@@ -389,6 +394,7 @@ bool MicroWakeWord::enable_model(const std::string &model_id) {
 }
 
 bool MicroWakeWord::disable_model(const std::string &model_id) {
+  std::lock_guard<std::recursive_mutex> lock(this->models_mutex_);
   for (auto &model : this->wake_word_models_) {
     auto *ww_model = static_cast<WakeWordModel *>(model.get());
     if (ww_model->get_model_id() == model_id) {
@@ -422,6 +428,7 @@ bool MicroWakeWord::disable_model(const std::string &model_id) {
 }
 
 bool MicroWakeWord::is_model_enabled(const std::string &model_id) const {
+  std::lock_guard<std::recursive_mutex> lock(this->models_mutex_);
   for (const auto &model : this->wake_word_models_) {
     auto *ww_model = static_cast<WakeWordModel *>(model.get());
     if (ww_model->get_model_id() == model_id) {
@@ -432,6 +439,7 @@ bool MicroWakeWord::is_model_enabled(const std::string &model_id) const {
 }
 
 size_t MicroWakeWord::get_enabled_model_count() const {
+  std::lock_guard<std::recursive_mutex> lock(this->models_mutex_);
   size_t count = 0;
   for (const auto &model : this->wake_word_models_) {
     auto *ww_model = static_cast<WakeWordModel *>(model.get());
@@ -574,6 +582,7 @@ void MicroWakeWord::deallocate_buffers_() {
 }
 
 bool MicroWakeWord::load_models_() {
+  std::lock_guard<std::recursive_mutex> lock(this->models_mutex_);
   size_t total_models = wake_word_models_.size();
   size_t enabled_models = get_enabled_model_count();
   
@@ -630,10 +639,11 @@ bool MicroWakeWord::load_models_() {
 void MicroWakeWord::unload_models_() {
   FrontendFreeStateContents(&this->frontend_state_);
 
+  std::lock_guard<std::recursive_mutex> lock(this->models_mutex_);
   for (auto &model : this->wake_word_models_) {
     model->unload_model();
   }
-  
+
   ESP_LOGI(TAG, "Models unloaded");
 }
 
@@ -647,6 +657,7 @@ void MicroWakeWord::update_model_probabilities_() {
   // Increase the counter since the last positive detection
   this->ignore_windows_ = std::min<int16_t>(this->ignore_windows_ + 1, 0);
 
+  std::lock_guard<std::recursive_mutex> lock(this->models_mutex_);
   for (size_t i = 0; i < this->wake_word_models_.size(); i++) {
     auto &model = this->wake_word_models_[i];
     auto *ww_model = static_cast<WakeWordModel *>(model.get());
@@ -675,6 +686,7 @@ bool MicroWakeWord::detect_wake_words_() {
     return false;
   }
 
+  std::lock_guard<std::recursive_mutex> lock(this->models_mutex_);
   for (size_t i = 0; i < this->wake_word_models_.size(); i++) {
     auto &model = this->wake_word_models_[i];
     auto *ww_model = static_cast<WakeWordModel *>(model.get());
@@ -748,15 +760,18 @@ bool MicroWakeWord::generate_features_for_window_(int8_t features[PREPROCESSOR_F
 
 void MicroWakeWord::reset_states_() {
   ESP_LOGI(TAG, "Resetting buffers and probabilities");
-  
+
   ring_buffer_read_pos_ = 0;
   ring_buffer_write_pos_ = 0;
   ring_buffer_available_ = 0;
-  
+
   this->ignore_windows_ = -MIN_SLICES_BEFORE_DETECTION;
-  
-  for (auto &model : this->wake_word_models_) {
-    model->reset_probabilities();
+
+  {
+    std::lock_guard<std::recursive_mutex> lock(this->models_mutex_);
+    for (auto &model : this->wake_word_models_) {
+      model->reset_probabilities();
+    }
   }
   
   wake_word_pcm_.clear();
@@ -814,7 +829,9 @@ bool MicroWakeWord::register_streaming_ops_(tflite::MicroMutableOpResolver<20> &
 
 bool MicroWakeWord::save_model_states_to_nvs() {
   ESP_LOGI(TAG, "💾 Saving model states to NVS...");
-  
+
+  std::lock_guard<std::recursive_mutex> lock(this->models_mutex_);
+
   nvs_handle_t nvs_handle;
   esp_err_t err = nvs_open(MWW_NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
   if (err != ESP_OK) {
@@ -865,7 +882,9 @@ bool MicroWakeWord::save_model_states_to_nvs() {
 
 bool MicroWakeWord::load_model_states_from_nvs() {
   ESP_LOGI(TAG, "📖 Loading model states from NVS...");
-  
+
+  std::lock_guard<std::recursive_mutex> lock(this->models_mutex_);
+
   nvs_handle_t nvs_handle;
   esp_err_t err = nvs_open(MWW_NVS_NAMESPACE, NVS_READONLY, &nvs_handle);
   if (err != ESP_OK) {
@@ -938,6 +957,125 @@ bool MicroWakeWord::load_model_states_from_nvs() {
   
   ESP_LOGI(TAG, "✅ Restored %d model states from NVS", restored_count);
   return true;
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Dynamic model APIs
+// ──────────────────────────────────────────────────────────────────
+
+std::string MicroWakeWord::NormalizeLabel(const std::string &s) {
+  std::string out;
+  out.reserve(s.size());
+  bool prev_space = true;  // 吞掉前导空白
+  for (unsigned char c : s) {
+    if (std::isspace(c)) {
+      if (!prev_space) {
+        out.push_back(' ');
+        prev_space = true;
+      }
+    } else {
+      out.push_back(std::tolower(c));
+      prev_space = false;
+    }
+  }
+  // 去尾空白
+  if (!out.empty() && out.back() == ' ') {
+    out.pop_back();
+  }
+  return out;
+}
+
+bool MicroWakeWord::AddDynamicModel(const uint8_t *model_start, size_t model_size,
+                                    const std::string &model_id, const std::string &wake_word,
+                                    float probability_cutoff, size_t sliding_window_size,
+                                    size_t tensor_arena_size, bool initial_enabled) {
+  if (model_start == nullptr || model_size == 0 || model_id.empty()) {
+    ESP_LOGE(TAG, "AddDynamicModel: 参数无效 (start=%p size=%u id='%s')",
+             model_start, (unsigned)model_size, model_id.c_str());
+    return false;
+  }
+  if (!this->ops_registered_) {
+    ESP_LOGE(TAG, "AddDynamicModel: MicroWakeWord 尚未 Initialize，TFLite ops 未注册");
+    return false;
+  }
+
+  std::lock_guard<std::recursive_mutex> lock(this->models_mutex_);
+
+  // 拒绝重复 id
+  for (const auto &m : this->wake_word_models_) {
+    auto *ww = static_cast<WakeWordModel *>(m.get());
+    if (ww->get_model_id() == model_id) {
+      ESP_LOGE(TAG, "AddDynamicModel: model_id='%s' 已存在", model_id.c_str());
+      return false;
+    }
+  }
+
+  auto model = std::make_unique<WakeWordModel>(model_start, probability_cutoff, sliding_window_size,
+                                                wake_word, tensor_arena_size, model_id);
+  model->set_always_enabled(false);
+  model->set_enabled(initial_enabled);
+
+  // 立即加载做预检：对 tflite 头部、ops、arena 大小进行硬校验，失败就回滚
+  if (!model->load_model(this->streaming_op_resolver_)) {
+    ESP_LOGE(TAG, "AddDynamicModel: load_model 失败 '%s'，回滚注册", model_id.c_str());
+    return false;  // unique_ptr 析构释放 WakeWordModel（不释放 buffer）
+  }
+  model->reset_probabilities();
+
+  ESP_LOGI(TAG, "➕ AddDynamicModel: '%s' (id=%s, cutoff=%.3f, window=%u, arena=%u)",
+           wake_word.c_str(), model_id.c_str(), probability_cutoff,
+           (unsigned)sliding_window_size, (unsigned)tensor_arena_size);
+
+  this->wake_word_models_.push_back(std::move(model));
+  return true;
+}
+
+bool MicroWakeWord::RemoveDynamicModel(const std::string &model_id) {
+  std::lock_guard<std::recursive_mutex> lock(this->models_mutex_);
+  for (auto it = this->wake_word_models_.begin(); it != this->wake_word_models_.end(); ++it) {
+    auto *ww = static_cast<WakeWordModel *>(it->get());
+    if (ww->get_model_id() != model_id) continue;
+    if (ww->is_always_enabled()) {
+      ESP_LOGW(TAG, "RemoveDynamicModel: '%s' always_enabled，拒绝移除", model_id.c_str());
+      return false;
+    }
+    if ((*it)->is_loaded()) {
+      (*it)->unload_model();
+    }
+    this->wake_word_models_.erase(it);
+    ESP_LOGI(TAG, "🗑️  RemoveDynamicModel: '%s'", model_id.c_str());
+    return true;
+  }
+  ESP_LOGW(TAG, "RemoveDynamicModel: 未找到 '%s'", model_id.c_str());
+  return false;
+}
+
+size_t MicroWakeWord::DisableModelsByLabel(const std::string &label,
+                                           const std::string &except_model_id) {
+  const std::string target = NormalizeLabel(label);
+  if (target.empty()) return 0;
+
+  std::lock_guard<std::recursive_mutex> lock(this->models_mutex_);
+  size_t disabled_count = 0;
+  for (auto &model : this->wake_word_models_) {
+    auto *ww = static_cast<WakeWordModel *>(model.get());
+    if (ww->is_always_enabled()) continue;
+    if (!except_model_id.empty() && ww->get_model_id() == except_model_id) continue;
+    if (NormalizeLabel(ww->get_wake_word()) != target) continue;
+    if (!ww->is_enabled()) continue;
+
+    ww->set_enabled(false);
+    if (model->is_loaded()) {
+      model->unload_model();
+    }
+    ESP_LOGI(TAG, "🔇 DisableModelsByLabel: '%s' (id=%s) -> disabled",
+             ww->get_wake_word().c_str(), ww->get_model_id().c_str());
+    disabled_count++;
+  }
+  if (disabled_count > 0) {
+    save_model_states_to_nvs();
+  }
+  return disabled_count;
 }
 
 }  // namespace micro_wake_word

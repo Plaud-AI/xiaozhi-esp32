@@ -73,22 +73,30 @@ void TFCustomWakeWord::Feed(const std::vector<int16_t>& data) {
     if (!running_) {
         return;
     }
-    
+
     // 调试：每 100 次 Feed 显示一次音频输入信息
     static int feed_count = 0;
     feed_count++;
     if (feed_count % 100 == 0) {
-        ESP_LOGI(TAG, "📥 [Feed #%d] samples=%zu, running=%d", 
+        ESP_LOGI(TAG, "📥 [Feed #%d] samples=%zu, running=%d",
                  feed_count, data.size(), running_.load());
     }
-    
+
     // 存储原始音频用于编码（如果需要上传唤醒词音频）
     StoreWakeWordData(data);
-    
+
+    // sr_engine_ 可能在另一线程被 ReinitWithCustomModel 重建；加锁保护 Process/Reset 期间
+    // 对 tensor_arena 等内部状态的访问。
+    std::lock_guard<std::mutex> lock(sr_engine_mutex_);
+    // 拿到锁后再复检一次 running_，避免 Reinit 期间产生无意义推理
+    if (!running_) {
+        return;
+    }
+
     // 将音频输入到推理引擎（使用状态机 API）
     plaud::PlaudSRCommand::Result result;
     plaud::SRState state = sr_engine_.Process(data, result);
-    
+
     // 调试：显示状态变化
     static plaud::SRState last_state = plaud::SRState::DETECTING;
     if (state != last_state || state == plaud::SRState::DETECTED) {
@@ -96,18 +104,18 @@ void TFCustomWakeWord::Feed(const std::vector<int16_t>& data) {
         ESP_LOGI(TAG, "🔄 [Feed #%d] State: %s", feed_count, state_names[static_cast<int>(state)]);
         last_state = state;
     }
- 
+
     if (state == plaud::SRState::DETECTING) {
         // 正在检测中，无需处理
         return;
-    } 
+    }
     else if (state == plaud::SRState::DETECTED) {
         // ✓ 检测到命令！
         OnCommandDetected(result);
-        
+
         // 重置引擎状态以准备下一次检测
         sr_engine_.Reset();
-    } 
+    }
     else if (state == plaud::SRState::TIMEOUT) {
         // 超时，重置引擎状态
         ESP_LOGD(TAG, "Detection timeout, resetting engine");
@@ -257,9 +265,10 @@ bool TFCustomWakeWord::ReinitWithCustomModel(const uint8_t* model_data, size_t m
     ESP_LOGI(TAG, "热加载自定义唤醒词模型: '%s' (%d bytes)", wake_word_text.c_str(), (int)model_size);
 
     bool was_running = running_.load();
-    if (was_running) {
-        Stop();
-    }
+    // 先把 running_ 置 false，Feed 新迭代会直接 return；随后加锁保证当前
+    // 正在 Process() 的迭代已经退出，再进行 Initialize。
+    running_ = false;
+    std::lock_guard<std::mutex> lock(sr_engine_mutex_);
 
     // 重新初始化推理引擎
     plaud::PlaudSRCommand::Config config;
@@ -277,6 +286,8 @@ bool TFCustomWakeWord::ReinitWithCustomModel(const uint8_t* model_data, size_t m
 
     if (!sr_engine_.Initialize(config)) {
         ESP_LOGE(TAG, "自定义模型初始化失败");
+        // 失败时不恢复 running_；上层（WakeWordManager::LoadCustomModel）负责
+        // 用旧 buffer 再次调用本函数做回滚。
         return false;
     }
 
@@ -288,7 +299,8 @@ bool TFCustomWakeWord::ReinitWithCustomModel(const uint8_t* model_data, size_t m
     ESP_LOGI(TAG, "✅ 自定义模型热加载成功，已注册唤醒词: '%s'", wake_word_text.c_str());
 
     if (was_running) {
-        Start();
+        sr_engine_.Reset();
+        running_ = true;
     }
     return true;
 }

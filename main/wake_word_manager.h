@@ -109,41 +109,69 @@ public:
     bool IsEmpty() const { return wake_words_.empty(); }
 
     // ──────────────────────────────────────────────────────────────────────
-    // 自定义训练模型相关（v2.2 新增）
+    // 自定义训练模型相关（v2.3 多槽位：与编译期内置模型并列共存）
     // ──────────────────────────────────────────────────────────────────────
 
     /**
-     * 从 SPIFFS /model/{wakeword_id}.tflite 加载已下载的模型，热替换当前推理引擎。
+     * 已安装的自定义模型描述（运行时状态 + 持久化元数据）。
+     */
+    struct InstalledModel {
+        std::string wakeword_id;     // 训练服务分配的 ID
+        std::string wake_word_text;  // 唤醒词文字（label）
+        std::string display;         // 显示名称
+        std::string file_md5;        // 文件 MD5（启动校验用）
+        size_t file_size = 0;        // 文件字节数
+        uint8_t* buffer = nullptr;   // 运行时 SPIRAM buffer（由本类持有）
+    };
+
+    /**
+     * 从 SPIFFS /ww/{wakeword_id}.tflite 加载模型并注册到 MicroWakeWord。
+     * 与编译期内置模型并列共存；若已存在相同 wakeword_id 则先卸载再重注册。
+     * 加载成功后调用 DisableModelsByLabel 把同 label 的内置模型禁用，
+     * 让动态模型覆盖编译期版本。
      *
-     * 步骤：
-     *   1. 将文件读入 SPIRAM 堆内存
-     *   2. 调用 TFCustomWakeWord::ReinitWithCustomModel(...)
-     *   3. 保存已安装模型元数据到 NVS
-     *   4. 释放旧自定义模型内存（若有）
-     *
-     * @param wakeword_id    训练服务分配的模型 ID
-     * @param wake_word_text 唤醒词文字（注册为 class 2）
+     * @param wakeword_id    训练服务分配的 ID
+     * @param wake_word_text 唤醒词文字（匹配 label 用，忽略大小写）
      * @param display_name   显示名称
-     * @return true 成功，false 失败
+     * @param expected_md5   文件 MD5（可空）
+     * @param expected_size  文件字节数（0 表示不校验）
+     * @return true 成功
      */
     bool LoadCustomModel(const std::string& wakeword_id,
                          const std::string& wake_word_text,
-                         const std::string& display_name);
+                         const std::string& display_name,
+                         const std::string& expected_md5 = "",
+                         size_t expected_size = 0);
 
     /**
-     * 将已安装的自定义模型元数据持久化到 NVS，重启后可恢复。
-     * namespace: "ww_model", key: "installed"
-     * 格式: {"wakeword_id":"...","wake_word_text":"...","display":"..."}
+     * 卸载指定 wakeword_id 的动态模型（从 MicroWakeWord 移除 + 释放 SPIRAM）。
+     * 同时更新 NVS 列表。不恢复被覆盖的内置模型（需要用户另行 enable_model）。
      */
-    void SaveInstalledModelMeta(const std::string& wakeword_id,
-                                const std::string& wake_word_text,
-                                const std::string& display_name);
+    bool UnloadCustomModel(const std::string& wakeword_id);
 
     /**
-     * 启动时调用：若 NVS 中有已安装的自定义模型记录，则从 SPIFFS 加载；
-     * 否则使用编译期默认模型（不修改任何配置）。
+     * 获取当前已安装的动态模型列表（只读，buffer 字段用户应忽略）。
+     */
+    std::vector<InstalledModel> GetInstalledModels() const;
+
+    /**
+     * 启动时调用：遍历 NVS 中的动态模型列表，对每条记录做 MD5 完整性校验，
+     * 通过的模型调用 LoadCustomModel 注册到推理引擎；失败的清理掉。
+     * 编译期内置模型不受影响。
      */
     void LoadOnBoot();
+
+    /**
+     * 把 installed_models_ 整体持久化到 NVS。
+     * namespace: "ww_model", key: "list"
+     * 格式: {"version":2,"list":[{wakeword_id,wake_word_text,display,file_md5,file_size},...]}
+     */
+    void SaveInstalledModelList();
+
+    /**
+     * 清除 NVS 中自定义模型列表（会清空所有槽位记录，但不卸载当前已加载的引擎实例）。
+     */
+    void ClearInstalledModelMeta();
 
 private:
     WakeWordManager();
@@ -158,17 +186,27 @@ private:
     std::vector<WakeWordConfig> wake_words_;
     float threshold_ = DEFAULT_WAKE_WORD_THRESHOLD;
 
-    // 自定义模型缓冲区（从 SPIFFS 读入 SPIRAM，由 WakeWordManager 持有）
-    uint8_t* custom_model_data_ = nullptr;
-    size_t   custom_model_size_ = 0;
+    // 已安装的动态模型（buffer 字段由本类持有，生命周期绑定 MicroWakeWord 注册）
+    std::vector<InstalledModel> installed_models_;
 
     static constexpr const char* TAG = "WakeWordManager";
     static constexpr const char* NVS_NAMESPACE = "wake_words";
     static constexpr const char* NVS_KEY_CONFIG = "config";
-    // 自定义已安装模型元数据使用独立的 namespace
+    // 自定义已安装模型列表 NVS
     static constexpr const char* NVS_MODEL_NAMESPACE = "ww_model";
-    static constexpr const char* NVS_MODEL_KEY        = "installed";
+    static constexpr const char* NVS_MODEL_KEY        = "list";      // v2: 列表
+    static constexpr const char* NVS_MODEL_KEY_LEGACY = "installed"; // v1: 单槽（升级兼容）
     static constexpr size_t MAX_WAKE_WORDS = 10;
+    // 动态模型注册到 MicroWakeWord 时的参数
+    static constexpr float  DYN_PROBABILITY_CUTOFF  = 0.70f;
+    static constexpr size_t DYN_SLIDING_WINDOW_SIZE = 5;
+    static constexpr size_t DYN_TENSOR_ARENA_SIZE   = 32 * 1024;  // 32KB（训练模型偏小）
+    static constexpr size_t MAX_CUSTOM_MODEL_BYTES  = 900 * 1024;
+
+    // 格式化 MicroWakeWord 的 model_id（dyn_ 前缀避免与内置模型冲突）
+    static std::string MakeDynamicModelId(const std::string& wakeword_id) {
+        return std::string("dyn_") + wakeword_id;
+    }
 };
 
 #endif // WAKE_WORD_MANAGER_H

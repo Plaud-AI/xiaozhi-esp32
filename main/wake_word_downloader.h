@@ -1,6 +1,7 @@
 #ifndef WAKE_WORD_DOWNLOADER_H
 #define WAKE_WORD_DOWNLOADER_H
 
+#include <atomic>
 #include <string>
 #include <functional>
 
@@ -56,6 +57,12 @@ public:
      */
     std::string GetCurrentWakewordId() const;
 
+    /**
+     * 计算指定文件的 MD5（十六进制小写 32 字符）。失败返回空串。
+     * 暴露给 WakeWordManager::LoadOnBoot 做启动时完整性校验。
+     */
+    static std::string ComputeFileMd5(const std::string& spiffs_path);
+
 private:
     WakeWordDownloader() = default;
     ~WakeWordDownloader() = default;
@@ -72,10 +79,9 @@ private:
     };
 
     static void DownloadTaskFunc(void* arg);
-    static std::string ComputeFileMd5(const std::string& spiffs_path);
 
-    bool is_downloading_ = false;
-    bool cancel_requested_ = false;
+    std::atomic<bool> is_downloading_{false};
+    std::atomic<bool> cancel_requested_{false};
     std::string current_wakeword_id_;
 
     static constexpr const char* TAG = "WakeWordDownloader";

@@ -25,6 +25,8 @@
 #include <wifi_station.h>
 #include <ssid_manager.h>
 #include <http.h>
+#include <esp_spiffs.h>
+#include "device_state.h"
 
 #define TAG "BLEWiFiProvisioner"
 
@@ -2190,6 +2192,49 @@ void BLEWiFiProvisioner::HandleDownloadWakeWordModelCommand(cJSON* root) {
     ESP_LOGI(TAG, "wakeword_id: %s  wake_word_text: %s  size: %d",
              wakeword_id.c_str(), wake_word_text.c_str(), file_size);
 
+    // ── 预检 1：文件大小 ──────────────────────────────────────────────
+    // ww_store 分区总共 1024KB，预留 SPIFFS 元数据开销，单文件不超过 900KB
+    constexpr int kMaxModelBytes = 900 * 1024;
+    if (file_size <= 0 || file_size > kMaxModelBytes) {
+        ESP_LOGE(TAG, "file_size %d 非法（必须 1..%d）", file_size, kMaxModelBytes);
+        SendErrorResponse("download_wake_word_model", -1,
+                          "file_size out of range (1.." + std::to_string(kMaxModelBytes) + ")");
+        return;
+    }
+
+    // ── 预检 2：OTA 正在进行时拒绝 ────────────────────────────────────
+    if (Application::GetInstance().GetDeviceState() == kDeviceStateUpgrading) {
+        ESP_LOGE(TAG, "OTA 升级进行中，拒绝下载唤醒词模型");
+        SendErrorResponse("download_wake_word_model", -1, "device is upgrading, try later");
+        return;
+    }
+
+    // ── 预检 3：SPIFFS 剩余空间 ────────────────────────────────────────
+    // 挂载（幂等），然后查询可用空间
+    if (!esp_spiffs_mounted("ww_store")) {
+        esp_vfs_spiffs_conf_t conf = {
+            .base_path = "/ww",
+            .partition_label = "ww_store",
+            .max_files = 8,
+            .format_if_mount_failed = true,
+        };
+        esp_vfs_spiffs_register(&conf);  // 失败时下面 esp_spiffs_info 会再兜一层
+    }
+    size_t spiffs_total = 0, spiffs_used = 0;
+    if (esp_spiffs_info("ww_store", &spiffs_total, &spiffs_used) == ESP_OK) {
+        // 若同名旧文件已存在且大小匹配，不算占用（Downloader 会覆写同名文件）
+        size_t required = (size_t)file_size + (size_t)file_size / 7; // +~15% SPIFFS 开销余量
+        size_t free_bytes = spiffs_total - spiffs_used;
+        ESP_LOGI(TAG, "SPIFFS ww_store: total=%d used=%d free=%d required=%d",
+                 (int)spiffs_total, (int)spiffs_used, (int)free_bytes, (int)required);
+        if (free_bytes < required) {
+            SendErrorResponse("download_wake_word_model", -1, "not_enough_space");
+            return;
+        }
+    } else {
+        ESP_LOGW(TAG, "无法获取 SPIFFS 使用信息，跳过空间预检");
+    }
+
     // ACK
     SendResponse(R"({"cmd":"download_wake_word_model","status":"ok","message":"download started"})");
 
@@ -2208,10 +2253,10 @@ void BLEWiFiProvisioner::HandleDownloadWakeWordModelCommand(cJSON* root) {
             BluetoothService::GetInstance().SendData(s);
             free(s); cJSON_Delete(m);
         },
-        [wakeword_id, wake_word_text, display](bool success, const std::string& error) {
+        [wakeword_id, wake_word_text, display, file_md5, file_size](bool success, const std::string& error) {
             if (success) {
                 bool loaded = WakeWordManager::GetInstance().LoadCustomModel(
-                    wakeword_id, wake_word_text, display);
+                    wakeword_id, wake_word_text, display, file_md5, (size_t)file_size);
                 const char* result_cmd = loaded
                     ? "wake_word_download_complete"
                     : "wake_word_download_error";

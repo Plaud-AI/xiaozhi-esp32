@@ -44,7 +44,10 @@ public:
 private:
     // PlaudSRCommand 推理引擎（平台无关）
     plaud::PlaudSRCommand sr_engine_;
-    
+    // 保护 sr_engine_ 在 Feed/ReinitWithCustomModel 之间的并发访问，避免
+    // 热加载期间 Feed 线程解引用被释放的 tensor_arena。
+    std::mutex sr_engine_mutex_;
+
     // ESP32 平台相关
     std::function<void(const std::string& wake_word)> wake_word_detected_callback_;
     AudioCodec* codec_ = nullptr;

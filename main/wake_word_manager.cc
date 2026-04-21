@@ -556,164 +556,353 @@ std::vector<WakeWordConfig> WakeWordManager::GetDefaultWakeWords() {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// LoadCustomModel — 热加载云端训练的 .tflite 模型（v2.2）
+// 动态模型加载 —— 挂载到 MicroWakeWord（v2.3 多槽位）
 // ─────────────────────────────────────────────────────────────────────────────
 #include "application.h"
-#include "audio/wake_words/tf_custom_wake_word.h"
+#include "audio/wake_words/micro/micro_wake_word.h"
+#include "wake_word_downloader.h"
 #include <esp_heap_caps.h>
 #include <esp_spiffs.h>
 #include <cstdio>
 
+namespace {
+
+bool EnsureWwStoreMounted() {
+    if (esp_spiffs_mounted("ww_store")) return true;
+    esp_vfs_spiffs_conf_t conf = {
+        .base_path = "/ww",
+        .partition_label = "ww_store",
+        .max_files = 8,
+        .format_if_mount_failed = true,
+    };
+    esp_err_t ret = esp_vfs_spiffs_register(&conf);
+    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE("WakeWordManager", "挂载 ww_store SPIFFS 失败: %s", esp_err_to_name(ret));
+        return false;
+    }
+    return true;
+}
+
+// 从 Application 中拿到 MicroWakeWord；如果当前 WakeWord 不是 MicroWakeWord，返回 nullptr。
+micro_wake_word::MicroWakeWord* GetMicroWakeWord() {
+    auto& app = Application::GetInstance();
+    WakeWord* ww = app.GetAudioService().GetWakeWord();
+    return dynamic_cast<micro_wake_word::MicroWakeWord*>(ww);
+}
+
+}  // namespace
+
 bool WakeWordManager::LoadCustomModel(const std::string& wakeword_id,
                                       const std::string& wake_word_text,
-                                      const std::string& display_name) {
-    ESP_LOGI(TAG, "LoadCustomModel: wakeword_id=%s text=%s",
+                                      const std::string& display_name,
+                                      const std::string& expected_md5,
+                                      size_t expected_size) {
+    ESP_LOGI(TAG, "LoadCustomModel: wakeword_id=%s text='%s'",
              wakeword_id.c_str(), wake_word_text.c_str());
 
-    // ── 1. 挂载 ww_store SPIFFS（若尚未挂载）────────────────────────────
-    if (!esp_spiffs_mounted("ww_store")) {
-        esp_vfs_spiffs_conf_t conf = {
-            .base_path = "/ww",
-            .partition_label = "ww_store",
-            .max_files = 8,
-            .format_if_mount_failed = true,
-        };
-        esp_err_t ret = esp_vfs_spiffs_register(&conf);
-        if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
-            ESP_LOGE(TAG, "挂载 ww_store SPIFFS 失败: %s", esp_err_to_name(ret));
-            return false;
+    if (wakeword_id.empty() || wake_word_text.empty()) {
+        ESP_LOGE(TAG, "LoadCustomModel: 参数非法");
+        return false;
+    }
+
+    auto* mww = GetMicroWakeWord();
+    if (!mww) {
+        ESP_LOGE(TAG, "LoadCustomModel: 当前 WakeWord 不是 MicroWakeWord，无法挂载动态模型");
+        return false;
+    }
+
+    if (!EnsureWwStoreMounted()) return false;
+
+    // ── 1. 如果已有同 id 的槽位，先卸载旧实例（覆盖式安装）────────────────
+    for (auto it = installed_models_.begin(); it != installed_models_.end(); ++it) {
+        if (it->wakeword_id == wakeword_id) {
+            ESP_LOGI(TAG, "LoadCustomModel: 已存在 wakeword_id=%s，先卸载旧实例", wakeword_id.c_str());
+            mww->RemoveDynamicModel(MakeDynamicModelId(wakeword_id));
+            if (it->buffer) heap_caps_free(it->buffer);
+            installed_models_.erase(it);
+            break;
         }
     }
 
-    // ── 2. 读取 .tflite 文件到 SPIRAM ───────────────────────────────────
+    // ── 2. 读取 .tflite 文件到 SPIRAM ──────────────────────────────────
     std::string path = std::string("/ww/") + wakeword_id + ".tflite";
     FILE* f = fopen(path.c_str(), "rb");
     if (!f) {
-        ESP_LOGE(TAG, "文件不存在: %s", path.c_str());
+        ESP_LOGE(TAG, "LoadCustomModel: 文件不存在 %s", path.c_str());
         return false;
     }
     fseek(f, 0, SEEK_END);
     size_t size = (size_t)ftell(f);
     fseek(f, 0, SEEK_SET);
 
+    if (size == 0 || size > MAX_CUSTOM_MODEL_BYTES) {
+        ESP_LOGE(TAG, "LoadCustomModel: 文件大小非法 %d", (int)size);
+        fclose(f);
+        return false;
+    }
+    if (expected_size > 0 && size != expected_size) {
+        ESP_LOGE(TAG, "LoadCustomModel: 大小不符 actual=%d expected=%d", (int)size, (int)expected_size);
+        fclose(f);
+        return false;
+    }
+
     uint8_t* buf = static_cast<uint8_t*>(
         heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (!buf) {
-        ESP_LOGE(TAG, "SPIRAM 分配失败: %d bytes", (int)size);
+        ESP_LOGE(TAG, "LoadCustomModel: SPIRAM 分配失败 %d bytes", (int)size);
         fclose(f);
         return false;
     }
     size_t n = fread(buf, 1, size, f);
     fclose(f);
     if (n != size) {
-        ESP_LOGE(TAG, "文件读取不完整: %d/%d", (int)n, (int)size);
-        heap_caps_free(buf);
-        return false;
-    }
-    ESP_LOGI(TAG, "✅ 模型文件读取完成: %d bytes", (int)size);
-
-    // ── 3. 获取 TFCustomWakeWord 并热加载 ────────────────────────────────
-    auto& app = Application::GetInstance();
-    WakeWord* ww = app.GetAudioService().GetWakeWord();
-    TFCustomWakeWord* tf_ww = dynamic_cast<TFCustomWakeWord*>(ww);
-    if (!tf_ww) {
-        ESP_LOGE(TAG, "WakeWord 不是 TFCustomWakeWord 类型，无法热加载");
+        ESP_LOGE(TAG, "LoadCustomModel: 读取不完整 %d/%d", (int)n, (int)size);
         heap_caps_free(buf);
         return false;
     }
 
-    if (!tf_ww->ReinitWithCustomModel(buf, size, wake_word_text)) {
-        ESP_LOGE(TAG, "TFCustomWakeWord 热加载失败");
+    // ── 3. 注册到 MicroWakeWord（失败会内部自动回滚 push_back）─────────
+    const std::string model_id = MakeDynamicModelId(wakeword_id);
+    if (!mww->AddDynamicModel(buf, size, model_id, wake_word_text,
+                              DYN_PROBABILITY_CUTOFF,
+                              DYN_SLIDING_WINDOW_SIZE,
+                              DYN_TENSOR_ARENA_SIZE,
+                              true)) {
+        ESP_LOGE(TAG, "LoadCustomModel: AddDynamicModel 失败");
         heap_caps_free(buf);
         return false;
     }
 
-    // ── 4. 释放旧缓冲区，记录新缓冲区 ────────────────────────────────────
-    if (custom_model_data_ != nullptr) {
-        heap_caps_free(custom_model_data_);
+    // ── 4. 覆盖内置：把同 label 的模型全部 disable（忽略大小写+压缩空白）
+    size_t overridden = mww->DisableModelsByLabel(wake_word_text, model_id);
+    if (overridden > 0) {
+        ESP_LOGI(TAG, "LoadCustomModel: 覆盖了 %u 个同 label 内置模型", (unsigned)overridden);
     }
-    custom_model_data_ = buf;
-    custom_model_size_ = size;
 
-    // ── 5. 保存元数据到 NVS ──────────────────────────────────────────────
-    SaveInstalledModelMeta(wakeword_id, wake_word_text, display_name);
+    // ── 5. 记录到列表并持久化 NVS ─────────────────────────────────────
+    InstalledModel slot;
+    slot.wakeword_id    = wakeword_id;
+    slot.wake_word_text = wake_word_text;
+    slot.display        = display_name;
+    slot.file_md5       = expected_md5;
+    slot.file_size      = size;
+    slot.buffer         = buf;
+    installed_models_.push_back(std::move(slot));
 
-    ESP_LOGI(TAG, "✅ LoadCustomModel 完成: '%s'", wake_word_text.c_str());
+    SaveInstalledModelList();
+
+    ESP_LOGI(TAG, "✅ LoadCustomModel 完成: '%s' (共 %u 个动态槽位)",
+             wake_word_text.c_str(), (unsigned)installed_models_.size());
     return true;
 }
 
+bool WakeWordManager::UnloadCustomModel(const std::string& wakeword_id) {
+    auto* mww = GetMicroWakeWord();
+    for (auto it = installed_models_.begin(); it != installed_models_.end(); ++it) {
+        if (it->wakeword_id != wakeword_id) continue;
+        if (mww) {
+            mww->RemoveDynamicModel(MakeDynamicModelId(wakeword_id));
+        }
+        if (it->buffer) heap_caps_free(it->buffer);
+        installed_models_.erase(it);
+        SaveInstalledModelList();
+        ESP_LOGI(TAG, "UnloadCustomModel: '%s' 已卸载", wakeword_id.c_str());
+        return true;
+    }
+    ESP_LOGW(TAG, "UnloadCustomModel: 未找到 '%s'", wakeword_id.c_str());
+    return false;
+}
+
+std::vector<WakeWordManager::InstalledModel> WakeWordManager::GetInstalledModels() const {
+    return installed_models_;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
-// SaveInstalledModelMeta
+// NVS 持久化：列表格式 {"version":2,"list":[{...}]}
 // ─────────────────────────────────────────────────────────────────────────────
-void WakeWordManager::SaveInstalledModelMeta(const std::string& wakeword_id,
-                                              const std::string& wake_word_text,
-                                              const std::string& display_name) {
+void WakeWordManager::SaveInstalledModelList() {
     nvs_handle_t handle;
     esp_err_t err = nvs_open(NVS_MODEL_NAMESPACE, NVS_READWRITE, &handle);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "NVS open 失败: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "SaveInstalledModelList: nvs_open 失败 %s", esp_err_to_name(err));
         return;
     }
 
     cJSON* root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "wakeword_id", wakeword_id.c_str());
-    cJSON_AddStringToObject(root, "wake_word_text", wake_word_text.c_str());
-    cJSON_AddStringToObject(root, "display", display_name.c_str());
+    cJSON_AddNumberToObject(root, "version", 2);
+    cJSON* arr = cJSON_CreateArray();
+    for (const auto& m : installed_models_) {
+        cJSON* obj = cJSON_CreateObject();
+        cJSON_AddStringToObject(obj, "wakeword_id", m.wakeword_id.c_str());
+        cJSON_AddStringToObject(obj, "wake_word_text", m.wake_word_text.c_str());
+        cJSON_AddStringToObject(obj, "display", m.display.c_str());
+        cJSON_AddStringToObject(obj, "file_md5", m.file_md5.c_str());
+        cJSON_AddNumberToObject(obj, "file_size", (double)m.file_size);
+        cJSON_AddItemToArray(arr, obj);
+    }
+    cJSON_AddItemToObject(root, "list", arr);
+
     char* json_str = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
+
+    if (installed_models_.empty()) {
+        // 全空时顺便清理 legacy 单槽 key
+        nvs_erase_key(handle, NVS_MODEL_KEY_LEGACY);
+    }
 
     err = nvs_set_str(handle, NVS_MODEL_KEY, json_str);
     free(json_str);
     if (err == ESP_OK) {
         nvs_commit(handle);
-        ESP_LOGI(TAG, "✅ 自定义模型元数据已保存到 NVS");
+        ESP_LOGI(TAG, "✅ NVS 已保存 %u 个动态模型槽", (unsigned)installed_models_.size());
     } else {
-        ESP_LOGE(TAG, "NVS 写入失败: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "SaveInstalledModelList: nvs_set_str 失败 %s", esp_err_to_name(err));
     }
     nvs_close(handle);
 }
 
+void WakeWordManager::ClearInstalledModelMeta() {
+    nvs_handle_t handle;
+    if (nvs_open(NVS_MODEL_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) return;
+    nvs_erase_key(handle, NVS_MODEL_KEY);
+    nvs_erase_key(handle, NVS_MODEL_KEY_LEGACY);
+    nvs_commit(handle);
+    nvs_close(handle);
+    ESP_LOGI(TAG, "ClearInstalledModelMeta: NVS 列表已清除");
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
-// LoadOnBoot — 启动时恢复已安装的自定义模型（若有）
+// LoadOnBoot —— 遍历 NVS 列表，对每条记录做 MD5 完整性校验后加载
 // ─────────────────────────────────────────────────────────────────────────────
 void WakeWordManager::LoadOnBoot() {
     nvs_handle_t handle;
     esp_err_t err = nvs_open(NVS_MODEL_NAMESPACE, NVS_READONLY, &handle);
     if (err != ESP_OK) {
-        // 没有元数据记录，使用默认模型
-        ESP_LOGI(TAG, "LoadOnBoot: 无自定义模型记录，使用默认模型");
+        ESP_LOGI(TAG, "LoadOnBoot: 无 ww_model 命名空间，跳过");
         return;
     }
 
+    // 优先读 v2 列表；若没有则尝试 v1 单槽迁移
+    const char* key_to_use = NVS_MODEL_KEY;
     size_t len = 0;
-    err = nvs_get_str(handle, NVS_MODEL_KEY, nullptr, &len);
+    err = nvs_get_str(handle, key_to_use, nullptr, &len);
     if (err != ESP_OK || len == 0) {
-        nvs_close(handle);
-        return;
+        key_to_use = NVS_MODEL_KEY_LEGACY;
+        len = 0;
+        err = nvs_get_str(handle, key_to_use, nullptr, &len);
+        if (err != ESP_OK || len == 0) {
+            nvs_close(handle);
+            ESP_LOGI(TAG, "LoadOnBoot: NVS 中无动态模型记录");
+            return;
+        }
+        ESP_LOGI(TAG, "LoadOnBoot: 发现 v1 单槽记录，将迁移为 v2 列表格式");
     }
 
     std::string json_str(len, '\0');
-    err = nvs_get_str(handle, NVS_MODEL_KEY, &json_str[0], &len);
+    err = nvs_get_str(handle, key_to_use, &json_str[0], &len);
     nvs_close(handle);
     if (err != ESP_OK) return;
 
     cJSON* root = cJSON_Parse(json_str.c_str());
-    if (!root) return;
-
-    cJSON* id_item   = cJSON_GetObjectItem(root, "wakeword_id");
-    cJSON* text_item = cJSON_GetObjectItem(root, "wake_word_text");
-    cJSON* disp_item = cJSON_GetObjectItem(root, "display");
-
-    if (!id_item || !text_item) {
-        cJSON_Delete(root);
+    if (!root) {
+        ESP_LOGE(TAG, "LoadOnBoot: NVS JSON 解析失败，清除");
+        ClearInstalledModelMeta();
         return;
     }
 
-    std::string wakeword_id   = id_item->valuestring;
-    std::string wake_word_text = text_item->valuestring;
-    std::string display       = disp_item ? disp_item->valuestring : wake_word_text;
+    // 构造统一的候选列表（兼容 v1/v2）
+    struct Candidate {
+        std::string wakeword_id;
+        std::string wake_word_text;
+        std::string display;
+        std::string file_md5;
+        size_t file_size;
+    };
+    std::vector<Candidate> candidates;
+
+    auto push_from_obj = [&](cJSON* obj) {
+        cJSON* id_item   = cJSON_GetObjectItem(obj, "wakeword_id");
+        cJSON* text_item = cJSON_GetObjectItem(obj, "wake_word_text");
+        cJSON* disp_item = cJSON_GetObjectItem(obj, "display");
+        cJSON* md5_item  = cJSON_GetObjectItem(obj, "file_md5");
+        cJSON* size_item = cJSON_GetObjectItem(obj, "file_size");
+        if (!id_item || !cJSON_IsString(id_item) || !text_item || !cJSON_IsString(text_item)) return;
+        Candidate c;
+        c.wakeword_id    = id_item->valuestring;
+        c.wake_word_text = text_item->valuestring;
+        c.display        = (disp_item && cJSON_IsString(disp_item)) ? disp_item->valuestring : c.wake_word_text;
+        c.file_md5       = (md5_item && cJSON_IsString(md5_item)) ? md5_item->valuestring : "";
+        c.file_size      = (size_item && cJSON_IsNumber(size_item)) ? (size_t)size_item->valuedouble : 0;
+        candidates.push_back(std::move(c));
+    };
+
+    cJSON* list_item = cJSON_GetObjectItem(root, "list");
+    if (list_item && cJSON_IsArray(list_item)) {
+        cJSON* obj = nullptr;
+        cJSON_ArrayForEach(obj, list_item) push_from_obj(obj);
+    } else {
+        // v1 格式：root 本身就是一条记录
+        push_from_obj(root);
+    }
     cJSON_Delete(root);
 
-    ESP_LOGI(TAG, "LoadOnBoot: 检测到已安装模型 '%s'，开始加载...", wake_word_text.c_str());
-    LoadCustomModel(wakeword_id, wake_word_text, display);
+    if (candidates.empty()) {
+        ESP_LOGI(TAG, "LoadOnBoot: 候选列表为空");
+        ClearInstalledModelMeta();
+        return;
+    }
+
+    if (!EnsureWwStoreMounted()) return;
+
+    int ok_count = 0, fail_count = 0;
+    for (const auto& c : candidates) {
+        std::string path = std::string("/ww/") + c.wakeword_id + ".tflite";
+
+        // 1) 文件存在 + 大小校验（捕获半写入文件）
+        FILE* f = fopen(path.c_str(), "rb");
+        if (!f) {
+            ESP_LOGW(TAG, "LoadOnBoot: 文件缺失 %s，丢弃该记录", path.c_str());
+            fail_count++;
+            continue;
+        }
+        fseek(f, 0, SEEK_END);
+        size_t actual_size = (size_t)ftell(f);
+        fclose(f);
+        if (c.file_size > 0 && actual_size != c.file_size) {
+            ESP_LOGW(TAG, "LoadOnBoot: %s 大小不符 actual=%d expected=%d，删除",
+                     path.c_str(), (int)actual_size, (int)c.file_size);
+            remove(path.c_str());
+            fail_count++;
+            continue;
+        }
+
+        // 2) MD5 完整性校验
+        if (!c.file_md5.empty()) {
+            std::string actual_md5 = WakeWordDownloader::ComputeFileMd5(path);
+            if (actual_md5 != c.file_md5) {
+                ESP_LOGW(TAG, "LoadOnBoot: %s MD5 不符 (actual=%s expected=%s)，删除",
+                         path.c_str(), actual_md5.c_str(), c.file_md5.c_str());
+                remove(path.c_str());
+                fail_count++;
+                continue;
+            }
+        } else {
+            ESP_LOGW(TAG, "LoadOnBoot: %s 缺少 MD5 记录，跳过完整性校验", path.c_str());
+        }
+
+        // 3) 加载到引擎
+        if (LoadCustomModel(c.wakeword_id, c.wake_word_text, c.display, c.file_md5, c.file_size)) {
+            ok_count++;
+        } else {
+            fail_count++;
+        }
+    }
+
+    ESP_LOGI(TAG, "LoadOnBoot: 完成（成功 %d，失败 %d，共 %u 条候选）",
+             ok_count, fail_count, (unsigned)candidates.size());
+
+    // 如果本次有记录失败，重写 NVS 以清理掉无效条目（SaveInstalledModelList 会根据当前内存列表写回）
+    if (fail_count > 0) {
+        SaveInstalledModelList();
+    }
 }

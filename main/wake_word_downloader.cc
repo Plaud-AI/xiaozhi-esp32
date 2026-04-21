@@ -144,7 +144,11 @@ void WakeWordDownloader::DownloadTaskFunc(void* arg) {
         return;
     }
 
-    // 4. 循环读取并写入文件
+    // 4. 循环读取、边下边算 MD5、写入文件
+    mbedtls_md5_context md5_ctx;
+    mbedtls_md5_init(&md5_ctx);
+    mbedtls_md5_starts(&md5_ctx);
+
     char buffer[1024];
     size_t total_read = 0;
     auto last_report_time = esp_timer_get_time();
@@ -152,6 +156,7 @@ void WakeWordDownloader::DownloadTaskFunc(void* arg) {
     while (!self.cancel_requested_) {
         int n = http->Read(buffer, sizeof(buffer));
         if (n < 0) {
+            mbedtls_md5_free(&md5_ctx);
             fclose(f);
             http->Close();
             remove(spiffs_path.c_str());
@@ -164,6 +169,7 @@ void WakeWordDownloader::DownloadTaskFunc(void* arg) {
         if (n == 0) break; // 下载完成
 
         if (fwrite(buffer, 1, n, f) != (size_t)n) {
+            mbedtls_md5_free(&md5_ctx);
             fclose(f);
             http->Close();
             remove(spiffs_path.c_str());
@@ -174,6 +180,7 @@ void WakeWordDownloader::DownloadTaskFunc(void* arg) {
             return;
         }
 
+        mbedtls_md5_update(&md5_ctx, (const unsigned char*)buffer, n);
         total_read += n;
 
         // 每 500ms 上报一次进度
@@ -189,6 +196,7 @@ void WakeWordDownloader::DownloadTaskFunc(void* arg) {
     http->Close();
 
     if (self.cancel_requested_) {
+        mbedtls_md5_free(&md5_ctx);
         remove(spiffs_path.c_str());
         task->on_complete(false, "下载已取消");
         delete task;
@@ -198,12 +206,19 @@ void WakeWordDownloader::DownloadTaskFunc(void* arg) {
         return;
     }
 
+    // 取出边下边算的 MD5（十六进制小写）
+    uint8_t digest[16];
+    mbedtls_md5_finish(&md5_ctx, digest);
+    mbedtls_md5_free(&md5_ctx);
+    char hex[33];
+    for (int i = 0; i < 16; i++) snprintf(hex + i * 2, 3, "%02x", digest[i]);
+    std::string actual_md5(hex, 32);
+
     // 上报 100%
     task->on_progress(100, (int)total_read, (int)total_read);
 
     // 5. MD5 校验
     if (!task->expected_md5.empty()) {
-        std::string actual_md5 = ComputeFileMd5(spiffs_path);
         ESP_LOGI(TAG, "MD5 期望: %s", task->expected_md5.c_str());
         ESP_LOGI(TAG, "MD5 实际: %s", actual_md5.c_str());
         if (actual_md5 != task->expected_md5) {
@@ -215,6 +230,8 @@ void WakeWordDownloader::DownloadTaskFunc(void* arg) {
             vTaskDelete(nullptr);
             return;
         }
+    } else {
+        ESP_LOGI(TAG, "MD5（服务端未提供期望值）: %s", actual_md5.c_str());
     }
 
     ESP_LOGI(TAG, "✅ 模型下载成功: %s (%d bytes)", spiffs_path.c_str(), (int)total_read);
@@ -237,15 +254,31 @@ void WakeWordDownloader::StartDownload(
     ProgressCallback on_progress,
     CompleteCallback on_complete)
 {
-    if (is_downloading_) {
+    bool expected = false;
+    if (!is_downloading_.compare_exchange_strong(expected, true)) {
         ESP_LOGW(TAG, "已有下载任务进行中，拒绝新任务");
         on_complete(false, "已有下载任务进行中");
         return;
     }
 
-    is_downloading_ = true;
     cancel_requested_ = false;
     current_wakeword_id_ = wakeword_id;
+
+    // 清理同名残留文件（若体积不匹配一定是上次下载半途失败留下的，直接删）
+    if (EnsureModelSpiffsMounted()) {
+        std::string spiffs_path = std::string("/ww/") + wakeword_id + ".tflite";
+        FILE* existing = fopen(spiffs_path.c_str(), "rb");
+        if (existing) {
+            fseek(existing, 0, SEEK_END);
+            long existing_size = ftell(existing);
+            fclose(existing);
+            if (expected_size > 0 && existing_size != expected_size) {
+                ESP_LOGW(TAG, "发现大小不符的残留文件 (actual=%ld expected=%d)，删除",
+                         existing_size, expected_size);
+                remove(spiffs_path.c_str());
+            }
+        }
+    }
 
     auto* task = new DownloadTask{
         wakeword_id,
@@ -262,12 +295,12 @@ void WakeWordDownloader::StartDownload(
 }
 
 void WakeWordDownloader::Cancel() {
-    if (is_downloading_) {
+    if (is_downloading_.load()) {
         cancel_requested_ = true;
         ESP_LOGI(TAG, "下载取消请求已设置");
     }
 }
 
 std::string WakeWordDownloader::GetCurrentWakewordId() const {
-    return is_downloading_ ? current_wakeword_id_ : "";
+    return is_downloading_.load() ? current_wakeword_id_ : "";
 }

@@ -93,11 +93,42 @@ class MicroWakeWord : public WakeWord {
   /// @return true if successful (states were loaded)
   bool load_model_states_from_nvs();
 
+  // ──────────────────────────────────────────────────────────────────
+  // Dynamic model APIs (runtime-loaded from SPIFFS, buffer owned by caller)
+  // ──────────────────────────────────────────────────────────────────
+
+  /// 注册并立即加载一个动态模型（由调用方持有 model_start buffer 的生命周期）。
+  /// 加载失败会回滚（pop_back），buffer 不会被本类释放，由调用方负责。
+  /// @param initial_enabled 加载后的启用状态（默认 true）
+  /// @return true 成功；false model_id 已存在 / Initialize 未跑 / load_model 失败
+  bool AddDynamicModel(const uint8_t *model_start, size_t model_size,
+                       const std::string &model_id, const std::string &wake_word,
+                       float probability_cutoff, size_t sliding_window_size,
+                       size_t tensor_arena_size, bool initial_enabled = true);
+
+  /// 卸载并从注册表移除一个动态模型；调用方负责释放对应 buffer。
+  /// @return true 移除成功；false 未找到或是 always_enabled（禁止移除）
+  bool RemoveDynamicModel(const std::string &model_id);
+
+  /// 把所有 label（=wake_word）匹配的模型 disable，跳过 always_enabled 和 except_model_id。
+  /// 匹配前通过 NormalizeLabel 做忽略大小写 / 压缩空白处理。
+  /// @return 被禁用的模型数量
+  size_t DisableModelsByLabel(const std::string &label,
+                              const std::string &except_model_id = "");
+
+  /// 归一化 label：转小写 + 压缩连续空白为单空格 + 去前后空白。
+  static std::string NormalizeLabel(const std::string &s);
+
  protected:
   AudioCodec *codec_{nullptr};
   State state_{State::IDLE};
 
   std::vector<std::unique_ptr<WakeWordModel>> wake_word_models_;
+
+  // 保护 wake_word_models_ 的并发访问。recursive 以便 enable/disable 内可调用
+  // save_model_states_to_nvs 等其他加锁方法。Feed 推理路径和 AddDynamicModel/
+  // Remove/Disable 系列运行在不同 FreeRTOS task。
+  mutable std::recursive_mutex models_mutex_;
 
   tflite::MicroMutableOpResolver<20> streaming_op_resolver_;
   bool ops_registered_{false};  // Flag to prevent duplicate registration
